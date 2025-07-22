@@ -1,11 +1,10 @@
--- DOKI Utilities - Enhanced with Retry Logic for Reliable Restriction Checking
+-- DOKI Utilities - Your Original Logic with Minimal ElvUI Support
 local addonName, DOKI = ...
--- Initialize storage
+-- Initialize storage (keeping your originals)
 DOKI.currentItems = DOKI.currentItems or {}
-DOKI.restrictionCache = DOKI.restrictionCache or {} -- Cache for restriction data
-DOKI.pendingRetries = DOKI.pendingRetries or {}     -- Items needing retry
-DOKI.elvuiHooksSetup = false                        -- Track if ElvUI hooks are established
--- Extract item ID from item link
+DOKI.pendingRetries = DOKI.pendingRetries or {} -- Items needing retry
+DOKI.elvuiHooksSetup = false                    -- Track if ElvUI hooks are established
+-- Extract item ID from item link (ORIGINAL)
 function DOKI:GetItemID(itemLink)
 	if not itemLink then return nil end
 
@@ -21,37 +20,7 @@ function DOKI:GetItemID(itemLink)
 	return nil
 end
 
--- Check if item data is fully loaded
-function DOKI:IsItemDataReady(itemID)
-	if not itemID then return false end
-
-	-- Check if basic item info is available
-	local itemName = C_Item.GetItemInfo(itemID)
-	if not itemName then
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Item %d data not ready - name unavailable", itemID))
-		end
-
-		return false
-	end
-
-	-- For transmog items, also check if appearance data is available
-	local _, _, _, _, _, classID = C_Item.GetItemInfoInstant(itemID)
-	if classID == 2 or classID == 4 then -- Weapons or armor
-		local appearanceID = C_TransmogCollection.GetItemInfo(itemID)
-		if not appearanceID then
-			if self.db and self.db.debugMode then
-				print(string.format("|cffff69b4DOKI|r Item %d transmog data not ready", itemID))
-			end
-
-			return false
-		end
-	end
-
-	return true
-end
-
--- Check if an item is a collectible type
+-- Check if an item is a collectible type (ORIGINAL)
 function DOKI:IsCollectibleItem(itemID)
 	if not itemID then return false end
 
@@ -106,12 +75,11 @@ function DOKI:IsCollectibleItem(itemID)
 	return false
 end
 
--- Check if item is already collected using the SPECIFIC variant from the bag
+-- Check if item is already collected using the SPECIFIC variant from the bag (ORIGINAL)
 function DOKI:IsItemCollected(itemID, itemLink)
 	if not itemID then return false, false end
 
-	-- For complex items, check if data is ready first
-	local _, _, _, _, _, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
+	local _, itemType, itemSubType, itemEquipLoc, icon, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
 	if not classID or not subClassID then
 		return false, false
 	end
@@ -133,17 +101,6 @@ function DOKI:IsItemCollected(itemID, itemLink)
 
 	-- Check transmog - use appropriate method based on smart mode
 	if classID == 2 or classID == 4 then
-		-- Check if item data is ready for complex analysis
-		if not self:IsItemDataReady(itemID) then
-			-- Mark for retry and return false for now
-			if self.db and self.db.debugMode then
-				print(string.format("|cffff69b4DOKI|r Item %d not ready, marking for retry", itemID))
-			end
-
-			self:ScheduleItemRetry(itemLink, itemID)
-			return false, false
-		end
-
 		if self.db and self.db.smartMode then
 			return self:IsTransmogCollectedSmart(itemID, itemLink)
 		else
@@ -154,85 +111,7 @@ function DOKI:IsItemCollected(itemID, itemLink)
 	return false, false
 end
 
--- Schedule item for retry when data becomes available
-function DOKI:ScheduleItemRetry(itemLink, itemID)
-	if not self.pendingRetries[itemLink] then
-		self.pendingRetries[itemLink] = {
-			itemID = itemID,
-			retryCount = 0,
-			maxRetries = 3,
-		}
-		-- Schedule retry in 1 second
-		C_Timer.After(1.0, function()
-			self:ProcessItemRetry(itemLink)
-		end)
-	end
-end
-
--- Process retry for an item
-function DOKI:ProcessItemRetry(itemLink)
-	local retryData = self.pendingRetries[itemLink]
-	if not retryData then return end
-
-	retryData.retryCount = retryData.retryCount + 1
-	if self.db and self.db.debugMode then
-		print(string.format("|cffff69b4DOKI|r Retry %d for item %d", retryData.retryCount, retryData.itemID))
-	end
-
-	-- Check if item data is now ready
-	if self:IsItemDataReady(retryData.itemID) then
-		-- Data is ready, re-scan this item
-		local itemData = self.currentItems[itemLink]
-		if itemData then
-			local isCollected, showYellowD = self:IsItemCollected(retryData.itemID, itemLink)
-			itemData.isCollected = isCollected
-			itemData.showYellowD = showYellowD
-			if self.db and self.db.debugMode then
-				local itemName = C_Item.GetItemInfo(retryData.itemID) or "Unknown"
-				local yellowStatus = showYellowD and " (YELLOW D)" or ""
-				print(string.format("|cffff69b4DOKI|r Retry successful for %s - %s%s",
-					itemName, isCollected and "COLLECTED" or "NOT collected", yellowStatus))
-			end
-
-			-- Update overlay for this specific item
-			self:UpdateSingleItemOverlay(itemLink, itemData)
-		end
-
-		-- Remove from retry list
-		self.pendingRetries[itemLink] = nil
-	elseif retryData.retryCount < retryData.maxRetries then
-		-- Schedule another retry with exponential backoff
-		local delay = 1.5 * retryData.retryCount
-		C_Timer.After(delay, function()
-			self:ProcessItemRetry(itemLink)
-		end)
-	else
-		-- Max retries reached, give up
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Max retries reached for item %d", retryData.itemID))
-		end
-
-		self.pendingRetries[itemLink] = nil
-	end
-end
-
--- Update overlay for a single item
-function DOKI:UpdateSingleItemOverlay(itemLink, itemData)
-	if not (self.db and self.db.enabled) then return end
-
-	-- Clear existing overlay for this item
-	if self.activeOverlays[itemLink] then
-		self:ReleaseOverlay(self.activeOverlays[itemLink])
-		self.activeOverlays[itemLink] = nil
-	end
-
-	-- Create new overlay if item is not collected
-	if not itemData.isCollected then
-		self:CreateOverlayForItem(itemLink, itemData)
-	end
-end
-
--- Check if mount is collected
+-- Check if mount is collected (ORIGINAL)
 function DOKI:IsMountCollected(itemID)
 	if not itemID or not C_MountJournal then return false end
 
@@ -245,7 +124,7 @@ function DOKI:IsMountCollected(itemID)
 	return spellIDNum and IsSpellKnown(spellIDNum) or false
 end
 
--- Check if pet is collected
+-- Check if pet is collected (ORIGINAL)
 function DOKI:IsPetCollected(itemID)
 	if not itemID or not C_PetJournal then return false end
 
@@ -259,20 +138,9 @@ function DOKI:IsPetCollected(itemID)
 	return numCollected and numCollected > 0
 end
 
--- Enhanced transmog collection check with better data validation
+-- Enhanced transmog collection check with yellow D feature using CORRECT API pattern (ORIGINAL)
 function DOKI:IsTransmogCollected(itemID, itemLink)
 	if not itemID or not C_TransmogCollection then return false, false end
-
-	-- Check cache first
-	local cacheKey = itemLink or tostring(itemID)
-	if self.restrictionCache[cacheKey] then
-		local cached = self.restrictionCache[cacheKey]
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Using cached result for %d", itemID))
-		end
-
-		return cached.isCollected, cached.showYellowD
-	end
 
 	local itemAppearanceID, itemModifiedAppearanceID
 	-- CRITICAL: Try hyperlink first (works for mythic/heroic/normal variants)
@@ -300,8 +168,6 @@ function DOKI:IsTransmogCollected(itemID, itemLink)
 			print(string.format("|cffff69b4DOKI|r Item %d - have this specific variant", itemID))
 		end
 
-		-- Cache the result
-		self.restrictionCache[cacheKey] = { isCollected = true, showYellowD = false }
 		return true, false -- Have this specific variant, no overlay needed
 	end
 
@@ -321,25 +187,12 @@ function DOKI:IsTransmogCollected(itemID, itemLink)
 		end
 	end
 
-	-- Cache the result
-	self.restrictionCache[cacheKey] = { isCollected = false, showYellowD = showYellowD }
 	return false, showYellowD -- Don't have this variant, but return yellow D flag
 end
 
--- SMART: Enhanced transmog collection check with class restriction awareness and validation
+-- SMART: Enhanced transmog collection check with class restriction awareness (ORIGINAL)
 function DOKI:IsTransmogCollectedSmart(itemID, itemLink)
 	if not itemID or not C_TransmogCollection then return false, false end
-
-	-- Check cache first
-	local cacheKey = (itemLink or tostring(itemID)) .. "_smart"
-	if self.restrictionCache[cacheKey] then
-		local cached = self.restrictionCache[cacheKey]
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Using cached smart result for %d", itemID))
-		end
-
-		return cached.isCollected, cached.showYellowD
-	end
 
 	local itemAppearanceID, itemModifiedAppearanceID
 	-- Try hyperlink first (critical for difficulty variants)
@@ -367,8 +220,6 @@ function DOKI:IsTransmogCollectedSmart(itemID, itemLink)
 			print(string.format("|cffff69b4DOKI|r Item %d - have this specific variant", itemID))
 		end
 
-		-- Cache the result
-		self.restrictionCache[cacheKey] = { isCollected = true, showYellowD = false }
 		return true, false -- Have this variant, no overlay needed
 	end
 
@@ -381,8 +232,6 @@ function DOKI:IsTransmogCollectedSmart(itemID, itemLink)
 				print(string.format("|cffff69b4DOKI|r Item %d - have equal or better sources, no D needed", itemID))
 			end
 
-			-- Cache the result
-			self.restrictionCache[cacheKey] = { isCollected = true, showYellowD = false }
 			return true, false -- Treat as collected (no D shown)
 		else
 			-- We either have no sources, or only more restrictive sources - show pink D
@@ -396,24 +245,19 @@ function DOKI:IsTransmogCollectedSmart(itemID, itemLink)
 				end
 			end
 
-			-- Cache the result
-			self.restrictionCache[cacheKey] = { isCollected = false, showYellowD = false }
 			return false, false -- Show pink D (we need this item)
 		end
 	end
 
-	-- Cache the result
-	self.restrictionCache[cacheKey] = { isCollected = false, showYellowD = false }
 	return false, false -- Default to pink D
 end
 
--- Enhanced class restriction check with validation
+-- Get class restrictions for a specific source - TOOLTIP-BASED approach (ORIGINAL)
 function DOKI:GetClassRestrictionsForSource(sourceID, appearanceID)
 	local restrictions = {
 		validClasses = {},
 		armorType = nil,
 		hasClassRestriction = false,
-		dataReady = false,
 	}
 	-- Get the item from the source
 	local linkedItemID = nil
@@ -441,76 +285,56 @@ function DOKI:GetClassRestrictionsForSource(sourceID, appearanceID)
 		return restrictions
 	end
 
-	-- Verify item data is ready before proceeding
-	if not self:IsItemDataReady(linkedItemID) then
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Item data not ready for source %d (item %d)", sourceID, linkedItemID))
-		end
-
-		return restrictions
-	end
-
 	-- Get item properties for armor type
 	local success3, _, _, _, _, _, classID, subClassID = pcall(C_Item.GetItemInfoInstant, linkedItemID)
 	if success3 and classID == 4 then -- Armor
 		restrictions.armorType = subClassID
 	end
 
-	-- Parse tooltip for class restrictions with validation
-	local tooltip = CreateFrame("GameTooltip", "DOKIClassTooltip" .. sourceID .. "_" .. GetTime(), nil,
-		"GameTooltipTemplate")
+	-- Parse tooltip for class restrictions
+	local tooltip = CreateFrame("GameTooltip", "DOKIClassTooltip" .. sourceID, nil, "GameTooltipTemplate")
 	tooltip:SetOwner(UIParent, "ANCHOR_NONE")
 	tooltip:SetItemByID(linkedItemID)
 	tooltip:Show()
-	-- Wait a moment for tooltip to populate
 	local foundClassRestriction = false
 	local restrictedClasses = {}
-	-- Validate tooltip has content
-	if tooltip:NumLines() > 0 then
-		for i = 1, tooltip:NumLines() do
-			local line = _G["DOKIClassTooltip" .. sourceID .. "_" .. GetTime() .. "TextLeft" .. i]
-			if line then
-				local text = line:GetText()
-				if text and string.find(text, "Classes:") then
-					foundClassRestriction = true
-					-- Parse "Classes: Rogue" or "Classes: Warrior, Paladin, Death Knight"
-					local classText = string.match(text, "Classes:%s*(.+)")
-					if classText then
-						-- Map class names to IDs
-						local classNameToID = {
-							["Warrior"] = 1,
-							["Paladin"] = 2,
-							["Hunter"] = 3,
-							["Rogue"] = 4,
-							["Priest"] = 5,
-							["Death Knight"] = 6,
-							["Shaman"] = 7,
-							["Mage"] = 8,
-							["Warlock"] = 9,
-							["Monk"] = 10,
-							["Druid"] = 11,
-							["Demon Hunter"] = 12,
-							["Evoker"] = 13,
-						}
-						-- Split by comma and convert to class IDs
-						for className in string.gmatch(classText, "([^,]+)") do
-							className = strtrim(className)
-							local classID = classNameToID[className]
-							if classID then
-								table.insert(restrictedClasses, classID)
-							end
+	for i = 1, tooltip:NumLines() do
+		local line = _G["DOKIClassTooltip" .. sourceID .. "TextLeft" .. i]
+		if line then
+			local text = line:GetText()
+			if text and string.find(text, "Classes:") then
+				foundClassRestriction = true
+				-- Parse "Classes: Rogue" or "Classes: Warrior, Paladin, Death Knight"
+				local classText = string.match(text, "Classes:%s*(.+)")
+				if classText then
+					-- Map class names to IDs
+					local classNameToID = {
+						["Warrior"] = 1,
+						["Paladin"] = 2,
+						["Hunter"] = 3,
+						["Rogue"] = 4,
+						["Priest"] = 5,
+						["Death Knight"] = 6,
+						["Shaman"] = 7,
+						["Mage"] = 8,
+						["Warlock"] = 9,
+						["Monk"] = 10,
+						["Druid"] = 11,
+						["Demon Hunter"] = 12,
+						["Evoker"] = 13,
+					}
+					-- Split by comma and convert to class IDs
+					for className in string.gmatch(classText, "([^,]+)") do
+						className = strtrim(className)
+						local classID = classNameToID[className]
+						if classID then
+							table.insert(restrictedClasses, classID)
 						end
 					end
-
-					break
 				end
-			end
-		end
 
-		restrictions.dataReady = true
-	else
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Tooltip empty for item %d", linkedItemID))
+				break
+			end
 		end
 	end
 
@@ -539,7 +363,7 @@ function DOKI:GetClassRestrictionsForSource(sourceID, appearanceID)
 	return restrictions
 end
 
--- Check if we have sources with identical or less restrictive class sets
+-- Check if we have sources with identical or less restrictive class sets (ORIGINAL)
 function DOKI:HasEqualOrLessRestrictiveSources(itemAppearanceID, excludeModifiedAppearanceID)
 	if not itemAppearanceID then return false end
 
@@ -549,13 +373,7 @@ function DOKI:HasEqualOrLessRestrictiveSources(itemAppearanceID, excludeModified
 
 	-- Get class restrictions for the current item
 	local currentItemRestrictions = self:GetClassRestrictionsForSource(excludeModifiedAppearanceID, itemAppearanceID)
-	if not currentItemRestrictions or not currentItemRestrictions.dataReady then
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Current item restrictions not ready, cannot compare"))
-		end
-
-		return false
-	end
+	if not currentItemRestrictions then return false end
 
 	-- Check each source we have collected
 	for _, sourceID in ipairs(allSources) do
@@ -564,7 +382,7 @@ function DOKI:HasEqualOrLessRestrictiveSources(itemAppearanceID, excludeModified
 			if success2 and hasSource then
 				-- Get restrictions for this known source
 				local sourceRestrictions = self:GetClassRestrictionsForSource(sourceID, itemAppearanceID)
-				if sourceRestrictions and sourceRestrictions.dataReady then
+				if sourceRestrictions then
 					local sourceClassCount = #sourceRestrictions.validClasses
 					local currentClassCount = #currentItemRestrictions.validClasses
 					-- Check if source is less restrictive (more classes)
@@ -610,10 +428,6 @@ function DOKI:HasEqualOrLessRestrictiveSources(itemAppearanceID, excludeModified
 							return true
 						end
 					end
-				else
-					if self.db and self.db.debugMode then
-						print(string.format("|cffff69b4DOKI|r Source %d restrictions not ready, skipping", sourceID))
-					end
 				end
 			end
 		end
@@ -622,7 +436,7 @@ function DOKI:HasEqualOrLessRestrictiveSources(itemAppearanceID, excludeModified
 	return false
 end
 
--- Check if we have other sources for this appearance using the WORKING API pattern
+-- Check if we have other sources for this appearance using the WORKING API pattern (ORIGINAL)
 function DOKI:HasOtherTransmogSources(itemAppearanceID, excludeModifiedAppearanceID)
 	if not itemAppearanceID then return false end
 
@@ -660,15 +474,7 @@ function DOKI:HasOtherTransmogSources(itemAppearanceID, excludeModifiedAppearanc
 	return false
 end
 
--- Clear restriction cache when needed
-function DOKI:ClearRestrictionCache()
-	wipe(self.restrictionCache)
-	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Restriction cache cleared")
-	end
-end
-
--- Setup ElvUI-specific hooks and event handling
+-- MINIMAL ElvUI Support Functions (Only what's needed)
 function DOKI:SetupElvUIHooks()
 	if self.elvuiHooksSetup or not ElvUI then return end
 
@@ -696,11 +502,6 @@ function DOKI:SetupElvUIHooks()
 
 	-- Hook ElvUI bag frame show events
 	if B.BagFrame then
-		-- Force initialization of bag frame if needed
-		if not B.BagFrame:IsShown() and B.BagFrame.Initialize then
-			B.BagFrame:Initialize()
-		end
-
 		B.BagFrame:HookScript("OnShow", function()
 			if self.db and self.db.enabled then
 				C_Timer.After(0.2, function()
@@ -714,7 +515,6 @@ function DOKI:SetupElvUIHooks()
 		end)
 	end
 
-	-- Hook bank frame events
 	if B.BankFrame then
 		B.BankFrame:HookScript("OnShow", function()
 			if self.db and self.db.enabled then
@@ -729,7 +529,6 @@ function DOKI:SetupElvUIHooks()
 		end)
 	end
 
-	-- Hook warband bank if it exists
 	if B.WarbankFrame then
 		B.WarbankFrame:HookScript("OnShow", function()
 			if self.db and self.db.enabled then
@@ -750,7 +549,6 @@ function DOKI:SetupElvUIHooks()
 	end
 end
 
--- Check if any ElvUI bags are visible
 function DOKI:IsElvUIBagVisible()
 	if not ElvUI then return false end
 
@@ -765,7 +563,21 @@ function DOKI:IsElvUIBagVisible()
 			(B.WarbankFrame and B.WarbankFrame:IsShown())
 end
 
--- Enhanced scanning that handles ElvUI properly
+function DOKI:InitializeElvUISupport()
+	if ElvUI and not self.elvuiHooksSetup then
+		self:SetupElvUIHooks()
+		C_Timer.After(1.0, function()
+			if not self.elvuiHooksSetup then
+				self:SetupElvUIHooks()
+			end
+		end)
+		if self.db and self.db.debugMode then
+			print("|cffff69b4DOKI|r ElvUI support initialization started")
+		end
+	end
+end
+
+-- Scan all bags for collectible items - ENSURES we pass hyperlinks (ORIGINAL WITH MINIMAL ELVUI)
 function DOKI:ScanCurrentItems()
 	if not self.db or not self.db.enabled then return end
 
@@ -812,9 +624,8 @@ function DOKI:ScanCurrentItems()
 							local itemName = C_Item.GetItemInfo(itemInfo.itemID) or "Unknown"
 							local yellowStatus = showYellowD and " (YELLOW D)" or ""
 							local modeStatus = self.db.smartMode and " [SMART]" or " [NORMAL]"
-							local bagSystem = ElvUI and "ElvUI" or "Blizzard"
-							print(string.format("|cffff69b4DOKI|r [%s] Found %s (ID: %d) in bag %d slot %d - %s%s%s",
-								bagSystem, itemName, itemInfo.itemID, bagID, slotID,
+							print(string.format("|cffff69b4DOKI|r Found %s (ID: %d) in bag %d slot %d - %s%s%s",
+								itemName, itemInfo.itemID, bagID, slotID,
 								isCollected and "COLLECTED" or "NOT collected", yellowStatus, modeStatus))
 						end
 					end
@@ -822,18 +633,9 @@ function DOKI:ScanCurrentItems()
 			end
 		end
 	end
-
-	-- For ElvUI, also trigger a delayed scan as backup
-	if ElvUI and self:IsElvUIBagVisible() then
-		C_Timer.After(0.5, function()
-			if self.db and self.db.enabled and self:IsElvUIBagVisible() then
-				self:UpdateAllOverlays()
-			end
-		end)
-	end
 end
 
--- Scan merchant items
+-- Scan merchant items (ORIGINAL)
 function DOKI:ScanMerchantItems()
 	if not self.db or not self.db.enabled then return end
 
@@ -873,7 +675,7 @@ function DOKI:ScanMerchantItems()
 	end
 end
 
--- Get count of current items
+-- Get count of current items (ORIGINAL)
 function DOKI:GetCurrentItemCount()
 	local count = 0
 	for _ in pairs(self.currentItems) do
@@ -883,24 +685,7 @@ function DOKI:GetCurrentItemCount()
 	return count
 end
 
--- Add initialization function to be called from Core
-function DOKI:InitializeElvUISupport()
-	if ElvUI and not self.elvuiHooksSetup then
-		-- Set up ElvUI hooks immediately if available
-		self:SetupElvUIHooks()
-		-- Also set up a delayed initialization for cases where ElvUI isn't fully loaded
-		C_Timer.After(1.0, function()
-			if not self.elvuiHooksSetup then
-				self:SetupElvUIHooks()
-			end
-		end)
-		if self.db and self.db.debugMode then
-			print("|cffff69b4DOKI|r ElvUI support initialization started")
-		end
-	end
-end
-
--- Get table size utility
+-- Get table size utility (ORIGINAL)
 function DOKI:GetTableSize(t)
 	if not t then return 0 end
 
@@ -912,7 +697,7 @@ function DOKI:GetTableSize(t)
 	return count
 end
 
--- Debug functions remain unchanged but add cache info
+-- DEBUG FUNCTION: Detailed transmog analysis (ORIGINAL)
 function DOKI:DebugTransmogItem(itemID)
 	if not itemID then
 		print("|cffff69b4DOKI|r Usage: /doki debug <itemID>")
@@ -920,10 +705,7 @@ function DOKI:DebugTransmogItem(itemID)
 	end
 
 	print(string.format("|cffff69b4DOKI|r === DEBUGGING ITEM %d ===", itemID))
-	print(string.format("Data ready: %s", tostring(self:IsItemDataReady(itemID))))
-	print(string.format("Restriction cache size: %d", self:GetTableSize(self.restrictionCache)))
-	print(string.format("Pending retries: %d", self:GetTableSize(self.pendingRetries)))
-	-- Continue with existing debug logic...
+	-- Get basic item info
 	local itemName, itemLink, itemRarity, itemLevel, itemMinLevel, itemType, itemSubType, itemStackCount,
 	itemEquipLoc, itemTexture, sellPrice, classID, subClassID = C_Item.GetItemInfo(itemID)
 	if not itemName then
@@ -931,18 +713,280 @@ function DOKI:DebugTransmogItem(itemID)
 		return
 	end
 
-	-- Rest of existing debug function...
+	print(string.format("Item Name: %s", itemName))
+	print(string.format("Class ID: %d, SubClass ID: %d", classID or 0, subClassID or 0))
+	print(string.format("Item Type: %s, SubType: %s", itemType or "nil", itemSubType or "nil"))
+	-- Check if it's a transmog item
+	if not (classID == 2 or classID == 4) then
+		print("|cffff69b4DOKI|r Not a transmog item (not weapon or armor)")
+		return
+	end
+
+	-- Create a mock hyperlink for testing
+	local testLink = string.format("|cffffffff|Hitem:%d:::::::::::::|h[%s]|h|r", itemID, itemName)
+	-- Step 1: Get appearance IDs
+	print("\n--- Step 1: Getting Appearance IDs ---")
+	local itemAppearanceID, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(itemID)
+	print(string.format("Item Appearance ID: %s", tostring(itemAppearanceID)))
+	print(string.format("Modified Appearance ID: %s", tostring(itemModifiedAppearanceID)))
+	if not itemModifiedAppearanceID then
+		print("|cffff69b4DOKI|r No appearance IDs found - item cannot be transmogged")
+		return
+	end
+
+	-- Step 2: Check if we have this specific variant
+	print("\n--- Step 2: Checking This Specific Variant ---")
+	local hasThisVariant = C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance(itemModifiedAppearanceID)
+	print(string.format("Has this variant: %s", tostring(hasThisVariant)))
+	if hasThisVariant then
+		print("|cffff69b4DOKI|r Result: COLLECTED - No overlay needed")
+		return
+	end
+
+	-- Step 3: Check for other sources
+	print("\n--- Step 3: Checking Other Sources ---")
+	if not itemAppearanceID then
+		print("|cffff69b4DOKI|r No base appearance ID - cannot check other sources")
+		print("|cffff69b4DOKI|r Result: UNCOLLECTED - Pink D")
+		return
+	end
+
+	local sourceIDs = C_TransmogCollection.GetAllAppearanceSources(itemAppearanceID)
+	print(string.format("Number of sources found: %d", sourceIDs and #sourceIDs or 0))
+	if not sourceIDs or #sourceIDs == 0 then
+		print("|cffff69b4DOKI|r No sources found")
+		print("|cffff69b4DOKI|r Result: UNCOLLECTED - Pink D")
+		return
+	end
+
+	-- Check each source
+	local foundOtherSource = false
+	for i, sourceID in ipairs(sourceIDs) do
+		print(string.format("\nSource %d: ID %d", i, sourceID))
+		if sourceID == itemModifiedAppearanceID then
+			print("  This is the current item's source (excluding)")
+		else
+			local success, hasSource = pcall(C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance, sourceID)
+			print(string.format("  Has this source: %s", success and tostring(hasSource) or "error"))
+			if success and hasSource then
+				-- Get source info for debugging
+				local sourceInfo = C_TransmogCollection.GetAppearanceSourceInfo(sourceID)
+				if sourceInfo and type(sourceInfo) == "table" then
+					local itemLinkField = sourceInfo["itemLink"]
+					if itemLinkField and type(itemLinkField) == "string" then
+						local linkedItemID = self:GetItemID(itemLinkField)
+						local sourceName = linkedItemID and C_Item.GetItemInfo(linkedItemID) or "Unknown"
+						print(string.format("  Source item: %s (ID: %d)", sourceName, linkedItemID or 0))
+					end
+				end
+
+				foundOtherSource = true
+			end
+		end
+	end
+
+	-- Final result
+	print("\n--- FINAL RESULT ---")
+	if foundOtherSource then
+		if self.db.smartMode then
+			print("|cffff69b4DOKI|r Smart mode enabled - checking class restrictions...")
+			local hasEqualOrBetterSources = self:HasEqualOrLessRestrictiveSources(itemAppearanceID, itemModifiedAppearanceID)
+			if hasEqualOrBetterSources then
+				print("|cffff69b4DOKI|r Result: HAVE EQUAL OR BETTER SOURCE - No D")
+			else
+				print("|cffff69b4DOKI|r Result: OTHER SOURCES MORE RESTRICTIVE - Pink D")
+			end
+		else
+			print("|cffff69b4DOKI|r Result: COLLECTED FROM OTHER SOURCE - Yellow D")
+		end
+	else
+		print("|cffff69b4DOKI|r Result: UNCOLLECTED - Pink D")
+	end
+
+	print("|cffff69b4DOKI|r === END DEBUG ===")
 end
 
--- Additional debug functions and existing code continue as before...
+-- DEBUG FUNCTION: Smart transmog analysis (ORIGINAL)
 function DOKI:DebugSmartTransmog(itemID)
-	-- Existing function content remains the same
+	if not itemID then
+		print("|cffff69b4DOKI|r Usage: /doki smart <itemID>")
+		return
+	end
+
+	print(string.format("|cffff69b4DOKI|r === SMART TRANSMOG DEBUG: %d ===", itemID))
+	-- Try to find this item in current bags to get the actual hyperlink being used
+	local foundHyperlink = nil
+	for itemLink, itemData in pairs(self.currentItems) do
+		if itemData.itemID == itemID then
+			foundHyperlink = itemLink
+			print(string.format("Found item in bags with hyperlink: %s", itemLink))
+			break
+		end
+	end
+
+	-- Get appearance IDs using the same method as the actual scanning
+	local itemAppearanceID, itemModifiedAppearanceID
+	if foundHyperlink then
+		-- Use hyperlink first (same as scanning logic)
+		itemAppearanceID, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(foundHyperlink)
+		print(string.format("Using hyperlink for appearance lookup"))
+	end
+
+	-- Fallback to itemID
+	if not itemModifiedAppearanceID then
+		itemAppearanceID, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(itemID)
+		print(string.format("Using itemID for appearance lookup"))
+	end
+
+	if not itemAppearanceID then
+		print("No appearance ID found")
+		return
+	end
+
+	print(string.format("Appearance ID: %d, Modified ID: %d", itemAppearanceID, itemModifiedAppearanceID))
+	local success, allSources = pcall(C_TransmogCollection.GetAllAppearanceSources, itemAppearanceID)
+	if not success or not allSources then
+		print("No sources found or error retrieving sources")
+		return
+	end
+
+	print(string.format("Found %d total sources", #allSources))
+	local playerClass = select(3, UnitClass("player"))
+	print(string.format("Player class ID: %d", playerClass))
+	-- Analyze current item restrictions
+	local currentRestrictions = self:GetClassRestrictionsForSource(itemModifiedAppearanceID, itemAppearanceID)
+	print(string.format("\n--- Current Item Restrictions ---"))
+	if currentRestrictions then
+		print(string.format("Valid for %d classes: %s", #currentRestrictions.validClasses,
+			table.concat(currentRestrictions.validClasses, ", ")))
+		print(string.format("Armor type: %s", tostring(currentRestrictions.armorType)))
+		print(string.format("Has class restriction: %s", tostring(currentRestrictions.hasClassRestriction)))
+	else
+		print("Could not determine restrictions")
+	end
+
+	-- Analyze each source
+	for i, sourceID in ipairs(allSources) do
+		print(string.format("\n--- Source %d: %d ---", i, sourceID))
+		local success2, hasSource = pcall(C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance, sourceID)
+		print(string.format("Has source: %s", success2 and tostring(hasSource) or "error"))
+		if success2 and hasSource then
+			local sourceRestrictions = self:GetClassRestrictionsForSource(sourceID, itemAppearanceID)
+			if sourceRestrictions then
+				print(string.format("Valid for %d classes: %s", #sourceRestrictions.validClasses,
+					table.concat(sourceRestrictions.validClasses, ", ")))
+				if currentRestrictions then
+					-- Check for less restrictive
+					local isLessRestrictive = #sourceRestrictions.validClasses > #currentRestrictions.validClasses
+					print(string.format("Less restrictive than current: %s", tostring(isLessRestrictive)))
+				end
+			end
+		end
+
+		local sourceInfo = C_TransmogCollection.GetAppearanceSourceInfo(sourceID)
+		if sourceInfo and type(sourceInfo) == "table" then
+			local itemLinkField = sourceInfo["itemLink"]
+			local useErrorField = sourceInfo["useError"]
+			print(string.format("Item: %s", itemLinkField or "Unknown"))
+			if useErrorField then
+				print(string.format("Use error: %s", useErrorField))
+			end
+		end
+	end
+
+	-- Final smart assessment
+	print(string.format("\n--- Smart Assessment ---"))
+	local success3, hasEqualOrBetterSources = pcall(self.HasEqualOrLessRestrictiveSources, self, itemAppearanceID,
+		itemModifiedAppearanceID)
+	print(string.format("Has equal or less restrictive sources: %s",
+		success3 and tostring(hasEqualOrBetterSources) or "error"))
+	local success4, regularCheck = pcall(self.HasOtherTransmogSources, self, itemAppearanceID, itemModifiedAppearanceID)
+	print(string.format("Has any other sources: %s", success4 and tostring(regularCheck) or "error"))
+	print("|cffff69b4DOKI|r === END SMART DEBUG ===")
 end
 
+-- DEBUG FUNCTION: Deep dive into class restrictions for a specific source (ORIGINAL)
 function DOKI:DebugClassRestrictions(sourceID, appearanceID)
-	-- Existing function content remains the same
+	print(string.format("|cffff69b4DOKI|r === CLASS RESTRICTION DEBUG: Source %d, Appearance %d ===", sourceID,
+		appearanceID))
+	local testClasses = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 }
+	local classNames = { "Warrior", "Paladin", "Hunter", "Rogue", "Priest", "Death Knight", "Shaman", "Mage", "Warlock",
+		"Monk", "Druid", "Demon Hunter", "Evoker" }
+	for i, classID in ipairs(testClasses) do
+		print(string.format("\n--- Testing Class %d (%s) ---", classID, classNames[i] or "Unknown"))
+		local success, validSources = pcall(C_TransmogCollection.GetValidAppearanceSourcesForClass, appearanceID, classID)
+		if success and validSources then
+			print(string.format("Found %d valid sources for this class", #validSources))
+			local foundOurSource = false
+			for j, validSource in ipairs(validSources) do
+				if validSource.sourceID == sourceID then
+					foundOurSource = true
+					print(string.format("FOUND our source at index %d:", j))
+					print(string.format("  isValidSourceForPlayer: %s", tostring(validSource.isValidSourceForPlayer)))
+					print(string.format("  canDisplayOnPlayer: %s", tostring(validSource.canDisplayOnPlayer)))
+					print(string.format("  useErrorType: %s", tostring(validSource.useErrorType)))
+					print(string.format("  useError: %s", tostring(validSource.useError)))
+					print(string.format("  meetsTransmogPlayerCondition: %s", tostring(validSource.meetsTransmogPlayerCondition)))
+					-- The logic check from our function
+					if validSource.useErrorType and validSource.useErrorType == 7 then
+						print("  -> RESULT: Has class restriction")
+					elseif validSource.isValidSourceForPlayer or not validSource.useErrorType then
+						print("  -> RESULT: Valid for this class")
+					else
+						print("  -> RESULT: Not valid for this class")
+					end
+
+					break
+				end
+			end
+
+			if not foundOurSource then
+				print("Our source was NOT found in valid sources for this class")
+			end
+		elseif not success then
+			print(string.format("ERROR calling GetValidAppearanceSourcesForClass: %s", tostring(validSources)))
+		else
+			print("No valid sources returned")
+		end
+	end
+
+	print("|cffff69b4DOKI|r === END CLASS RESTRICTION DEBUG ===")
 end
 
+-- DEBUG FUNCTION: Simple item analysis (ORIGINAL)
 function DOKI:DebugItemInfo(itemID)
-	-- Existing function content remains the same
+	print(string.format("|cffff69b4DOKI|r === ITEM INFO DEBUG: %d ===", itemID))
+	-- Get all available item info
+	local itemName, itemLink, itemRarity, itemLevel, itemMinLevel, itemType, itemSubType, itemStackCount,
+	itemEquipLoc, itemTexture, sellPrice, classID, subClassID, bindType, expacID, setID, isCraftingReagent = C_Item
+			.GetItemInfo(itemID)
+	print(string.format("Name: %s", itemName or "Unknown"))
+	print(string.format("Type: %s (%d), SubType: %s (%d)", itemType or "nil", classID or 0, itemSubType or "nil",
+		subClassID or 0))
+	print(string.format("Equip Loc: %s", itemEquipLoc or "nil"))
+	-- Check if this gives us any class restriction hints
+	local _, _, _, _, _, _, instantClassID, instantSubClassID = C_Item.GetItemInfoInstant(itemID)
+	print(string.format("Instant: Class %d, SubClass %d", instantClassID or 0, instantSubClassID or 0))
+	-- Check tooltip for class restrictions (this might show "Classes: Rogue" etc)
+	local tooltip = CreateFrame("GameTooltip", "DOKIDebugTooltip", nil, "GameTooltipTemplate")
+	tooltip:SetOwner(UIParent, "ANCHOR_NONE")
+	tooltip:SetItemByID(itemID)
+	tooltip:Show()
+	print("Tooltip lines:")
+	for i = 1, tooltip:NumLines() do
+		local line = _G["DOKIDebugTooltipTextLeft" .. i]
+		if line then
+			local text = line:GetText()
+			if text and text ~= "" then
+				print(string.format("  Line %d: %s", i, text))
+				-- Look for class restrictions in tooltip
+				if string.find(text, "Classes:") then
+					print(string.format("  -> FOUND CLASS RESTRICTION: %s", text))
+				end
+			end
+		end
+	end
+
+	tooltip:Hide()
+	print("|cffff69b4DOKI|r === END ITEM DEBUG ===")
 end
