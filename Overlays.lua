@@ -1,10 +1,24 @@
--- DOKI Overlays - Modern WoW Compatible Version with Yellow D Support
+-- DOKI Overlays - Enhanced with ElvUI Bags Support
 local addonName, DOKI = ...
 -- Overlay management
 local overlayIndex = 1
 -- Initialize button tracking system
 DOKI.buttonCache = {}
 DOKI.buttonCacheValid = false
+-- Detect which bag addon is active
+function DOKI:DetectBagAddon()
+	-- Check for ElvUI
+	if ElvUI then
+		local E = ElvUI[1]
+		if E and E:GetModule("Bags", true) then
+			return "ElvUI"
+		end
+	end
+
+	-- Default to Blizzard
+	return "Blizzard"
+end
+
 -- Get or create an overlay from the pool
 function DOKI:GetOverlay()
 	local overlay = table.remove(self.overlayPool)
@@ -53,9 +67,112 @@ function DOKI:CreateOverlay()
 	return overlay
 end
 
--- ===== MODERN BUTTON FINDING SYSTEM =====
+-- ===== ELVUI BUTTON FINDING SYSTEM =====
+-- Find ElvUI item button using their naming convention
+function DOKI:FindElvUIItemButton(bagID, slotID)
+	if not bagID or not slotID then return nil end
+
+	-- ElvUI uses: ElvUI_ContainerFrameBag[bagID]Slot[slotID]Hash
+	local buttonName = string.format("ElvUI_ContainerFrameBag%dSlot%dHash", bagID, slotID)
+	local button = _G[buttonName]
+	if button and button:IsVisible() then
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r Found ElvUI button %s for bag %d slot %d", buttonName, bagID, slotID))
+		end
+
+		return button
+	end
+
+	-- Try alternative naming patterns
+	local alternativeNames = {
+		string.format("ElvUI_ContainerFrameBag%dSlot%d", bagID, slotID),
+		string.format("ElvUI_ContainerFrameBag%dSlot%dCenter", bagID, slotID),
+		string.format("ElvUI_ContainerFrameBag%dSlot%dArea", bagID, slotID),
+	}
+	for _, altName in ipairs(alternativeNames) do
+		local altButton = _G[altName]
+		if altButton and altButton:IsVisible() then
+			-- Verify this button has the right bag/slot info
+			if altButton.BagID == bagID and altButton.SlotID == slotID then
+				if self.db and self.db.debugMode then
+					print(string.format("|cffff69b4DOKI|r Found ElvUI button %s (alternative) for bag %d slot %d", altName, bagID,
+						slotID))
+				end
+
+				return altButton
+			end
+		end
+	end
+
+	-- Try searching through ElvUI container frames
+	return self:FindElvUIItemButtonByEnumeration(bagID, slotID)
+end
+
+-- Find ElvUI item button by searching through ElvUI frames
+function DOKI:FindElvUIItemButtonByEnumeration(bagID, slotID)
+	if not ElvUI then return nil end
+
+	local E = ElvUI[1]
+	if not E then return nil end
+
+	local B = E:GetModule("Bags", true)
+	if not B then return nil end
+
+	-- Check ElvUI bag frames
+	local framesToCheck = {}
+	if B.BagFrame and B.BagFrame:IsShown() then
+		table.insert(framesToCheck, B.BagFrame)
+	end
+
+	if B.BankFrame and B.BankFrame:IsShown() then
+		table.insert(framesToCheck, B.BankFrame)
+	end
+
+	if B.WarbandFrame and B.WarbandFrame:IsShown() then
+		table.insert(framesToCheck, B.WarbandFrame)
+	end
+
+	-- Search through frame children
+	for _, frame in ipairs(framesToCheck) do
+		local button = self:SearchElvUIFrameForButton(frame, bagID, slotID)
+		if button then
+			return button
+		end
+	end
+
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r Could not find ElvUI button for bag %d slot %d", bagID, slotID))
+	end
+
+	return nil
+end
+
+-- Recursively search ElvUI frame for the specific button
+function DOKI:SearchElvUIFrameForButton(frame, targetBagID, targetSlotID)
+	if not frame then return nil end
+
+	-- Check if this frame itself is the button we're looking for
+	if frame.BagID == targetBagID and frame.SlotID == targetSlotID and frame:IsVisible() then
+		return frame
+	end
+
+	-- Search children
+	for i = 1, frame:GetNumChildren() do
+		local child = select(i, frame:GetChildren())
+		if child then
+			local result = self:SearchElvUIFrameForButton(child, targetBagID, targetSlotID)
+			if result then
+				return result
+			end
+		end
+	end
+
+	return nil
+end
+
+-- ===== MODERN BLIZZARD BUTTON FINDING SYSTEM =====
 -- Modern approach to find item buttons using enumeration
-function DOKI:FindItemButtonModern(bagID, slotID)
+function DOKI:FindBlizzardItemButton(bagID, slotID)
 	if not bagID or not slotID then return nil end
 
 	-- Method 1: Try official Blizzard utility first (if available)
@@ -192,10 +309,84 @@ function DOKI:FindItemButtonLegacy(bagID, slotID)
 	return nil
 end
 
+-- ===== UNIVERSAL BUTTON FINDING SYSTEM =====
+-- Main function to find item button (detects bag addon and uses appropriate method)
+function DOKI:FindItemButton(bagID, slotID)
+	-- Try cache first (fastest)
+	local button = self:GetButtonFromCache(bagID, slotID)
+	if button and button:IsVisible() then
+		return button
+	end
+
+	-- Detect which bag system to use
+	local bagAddon = self:DetectBagAddon()
+	if bagAddon == "ElvUI" then
+		return self:FindElvUIItemButton(bagID, slotID)
+	else
+		return self:FindBlizzardItemButton(bagID, slotID)
+	end
+end
+
+-- Find merchant button (unchanged)
+function DOKI:FindMerchantButton(merchantIndex)
+	return _G["MerchantItem" .. merchantIndex .. "ItemButton"]
+end
+
 -- Initialize button tracking and hook system
 function DOKI:InitializeButtonTracking()
 	self.buttonCache = {}
 	self.buttonCacheValid = false
+	local bagAddon = self:DetectBagAddon()
+	if bagAddon == "ElvUI" then
+		self:InitializeElvUIHooks()
+	else
+		self:InitializeBlizzardHooks()
+	end
+end
+
+-- Initialize ElvUI-specific hooks
+function DOKI:InitializeElvUIHooks()
+	if not ElvUI then return end
+
+	local E = ElvUI[1]
+	if not E then return end
+
+	local B = E:GetModule("Bags", true)
+	if not B then return end
+
+	-- Hook ElvUI bag layout function
+	if B.Layout then
+		hooksecurefunc(B, "Layout", function()
+			self:InvalidateButtonCache()
+		end)
+	end
+
+	-- Hook ElvUI bag frame show/hide
+	if B.BagFrame then
+		B.BagFrame:HookScript("OnShow", function()
+			self:InvalidateButtonCache()
+		end)
+		B.BagFrame:HookScript("OnHide", function()
+			self:InvalidateButtonCache()
+		end)
+	end
+
+	if B.BankFrame then
+		B.BankFrame:HookScript("OnShow", function()
+			self:InvalidateButtonCache()
+		end)
+		B.BankFrame:HookScript("OnHide", function()
+			self:InvalidateButtonCache()
+		end)
+	end
+
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r ElvUI hooks initialized")
+	end
+end
+
+-- Initialize Blizzard-specific hooks
+function DOKI:InitializeBlizzardHooks()
 	-- Hook combined bags update
 	if ContainerFrameCombinedBags and ContainerFrameCombinedBags.UpdateItems then
 		hooksecurefunc(ContainerFrameCombinedBags, "UpdateItems", function()
@@ -231,6 +422,9 @@ function DOKI:InitializeButtonTracking()
 	eventFrame:SetScript("OnEvent", function(self, event, bagID)
 		DOKI:InvalidateButtonCache()
 	end)
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Blizzard hooks initialized")
+	end
 end
 
 -- Invalidate button cache when bags update
@@ -246,6 +440,47 @@ function DOKI:UpdateButtonCache()
 	if self.buttonCacheValid then return end
 
 	wipe(self.buttonCache)
+	local buttonCount = 0
+	local bagAddon = self:DetectBagAddon()
+	if bagAddon == "ElvUI" then
+		buttonCount = self:CacheElvUIButtons()
+	else
+		buttonCount = self:CacheBlizzardButtons()
+	end
+
+	self.buttonCacheValid = true
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r Button cache updated (%s): %d buttons cached", bagAddon, buttonCount))
+	end
+end
+
+-- Cache ElvUI buttons
+function DOKI:CacheElvUIButtons()
+	local buttonCount = 0
+	-- Cache all visible ElvUI buttons by searching through global namespace
+	for name, obj in pairs(_G) do
+		if type(obj) == "table" and obj.GetObjectType and
+				string.match(name, "^ElvUI_ContainerFrameBag%d+Slot%d+") then
+			-- Extract bag and slot info from name
+			local bagID, slotID = string.match(name, "ElvUI_ContainerFrameBag(%d+)Slot(%d+)")
+			if bagID and slotID and obj:IsVisible() then
+				bagID = tonumber(bagID)
+				slotID = tonumber(slotID)
+				-- Verify this is actually an item button
+				if obj.BagID == bagID and obj.SlotID == slotID then
+					local key = bagID .. "_" .. slotID
+					self.buttonCache[key] = obj
+					buttonCount = buttonCount + 1
+				end
+			end
+		end
+	end
+
+	return buttonCount
+end
+
+-- Cache Blizzard buttons
+function DOKI:CacheBlizzardButtons()
 	local buttonCount = 0
 	-- Cache combined bags buttons
 	if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() and ContainerFrameCombinedBags.EnumerateValidItems then
@@ -279,10 +514,7 @@ function DOKI:UpdateButtonCache()
 		end
 	end
 
-	self.buttonCacheValid = true
-	if self.db and self.db.debugMode then
-		print(string.format("|cffff69b4DOKI|r Button cache updated: %d buttons cached", buttonCount))
-	end
+	return buttonCount
 end
 
 -- Get button from cache (fastest method)
@@ -292,23 +524,6 @@ function DOKI:GetButtonFromCache(bagID, slotID)
 	self:UpdateButtonCache()
 	local key = bagID .. "_" .. slotID
 	return self.buttonCache[key]
-end
-
--- Main function to find item button (use this one)
-function DOKI:FindItemButton(bagID, slotID)
-	-- Try cache first (fastest)
-	local button = self:GetButtonFromCache(bagID, slotID)
-	if button and button:IsVisible() then
-		return button
-	end
-
-	-- Fall back to real-time enumeration
-	return self:FindItemButtonModern(bagID, slotID)
-end
-
--- Find merchant button (unchanged)
-function DOKI:FindMerchantButton(merchantIndex)
-	return _G["MerchantItem" .. merchantIndex .. "ItemButton"]
 end
 
 -- ===== OVERLAY MANAGEMENT =====
@@ -365,6 +580,22 @@ function DOKI:CreateOverlayForItem(itemLink, itemData)
 	end
 end
 
+-- Update overlay for a single item
+function DOKI:UpdateSingleItemOverlay(itemLink, itemData)
+	if not (self.db and self.db.enabled) then return end
+
+	-- Clear existing overlay for this item
+	if self.activeOverlays[itemLink] then
+		self:ReleaseOverlay(self.activeOverlays[itemLink])
+		self.activeOverlays[itemLink] = nil
+	end
+
+	-- Create new overlay if item is not collected
+	if not itemData.isCollected then
+		self:CreateOverlayForItem(itemLink, itemData)
+	end
+end
+
 -- Update all overlays
 function DOKI:UpdateAllOverlays()
 	if not (self.db and self.db.enabled) then return end
@@ -386,7 +617,8 @@ function DOKI:UpdateAllOverlays()
 	end
 
 	if self.db and self.db.debugMode then
-		print(string.format("|cffff69b4DOKI|r Created %d overlays for uncollected items", overlayCount))
+		local bagAddon = self:DetectBagAddon()
+		print(string.format("|cffff69b4DOKI|r Created %d overlays for uncollected items (%s bags)", overlayCount, bagAddon))
 	end
 end
 
@@ -437,18 +669,73 @@ function DOKI:ClearMerchantOverlays()
 end
 
 -- ===== INITIALIZATION AND TESTING =====
--- Initialize the modern overlay system
+-- Initialize the enhanced overlay system
 function DOKI:InitializeOverlaySystem()
+	local bagAddon = self:DetectBagAddon()
 	self:InitializeButtonTracking()
 	-- Hook container frame show events to refresh overlays when bags are opened
 	self:HookContainerFrameEvents()
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Modern overlay system initialized")
+		print(string.format("|cffff69b4DOKI|r Enhanced overlay system initialized (%s bags detected)", bagAddon))
 	end
 end
 
--- Hook container frame show events - FIXED to scan before updating overlays
+-- Hook container frame show events - Enhanced for both ElvUI and Blizzard
 function DOKI:HookContainerFrameEvents()
+	local bagAddon = self:DetectBagAddon()
+	if bagAddon == "ElvUI" then
+		self:HookElvUIFrameEvents()
+	else
+		self:HookBlizzardFrameEvents()
+	end
+end
+
+-- Hook ElvUI frame events
+function DOKI:HookElvUIFrameEvents()
+	if not ElvUI then return end
+
+	local E = ElvUI[1]
+	if not E then return end
+
+	local B = E:GetModule("Bags", true)
+	if not B then return end
+
+	-- Hook ElvUI bag frames
+	if B.BagFrame then
+		B.BagFrame:HookScript("OnShow", function()
+			if self.db and self.db.enabled then
+				C_Timer.After(0.1, function()
+					self:ScanCurrentItems() -- SCAN FIRST
+					self:UpdateAllOverlays() -- THEN UPDATE
+					if self.db and self.db.debugMode then
+						print("|cffff69b4DOKI|r Refreshed overlays: ElvUI bags opened")
+					end
+				end)
+			end
+		end)
+	end
+
+	if B.BankFrame then
+		B.BankFrame:HookScript("OnShow", function()
+			if self.db and self.db.enabled then
+				C_Timer.After(0.1, function()
+					self:ScanCurrentItems() -- SCAN FIRST
+					self:UpdateAllOverlays() -- THEN UPDATE
+					if self.db and self.db.debugMode then
+						print("|cffff69b4DOKI|r Refreshed overlays: ElvUI bank opened")
+					end
+				end)
+			end
+		end)
+	end
+
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r ElvUI frame events hooked")
+	end
+end
+
+-- Hook Blizzard frame events
+function DOKI:HookBlizzardFrameEvents()
 	-- Hook combined bags
 	if ContainerFrameCombinedBags then
 		ContainerFrameCombinedBags:HookScript("OnShow", function()
@@ -483,25 +770,25 @@ function DOKI:HookContainerFrameEvents()
 	end
 
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Hooked container frame show events")
+		print("|cffff69b4DOKI|r Blizzard frame events hooked")
 	end
 end
 
--- Diagnostic function to test button finding
+-- Enhanced diagnostic function to test button finding
 function DOKI:TestButtonFinding()
 	if not self.db or not self.db.debugMode then
 		print("|cffff69b4DOKI|r Enable debug mode first with /doki debug")
 		return
 	end
 
-	print("|cffff69b4DOKI|r Testing button finding methods...")
-	-- Test if modern functions exist
-	print("ContainerFrameCombinedBags:", ContainerFrameCombinedBags and "exists" or "missing")
-	print("ContainerFrameUtil_EnumerateContainerFrames:",
-		ContainerFrameUtil_EnumerateContainerFrames and "exists" or "missing")
-	print("ContainerFrameUtil_GetItemButtonAndContainer:",
-		ContainerFrameUtil_GetItemButtonAndContainer and "exists" or "missing")
-	print("ContainerFrameContainer:", ContainerFrameContainer and "exists" or "missing")
+	local bagAddon = self:DetectBagAddon()
+	print(string.format("|cffff69b4DOKI|r Testing button finding methods (%s)...", bagAddon))
+	if bagAddon == "ElvUI" then
+		self:TestElvUIButtonFinding()
+	else
+		self:TestBlizzardButtonFinding()
+	end
+
 	-- Test current items
 	local testCount = 0
 	for itemLink, itemData in pairs(self.currentItems) do
@@ -516,4 +803,37 @@ function DOKI:TestButtonFinding()
 	if testCount == 0 then
 		print("No bag items found to test with. Try scanning first with /doki scan")
 	end
+end
+
+-- Test ElvUI button finding
+function DOKI:TestElvUIButtonFinding()
+	if not ElvUI then
+		print("ElvUI not detected")
+		return
+	end
+
+	local E = ElvUI[1]
+	local B = E and E:GetModule("Bags", true)
+	print("ElvUI version:", E and E.version or "unknown")
+	print("Bags module:", B and "exists" or "missing")
+	print("BagFrame:", B and B.BagFrame and "exists" or "missing")
+	print("BankFrame:", B and B.BankFrame and "exists" or "missing")
+	-- Test searching for ElvUI buttons in global namespace
+	local elvuiButtonCount = 0
+	for name, obj in pairs(_G) do
+		if string.match(name, "^ElvUI_ContainerFrameBag%d+Slot%d+") and type(obj) == "table" and obj.GetObjectType then
+			elvuiButtonCount = elvuiButtonCount + 1
+		end
+	end
+
+	print("ElvUI item buttons found:", elvuiButtonCount)
+end
+
+-- Test Blizzard button finding
+function DOKI:TestBlizzardButtonFinding()
+	print("ContainerFrameCombinedBags:", ContainerFrameCombinedBags and "exists" or "missing")
+	print("ContainerFrameUtil_EnumerateContainerFrames:",
+		ContainerFrameUtil_EnumerateContainerFrames and "exists" or "missing")
+	print("ContainerFrameUtil_GetItemButtonAndContainer:",
+		ContainerFrameUtil_GetItemButtonAndContainer and "exists" or "missing")
 end
