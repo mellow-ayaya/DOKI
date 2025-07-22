@@ -5,6 +5,21 @@ local overlayIndex = 1
 -- Initialize button tracking system
 DOKI.buttonCache = {}
 DOKI.buttonCacheValid = false
+-- Check if any ElvUI bags are visible
+function DOKI:IsElvUIBagVisible()
+	if not ElvUI then return false end
+
+	local E = ElvUI[1]
+	if not E then return false end
+
+	local B = E:GetModule("Bags", true)
+	if not B then return false end
+
+	return (B.BagFrame and B.BagFrame:IsShown()) or
+			(B.BankFrame and B.BankFrame:IsShown()) or
+			(B.WarbandFrame and B.WarbandFrame:IsShown())
+end
+
 -- Detect which bag addon is active
 function DOKI:DetectBagAddon()
 	-- Check for ElvUI
@@ -675,8 +690,102 @@ function DOKI:InitializeOverlaySystem()
 	self:InitializeButtonTracking()
 	-- Hook container frame show events to refresh overlays when bags are opened
 	self:HookContainerFrameEvents()
+	-- Setup ElvUI integration if detected
+	if bagAddon == "ElvUI" then
+		self:SetupElvUIIntegration()
+	end
+
 	if self.db and self.db.debugMode then
 		print(string.format("|cffff69b4DOKI|r Enhanced overlay system initialized (%s bags detected)", bagAddon))
+	end
+end
+
+-- Setup comprehensive ElvUI integration
+function DOKI:SetupElvUIIntegration()
+	if not ElvUI then return end
+
+	-- Setup ElvUI hooks from Utils module
+	if self.SetupElvUIHooks then
+		self:SetupElvUIHooks()
+	end
+
+	-- Start polling system for ElvUI bags
+	self:StartElvUIPolling()
+	-- Hook standard bag opening functions to ensure scanning
+	self:HookStandardBagFunctions()
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r ElvUI integration setup complete")
+	end
+end
+
+-- Start polling system for ElvUI bags (backup method)
+function DOKI:StartElvUIPolling()
+	if self.elvuiPollingTimer then
+		self.elvuiPollingTimer:Cancel()
+	end
+
+	-- Poll every 2 seconds to check for new items
+	self.elvuiPollingTimer = C_Timer.NewTicker(2, function()
+		if not self.db or not self.db.enabled then return end
+
+		if self:IsElvUIBagVisible() then
+			-- Check if we have items scanned, if not, scan now
+			local hasItems = false
+			for _ in pairs(self.currentItems) do
+				hasItems = true
+				break
+			end
+
+			if not hasItems then
+				if self.db and self.db.debugMode then
+					print("|cffff69b4DOKI|r ElvUI polling: No items found, triggering scan")
+				end
+
+				self:ScanCurrentItems()
+				self:UpdateAllOverlays()
+			end
+		end
+	end)
+end
+
+-- Hook standard bag functions to ensure ElvUI scanning
+function DOKI:HookStandardBagFunctions()
+	-- These functions can be called even with ElvUI
+	local originalOpenBackpack = OpenBackpack
+	OpenBackpack = function(...)
+		local result = originalOpenBackpack(...)
+		if ElvUI and self.db and self.db.enabled then
+			C_Timer.After(0.3, function()
+				self:ScanCurrentItems()
+				self:UpdateAllOverlays()
+			end)
+		end
+
+		return result
+	end
+	local originalToggleAllBags = ToggleAllBags
+	ToggleAllBags = function(...)
+		local result = originalToggleAllBags(...)
+		if ElvUI and self.db and self.db.enabled then
+			C_Timer.After(0.3, function()
+				self:ScanCurrentItems()
+				self:UpdateAllOverlays()
+			end)
+		end
+
+		return result
+	end
+	local originalOpenAllBags = OpenAllBags
+	OpenAllBags = function(...)
+		local result = originalOpenAllBags(...)
+		if ElvUI and self.db and self.db.enabled then
+			C_Timer.After(0.3, function()
+				self:ScanCurrentItems()
+				self:UpdateAllOverlays()
+			end)
+		end
+
+		return result
 	end
 end
 

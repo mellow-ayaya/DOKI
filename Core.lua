@@ -48,12 +48,39 @@ local function OnEvent(self, event, ...)
 		if loadedAddon == addonName then
 			InitializeSavedVariables()
 			DOKI:InitializeOverlaySystem()
-			print("|cffff69b4DOKI|r loaded. Type /doki for commands.")
+			-- NEW: Initialize ElvUI support if detected
+			if ElvUI then
+				DOKI:InitializeElvUISupport()
+				print("|cffff69b4DOKI|r loaded with ElvUI support. Type /doki for commands.")
+			else
+				print("|cffff69b4DOKI|r loaded. Type /doki for commands.")
+			end
+
 			frame:UnregisterEvent("ADDON_LOADED")
+		elseif loadedAddon == "ElvUI" then
+			-- NEW: Handle ElvUI loading after our addon
+			if DOKI.InitializeElvUISupport then
+				C_Timer.After(0.5, function()
+					DOKI:InitializeElvUISupport()
+				end)
+			end
 		end
 	elseif event == "BAG_UPDATE" or event == "BAG_UPDATE_DELAYED" then
-		-- Only scan if bags are actually open
-		if DOKI.db and DOKI.db.enabled and AnyBagsOpen() then
+		-- ENHANCED: Handle both Blizzard and ElvUI bags
+		local shouldUpdate = false
+		if ElvUI then
+			-- For ElvUI, check if ElvUI bags are open
+			if DOKI.IsElvUIBagVisible and DOKI:IsElvUIBagVisible() then
+				shouldUpdate = true
+			end
+		else
+			-- For Blizzard, check if any bags are open
+			if AnyBagsOpen() then
+				shouldUpdate = true
+			end
+		end
+
+		if DOKI.db and DOKI.db.enabled and shouldUpdate then
 			if DOKI.ScanCurrentItems then
 				DOKI:ScanCurrentItems()
 			end
