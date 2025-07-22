@@ -1,0 +1,13 @@
+## Interface: 110002
+## Title: DOKI - Do I Know It?
+## Author: mellow_ayaya
+## Version: 0.0.1
+
+## Notes: Shows collection status on item icons for mounts, pets, toys, and transmog
+## SavedVariables: DOKI_DB
+
+
+
+Core.lua
+Utils.lua
+Overlays.lua
