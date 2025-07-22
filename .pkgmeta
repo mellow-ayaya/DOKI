@@ -1,0 +1,9 @@
+# Basic .pkgmeta file
+package-as: DOKI  # Replace with your addon's folder name
+
+# Use this to provide a custom changelog instead of commit messages
+manual-changelog: CHANGELOG.md
+
+# Optional: Ignore files you don't want packaged
+ignore:
+  - README.md
