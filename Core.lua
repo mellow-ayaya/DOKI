@@ -213,6 +213,13 @@ SlashCmdList["DOKI"] = function(msg)
 		else
 			print("|cffff69b4DOKI|r Item debug function not available")
 		end
+	elseif string.match(command, "^source (%d+)$") then
+		local sourceID = tonumber(string.match(command, "^source (%d+)$"))
+		if DOKI.DebugSourceRestrictions then
+			DOKI:DebugSourceRestrictions(sourceID)
+		else
+			print("|cffff69b4DOKI|r Source debug function not available")
+		end
 	else
 		print("|cffff69b4DOKI|r commands:")
 		print("  /doki toggle - Enable/disable addon")
@@ -224,5 +231,6 @@ SlashCmdList["DOKI"] = function(msg)
 		print("  /doki smart <itemID> - Debug smart transmog analysis for item")
 		print("  /doki class <sourceID> <appearanceID> - Debug class restrictions for specific source")
 		print("  /doki item <itemID> - Debug basic item info and tooltip")
+		print("  /doki source <sourceID> - Debug restrictions for specific source")
 	end
 end
