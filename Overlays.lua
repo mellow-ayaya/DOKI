@@ -1,4 +1,4 @@
--- DOKI Overlays - Enhanced with ElvUI Bags Support
+-- DOKI Overlays - Enhanced with ElvUI Bags Support and Slot-Specific Overlay Management
 local addonName, DOKI = ...
 -- Overlay management
 local overlayIndex = 1
@@ -44,17 +44,17 @@ function DOKI:GetOverlay()
 	return overlay
 end
 
--- Return overlay to pool
+-- Return overlay to pool - UPDATED FOR SLOT-SPECIFIC KEYS
 function DOKI:ReleaseOverlay(overlay)
 	if not overlay then return end
 
 	overlay:Hide()
 	overlay:SetParent(nil)
 	overlay:ClearAllPoints()
-	-- Clean up references
-	for itemLink, activeOverlay in pairs(self.activeOverlays) do
+	-- Clean up references using slot-specific keys
+	for overlayKey, activeOverlay in pairs(self.activeOverlays) do
 		if activeOverlay == overlay then
-			self.activeOverlays[itemLink] = nil
+			self.activeOverlays[overlayKey] = nil
 			break
 		end
 	end
@@ -80,6 +80,298 @@ function DOKI:CreateOverlay()
 		self.text:SetTextColor(r, g, b)
 	end
 	return overlay
+end
+
+-- ===== ENHANCED SCANNING WITH DIRECT OVERLAY CREATION =====
+-- Enhanced scan that creates overlays directly for bags
+function DOKI:ScanAndCreateBagOverlays()
+	if not self.db or not self.db.enabled then return 0 end
+
+	-- For ElvUI, we need to ensure we only scan when bags are actually visible
+	if ElvUI and not self:IsElvUIBagVisible() then
+		if self.db and self.db.debugMode then
+			print("|cffff69b4DOKI|r ElvUI detected but no bags visible, skipping scan")
+		end
+
+		return 0
+	end
+
+	local overlayCount = 0
+	-- Scan all bags and create overlays directly
+	for bagID = 0, NUM_BAG_SLOTS do
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			for slotID = 1, numSlots do
+				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+				if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+					if self:IsCollectibleItem(itemInfo.itemID) then
+						-- CRITICAL: Pass the hyperlink so we check the correct difficulty variant
+						local isCollected, showYellowD = self:IsItemCollected(itemInfo.itemID, itemInfo.hyperlink)
+						-- Store for debug purposes (keeps existing debug functionality)
+						self.currentItems[itemInfo.hyperlink] = {
+							itemID = itemInfo.itemID,
+							location = "bag",
+							bagID = bagID,
+							slotID = slotID,
+							isCollected = isCollected,
+							showYellowD = showYellowD,
+						}
+						if self.db.debugMode then
+							local itemName = C_Item.GetItemInfo(itemInfo.itemID) or "Unknown"
+							local yellowStatus = showYellowD and " (YELLOW D)" or ""
+							local modeStatus = self.db.smartMode and " [SMART]" or " [NORMAL]"
+							print(string.format("|cffff69b4DOKI|r Found %s (ID: %d) in bag %d slot %d - %s%s%s",
+								itemName, itemInfo.itemID, bagID, slotID,
+								isCollected and "COLLECTED" or "NOT collected", yellowStatus, modeStatus))
+						end
+
+						-- Create overlay directly if not collected
+						if not isCollected then
+							local itemData = {
+								itemID = itemInfo.itemID,
+								location = "bag",
+								bagID = bagID,
+								slotID = slotID,
+								isCollected = isCollected,
+								showYellowD = showYellowD,
+							}
+							local overlayKey = "bag_" .. bagID .. "_" .. slotID
+							self:CreateOverlayForSlot(itemInfo.hyperlink, itemData, overlayKey)
+							overlayCount = overlayCount + 1
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return overlayCount
+end
+
+-- Enhanced scan that creates overlays directly for merchant
+function DOKI:ScanAndCreateMerchantOverlays()
+	if not self.db or not self.db.enabled then return 0 end
+
+	if not MerchantFrame or not MerchantFrame:IsVisible() then return 0 end
+
+	local overlayCount = 0
+	local numItems = GetMerchantNumItems()
+	for i = 1, numItems do
+		local itemLink = GetMerchantItemLink(i)
+		if itemLink then
+			local itemID = self:GetItemID(itemLink)
+			if itemID and self:IsCollectibleItem(itemID) then
+				-- Pass the merchant item link as well for accuracy
+				local isCollected, showYellowD = self:IsItemCollected(itemID, itemLink)
+				-- Store for debug purposes
+				self.currentItems[itemLink] = {
+					itemID = itemID,
+					location = "merchant",
+					merchantIndex = i,
+					isCollected = isCollected,
+					showYellowD = showYellowD,
+				}
+				if self.db.debugMode then
+					local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+					local yellowStatus = showYellowD and " (YELLOW D)" or ""
+					local modeStatus = self.db.smartMode and " [SMART]" or " [NORMAL]"
+					print(string.format("|cffff69b4DOKI|r Found merchant item %s (ID: %d) at index %d - %s%s%s",
+						itemName, itemID, i, isCollected and "COLLECTED" or "NOT collected", yellowStatus, modeStatus))
+				end
+
+				-- Create overlay directly if not collected
+				if not isCollected then
+					local itemData = {
+						itemID = itemID,
+						location = "merchant",
+						merchantIndex = i,
+						isCollected = isCollected,
+						showYellowD = showYellowD,
+					}
+					local overlayKey = "merchant_" .. i
+					self:CreateOverlayForSlot(itemLink, itemData, overlayKey)
+					overlayCount = overlayCount + 1
+				end
+			end
+		end
+	end
+
+	return overlayCount
+end
+
+-- Enhanced overlay creation that uses slot-specific keys
+function DOKI:CreateOverlayForSlot(itemLink, itemData, overlayKey)
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r Creating overlay for %s at %s (key: %s)", itemLink, itemData.location,
+			overlayKey))
+	end
+
+	local button = nil
+	if itemData.location == "bag" then
+		button = self:FindItemButton(itemData.bagID, itemData.slotID)
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r Looking for bag %d slot %d button: %s",
+				itemData.bagID, itemData.slotID, button and "found" or "not found"))
+		end
+	elseif itemData.location == "merchant" then
+		button = self:FindMerchantButton(itemData.merchantIndex)
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r Looking for merchant %d button: %s",
+				itemData.merchantIndex, button and "found" or "not found"))
+		end
+	end
+
+	if not button or not button:IsVisible() then
+		if self.db and self.db.debugMode then
+			print("|cffff69b4DOKI|r Could not find button for " .. itemLink)
+		end
+
+		return
+	end
+
+	-- Clear any existing overlay for this slot first
+	if self.activeOverlays[overlayKey] then
+		self:ReleaseOverlay(self.activeOverlays[overlayKey])
+		self.activeOverlays[overlayKey] = nil
+	end
+
+	local overlay = self:GetOverlay()
+	overlay:SetParent(button)
+	overlay:SetAllPoints(button)
+	-- Set color based on type
+	if itemData.showYellowD then
+		overlay:SetColor(1, 1, 0) -- Yellow for "have other sources"
+		if self.db and self.db.debugMode then
+			print("|cffff69b4DOKI|r Set yellow D for " .. itemLink)
+		end
+	else
+		overlay:SetColor(1, 0.41, 0.71) -- Pink for "don't have any sources"
+		if self.db and self.db.debugMode then
+			print("|cffff69b4DOKI|r Set pink D for " .. itemLink)
+		end
+	end
+
+	overlay:Show()
+	-- Store reference using slot-specific key
+	self.activeOverlays[overlayKey] = overlay
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Created overlay for " .. itemLink .. " on button " .. (button:GetName() or "unnamed"))
+	end
+end
+
+-- ===== UPDATED OVERLAY MANAGEMENT =====
+-- Update all overlays - NOW USES DIRECT OVERLAY CREATION
+function DOKI:UpdateAllOverlays()
+	if not (self.db and self.db.enabled) then return end
+
+	-- Clear existing bag overlays
+	self:ClearBagOverlays()
+	-- Ensure button tracking is initialized
+	if not self.buttonCache then
+		self:InitializeOverlaySystem()
+	end
+
+	-- Scan and create overlays directly
+	local overlayCount = self:ScanAndCreateBagOverlays()
+	if self.db and self.db.debugMode then
+		local bagAddon = self:DetectBagAddon()
+		print(string.format("|cffff69b4DOKI|r Created %d bag overlays (%s bags)", overlayCount, bagAddon))
+	end
+end
+
+-- Update merchant overlays - NOW USES DIRECT OVERLAY CREATION
+function DOKI:UpdateMerchantOverlays()
+	if not (self.db and self.db.enabled) or not MerchantFrame or not MerchantFrame:IsVisible() then return end
+
+	-- Clear existing merchant overlays
+	self:ClearMerchantOverlays()
+	-- Scan and create overlays directly
+	local overlayCount = self:ScanAndCreateMerchantOverlays()
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r Created %d merchant overlays", overlayCount))
+	end
+end
+
+-- Enhanced cleanup functions with slot-specific keys
+function DOKI:ClearBagOverlays()
+	for overlayKey, overlay in pairs(self.activeOverlays) do
+		if string.match(overlayKey, "^bag_") then
+			self:ReleaseOverlay(overlay)
+			self.activeOverlays[overlayKey] = nil
+		end
+	end
+end
+
+function DOKI:ClearMerchantOverlays()
+	for overlayKey, overlay in pairs(self.activeOverlays) do
+		if string.match(overlayKey, "^merchant_") then
+			self:ReleaseOverlay(overlay)
+			self.activeOverlays[overlayKey] = nil
+		end
+	end
+
+	-- Also remove merchant items from currentItems for debug consistency
+	for itemLink, itemData in pairs(self.currentItems) do
+		if itemData.location == "merchant" then
+			self.currentItems[itemLink] = nil
+		end
+	end
+end
+
+-- Clear all overlays
+function DOKI:ClearAllOverlays()
+	for overlayKey, overlay in pairs(self.activeOverlays) do
+		self:ReleaseOverlay(overlay)
+	end
+
+	wipe(self.activeOverlays)
+end
+
+-- ===== LEGACY FUNCTIONS - KEPT FOR COMPATIBILITY =====
+-- LEGACY: Create overlay for specific item with color support (OLD SYSTEM - DEPRECATED)
+function DOKI:CreateOverlayForItem(itemLink, itemData)
+	-- This function is deprecated but kept for any remaining legacy calls
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r WARNING: CreateOverlayForItem is deprecated, use CreateOverlayForSlot instead")
+	end
+
+	-- Convert to new system
+	local overlayKey
+	if itemData.location == "bag" then
+		overlayKey = "bag_" .. itemData.bagID .. "_" .. itemData.slotID
+	elseif itemData.location == "merchant" then
+		overlayKey = "merchant_" .. itemData.merchantIndex
+	else
+		return -- Unknown location
+	end
+
+	self:CreateOverlayForSlot(itemLink, itemData, overlayKey)
+end
+
+-- Update overlay for a single item (LEGACY - KEPT FOR COMPATIBILITY)
+function DOKI:UpdateSingleItemOverlay(itemLink, itemData)
+	if not (self.db and self.db.enabled) then return end
+
+	-- Convert to new key system
+	local overlayKey
+	if itemData.location == "bag" then
+		overlayKey = "bag_" .. itemData.bagID .. "_" .. itemData.slotID
+	elseif itemData.location == "merchant" then
+		overlayKey = "merchant_" .. itemData.merchantIndex
+	else
+		return
+	end
+
+	-- Clear existing overlay for this slot
+	if self.activeOverlays[overlayKey] then
+		self:ReleaseOverlay(self.activeOverlays[overlayKey])
+		self.activeOverlays[overlayKey] = nil
+	end
+
+	-- Create new overlay if item is not collected
+	if not itemData.isCollected then
+		self:CreateOverlayForSlot(itemLink, itemData, overlayKey)
+	end
 end
 
 -- ===== ELVUI BUTTON FINDING SYSTEM =====
@@ -541,148 +833,6 @@ function DOKI:GetButtonFromCache(bagID, slotID)
 	return self.buttonCache[key]
 end
 
--- ===== OVERLAY MANAGEMENT =====
--- Create overlay for specific item with color support
-function DOKI:CreateOverlayForItem(itemLink, itemData)
-	if self.db and self.db.debugMode then
-		print(string.format("|cffff69b4DOKI|r Creating overlay for %s at %s", itemLink, itemData.location))
-	end
-
-	local button = nil
-	if itemData.location == "bag" then
-		button = self:FindItemButton(itemData.bagID, itemData.slotID)
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Looking for bag %d slot %d button: %s",
-				itemData.bagID, itemData.slotID, button and "found" or "not found"))
-		end
-	elseif itemData.location == "merchant" then
-		button = self:FindMerchantButton(itemData.merchantIndex)
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Looking for merchant %d button: %s",
-				itemData.merchantIndex, button and "found" or "not found"))
-		end
-	end
-
-	if not button or not button:IsVisible() then
-		if self.db and self.db.debugMode then
-			print("|cffff69b4DOKI|r Could not find button for " .. itemLink)
-		end
-
-		return
-	end
-
-	local overlay = self:GetOverlay()
-	overlay:SetParent(button)
-	overlay:SetAllPoints(button)
-	-- Set color based on type
-	if itemData.showYellowD then
-		overlay:SetColor(1, 1, 0) -- Yellow for "have other sources"
-		if self.db and self.db.debugMode then
-			print("|cffff69b4DOKI|r Set yellow D for " .. itemLink)
-		end
-	else
-		overlay:SetColor(1, 0.41, 0.71) -- Pink for "don't have any sources"
-		if self.db and self.db.debugMode then
-			print("|cffff69b4DOKI|r Set pink D for " .. itemLink)
-		end
-	end
-
-	overlay:Show()
-	-- Store reference
-	self.activeOverlays[itemLink] = overlay
-	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Created overlay for " .. itemLink .. " on button " .. (button:GetName() or "unnamed"))
-	end
-end
-
--- Update overlay for a single item
-function DOKI:UpdateSingleItemOverlay(itemLink, itemData)
-	if not (self.db and self.db.enabled) then return end
-
-	-- Clear existing overlay for this item
-	if self.activeOverlays[itemLink] then
-		self:ReleaseOverlay(self.activeOverlays[itemLink])
-		self.activeOverlays[itemLink] = nil
-	end
-
-	-- Create new overlay if item is not collected
-	if not itemData.isCollected then
-		self:CreateOverlayForItem(itemLink, itemData)
-	end
-end
-
--- Update all overlays
-function DOKI:UpdateAllOverlays()
-	if not (self.db and self.db.enabled) then return end
-
-	-- Clear existing overlays
-	self:ClearAllOverlays()
-	-- Ensure button tracking is initialized
-	if not self.buttonCache then
-		self:InitializeOverlaySystem()
-	end
-
-	-- Create overlays for current items
-	local overlayCount = 0
-	for itemLink, itemData in pairs(self.currentItems) do
-		if not itemData.isCollected then -- Only show for uncollected items
-			self:CreateOverlayForItem(itemLink, itemData)
-			overlayCount = overlayCount + 1
-		end
-	end
-
-	if self.db and self.db.debugMode then
-		local bagAddon = self:DetectBagAddon()
-		print(string.format("|cffff69b4DOKI|r Created %d overlays for uncollected items (%s bags)", overlayCount, bagAddon))
-	end
-end
-
--- Update merchant overlays
-function DOKI:UpdateMerchantOverlays()
-	if not (self.db and self.db.enabled) or not MerchantFrame or not MerchantFrame:IsVisible() then return end
-
-	-- Clear existing merchant overlays
-	self:ClearMerchantOverlays()
-	-- Create overlays for merchant items
-	local overlayCount = 0
-	for itemLink, itemData in pairs(self.currentItems) do
-		if itemData.location == "merchant" and not itemData.isCollected then
-			self:CreateOverlayForItem(itemLink, itemData)
-			overlayCount = overlayCount + 1
-		end
-	end
-
-	if self.db and self.db.debugMode then
-		print(string.format("|cffff69b4DOKI|r Created %d merchant overlays", overlayCount))
-	end
-end
-
--- Clear all overlays
-function DOKI:ClearAllOverlays()
-	for itemLink, overlay in pairs(self.activeOverlays) do
-		self:ReleaseOverlay(overlay)
-	end
-
-	wipe(self.activeOverlays)
-end
-
--- Clear merchant overlays
-function DOKI:ClearMerchantOverlays()
-	for itemLink, overlay in pairs(self.activeOverlays) do
-		if self.currentItems[itemLink] and self.currentItems[itemLink].location == "merchant" then
-			self:ReleaseOverlay(overlay)
-			self.activeOverlays[itemLink] = nil
-		end
-	end
-
-	-- Remove merchant items from current items
-	for itemLink, itemData in pairs(self.currentItems) do
-		if itemData.location == "merchant" then
-			self.currentItems[itemLink] = nil
-		end
-	end
-end
-
 -- ===== INITIALIZATION AND TESTING =====
 -- Initialize the enhanced overlay system
 function DOKI:InitializeOverlaySystem()
@@ -741,7 +891,6 @@ function DOKI:StartElvUIPolling()
 					print("|cffff69b4DOKI|r ElvUI polling: No items found, triggering scan")
 				end
 
-				self:ScanCurrentItems()
 				self:UpdateAllOverlays()
 			end
 		end
@@ -756,7 +905,6 @@ function DOKI:HookStandardBagFunctions()
 		local result = originalOpenBackpack(...)
 		if ElvUI and self.db and self.db.enabled then
 			C_Timer.After(0.3, function()
-				self:ScanCurrentItems()
 				self:UpdateAllOverlays()
 			end)
 		end
@@ -768,7 +916,6 @@ function DOKI:HookStandardBagFunctions()
 		local result = originalToggleAllBags(...)
 		if ElvUI and self.db and self.db.enabled then
 			C_Timer.After(0.3, function()
-				self:ScanCurrentItems()
 				self:UpdateAllOverlays()
 			end)
 		end
@@ -780,7 +927,6 @@ function DOKI:HookStandardBagFunctions()
 		local result = originalOpenAllBags(...)
 		if ElvUI and self.db and self.db.enabled then
 			C_Timer.After(0.3, function()
-				self:ScanCurrentItems()
 				self:UpdateAllOverlays()
 			end)
 		end
@@ -814,8 +960,7 @@ function DOKI:HookElvUIFrameEvents()
 		B.BagFrame:HookScript("OnShow", function()
 			if self.db and self.db.enabled then
 				C_Timer.After(0.1, function()
-					self:ScanCurrentItems() -- SCAN FIRST
-					self:UpdateAllOverlays() -- THEN UPDATE
+					self:UpdateAllOverlays()
 					if self.db and self.db.debugMode then
 						print("|cffff69b4DOKI|r Refreshed overlays: ElvUI bags opened")
 					end
@@ -828,8 +973,7 @@ function DOKI:HookElvUIFrameEvents()
 		B.BankFrame:HookScript("OnShow", function()
 			if self.db and self.db.enabled then
 				C_Timer.After(0.1, function()
-					self:ScanCurrentItems() -- SCAN FIRST
-					self:UpdateAllOverlays() -- THEN UPDATE
+					self:UpdateAllOverlays()
 					if self.db and self.db.debugMode then
 						print("|cffff69b4DOKI|r Refreshed overlays: ElvUI bank opened")
 					end
@@ -850,8 +994,7 @@ function DOKI:HookBlizzardFrameEvents()
 		ContainerFrameCombinedBags:HookScript("OnShow", function()
 			if self.db and self.db.enabled then
 				C_Timer.After(0.1, function()
-					self:ScanCurrentItems() -- SCAN FIRST
-					self:UpdateAllOverlays() -- THEN UPDATE
+					self:UpdateAllOverlays()
 					if self.db and self.db.debugMode then
 						print("|cffff69b4DOKI|r Refreshed overlays: Combined bags opened")
 					end
@@ -867,8 +1010,7 @@ function DOKI:HookBlizzardFrameEvents()
 			frame:HookScript("OnShow", function()
 				if self.db and self.db.enabled then
 					C_Timer.After(0.1, function()
-						self:ScanCurrentItems() -- SCAN FIRST
-						self:UpdateAllOverlays() -- THEN UPDATE
+						self:UpdateAllOverlays()
 						if self.db and self.db.debugMode then
 							print(string.format("|cffff69b4DOKI|r Refreshed overlays: Container frame %d opened", i))
 						end
