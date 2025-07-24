@@ -1,35 +1,19 @@
--- DOKI Core
+-- DOKI Core - Universal Scanning Version
 local addonName, DOKI = ...
 -- Initialize addon namespace
 DOKI.currentItems = {}
 DOKI.overlayPool = {}
 DOKI.activeOverlays = {}
+DOKI.textureCache = {}
 -- Main addon frame
 local frame = CreateFrame("Frame", "DOKIFrame")
--- Check if any bags are currently open
-local function AnyBagsOpen()
-	-- Check combined bags
-	if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
-		return true
-	end
-
-	-- Check individual container frames
-	for i = 1, NUM_CONTAINER_FRAMES do
-		local containerFrame = _G["ContainerFrame" .. i]
-		if containerFrame and containerFrame:IsShown() then
-			return true
-		end
-	end
-
-	return false
-end
 -- Initialize saved variables
 local function InitializeSavedVariables()
 	if not DOKI_DB then
 		DOKI_DB = {
 			enabled = true,
-			debugMode = true,
-			smartMode = false, -- New: Smart detection mode for class restrictions
+			debugMode = false,
+			smartMode = false, -- Smart detection mode for class restrictions
 		}
 	else
 		-- Add new settings to existing DB
@@ -48,71 +32,23 @@ local function OnEvent(self, event, ...)
 		if loadedAddon == addonName then
 			InitializeSavedVariables()
 			DOKI:InitializeOverlaySystem()
-			-- NEW: Initialize ElvUI support if detected
+			-- Initialize universal scanning system
+			DOKI:InitializeUniversalScanning()
 			if ElvUI then
-				DOKI:InitializeElvUISupport()
-				print("|cffff69b4DOKI|r loaded with ElvUI support. Type /doki for commands.")
+				print("|cffff69b4DOKI|r loaded with universal scanning + ElvUI support. Type /doki for commands.")
 			else
-				print("|cffff69b4DOKI|r loaded. Type /doki for commands.")
+				print("|cffff69b4DOKI|r loaded with universal scanning. Type /doki for commands.")
 			end
 
 			frame:UnregisterEvent("ADDON_LOADED")
-		elseif loadedAddon == "ElvUI" then
-			-- NEW: Handle ElvUI loading after our addon
-			if DOKI.InitializeElvUISupport then
-				C_Timer.After(0.5, function()
-					DOKI:InitializeElvUISupport()
-				end)
-			end
-		end
-	elseif event == "BAG_UPDATE" or event == "BAG_UPDATE_DELAYED" then
-		-- ENHANCED: Handle both Blizzard and ElvUI bags
-		local shouldUpdate = false
-		if ElvUI then
-			-- For ElvUI, check if ElvUI bags are open
-			if DOKI.IsElvUIBagVisible and DOKI:IsElvUIBagVisible() then
-				shouldUpdate = true
-			end
-		else
-			-- For Blizzard, check if any bags are open
-			if AnyBagsOpen() then
-				shouldUpdate = true
-			end
-		end
-
-		if DOKI.db and DOKI.db.enabled and shouldUpdate then
-			if DOKI.ScanCurrentItems then
-				DOKI:ScanCurrentItems()
-			end
-
-			if DOKI.UpdateAllOverlays then
-				DOKI:UpdateAllOverlays()
-			end
-		end
-	elseif event == "MERCHANT_SHOW" then
-		-- Small delay to let merchant frame populate
-		C_Timer.After(0.1, function()
-			if DOKI.ScanMerchantItems then
-				DOKI:ScanMerchantItems()
-			end
-
-			if DOKI.UpdateMerchantOverlays then
-				DOKI:UpdateMerchantOverlays()
-			end
-		end)
-	elseif event == "MERCHANT_CLOSED" then
-		if DOKI.ClearMerchantOverlays then
-			DOKI:ClearMerchantOverlays()
 		end
 	end
+
+	-- Note: Universal scanning system handles all other events automatically
 end
 
 -- Register events
 frame:RegisterEvent("ADDON_LOADED")
-frame:RegisterEvent("BAG_UPDATE")
-frame:RegisterEvent("BAG_UPDATE_DELAYED")
-frame:RegisterEvent("MERCHANT_SHOW")
-frame:RegisterEvent("MERCHANT_CLOSED")
 frame:SetScript("OnEvent", OnEvent)
 -- Slash commands
 SLASH_DOKI1 = "/doki"
@@ -126,6 +62,11 @@ SlashCmdList["DOKI"] = function(msg)
 			if DOKI.ClearAllOverlays then
 				DOKI:ClearAllOverlays()
 			end
+		else
+			-- Re-initialize when enabled
+			if DOKI.InitializeUniversalScanning then
+				DOKI:InitializeUniversalScanning()
+			end
 		end
 	elseif command == "debug" then
 		DOKI.db.debugMode = not DOKI.db.debugMode
@@ -136,53 +77,46 @@ SlashCmdList["DOKI"] = function(msg)
 		local status = DOKI.db.smartMode and "|cff00ff00enabled|r" or "|cffff0000disabled|r"
 		print("|cffff69b4DOKI|r smart mode is now " .. status)
 		print("|cffff69b4DOKI|r Smart mode considers class restrictions when determining if items are needed")
-		-- Rescan and update overlays when mode changes
-		if DOKI.db.enabled then
-			if DOKI.ScanCurrentItems then
-				DOKI:ScanCurrentItems()
-			end
-
-			if DOKI.UpdateAllOverlays then
-				DOKI:UpdateAllOverlays()
-			end
+		-- Rescan when mode changes
+		if DOKI.db.enabled and DOKI.ForceUniversalScan then
+			DOKI:ForceUniversalScan()
 		end
-	elseif command == "scan" then
+	elseif command == "scan" or command == "universal" then
 		print("|cffff69b4DOKI|r force scanning...")
-		if DOKI.ScanCurrentItems then
-			DOKI:ScanCurrentItems()
+		if DOKI.ForceUniversalScan then
+			local count = DOKI:ForceUniversalScan()
+			print(string.format("|cffff69b4DOKI|r Universal scan complete: %d overlays created", count))
+		else
+			print("|cffff69b4DOKI|r Universal scan function not available")
 		end
-
-		if DOKI.ScanMerchantItems then
-			DOKI:ScanMerchantItems()
+	elseif command == "universalinit" then
+		if DOKI.InitializeUniversalScanning then
+			DOKI:InitializeUniversalScanning()
+			print("|cffff69b4DOKI|r Universal scanning system reinitialized")
+		else
+			print("|cffff69b4DOKI|r Universal scanning not available")
 		end
-
-		print("|cffff69b4DOKI|r updating overlays...")
-		if DOKI.UpdateAllOverlays then
-			DOKI:UpdateAllOverlays()
+	elseif command == "clear" then
+		if DOKI.ClearAllOverlays then
+			DOKI:ClearAllOverlays()
+			print("|cffff69b4DOKI|r All overlays cleared")
 		end
-
-		if DOKI.UpdateMerchantOverlays then
-			DOKI:UpdateMerchantOverlays()
-		end
-
-		local itemCount = 0
-		if DOKI.GetCurrentItemCount then
-			itemCount = DOKI:GetCurrentItemCount()
-		end
-
+	elseif command == "status" then
 		local overlayCount = 0
 		for _ in pairs(DOKI.activeOverlays) do
 			overlayCount = overlayCount + 1
 		end
 
-		print(string.format("|cffff69b4DOKI|r scan complete. Found %d collectible items, created %d overlays", itemCount,
-			overlayCount))
-	elseif command == "test" then
-		if DOKI.TestButtonFinding then
-			DOKI:TestButtonFinding()
-		else
-			print("|cffff69b4DOKI|r Test function not available")
+		local itemCount = 0
+		for _ in pairs(DOKI.currentItems) do
+			itemCount = itemCount + 1
 		end
+
+		print(string.format("|cffff69b4DOKI|r Status: %s, Smart: %s, Debug: %s",
+			DOKI.db.enabled and "Enabled" or "Disabled",
+			DOKI.db.smartMode and "On" or "Off",
+			DOKI.db.debugMode and "On" or "Off"))
+		print(string.format("|cffff69b4DOKI|r Active overlays: %d, Tracked items: %d", overlayCount, itemCount))
 	elseif string.match(command, "^debug (%d+)$") then
 		local itemID = tonumber(string.match(command, "^debug (%d+)$"))
 		if DOKI.DebugTransmogItem then
@@ -220,16 +154,33 @@ SlashCmdList["DOKI"] = function(msg)
 		else
 			print("|cffff69b4DOKI|r Source debug function not available")
 		end
+	elseif command == "frames" then
+		if DOKI.DebugFoundFrames then
+			DOKI:DebugFoundFrames()
+		else
+			print("|cffff69b4DOKI|r Frame debug function not available")
+		end
+	elseif command == "testmerchant" then
+		if DOKI.TestMerchantFrames then
+			DOKI:TestMerchantFrames()
+		else
+			print("|cffff69b4DOKI|r Merchant test function not available")
+		end
 	else
 		print("|cffff69b4DOKI|r commands:")
 		print("  /doki toggle - Enable/disable addon")
 		print("  /doki debug - Toggle debug messages")
 		print("  /doki smart - Toggle smart mode (considers class restrictions)")
-		print("  /doki scan - Force rescan items")
-		print("  /doki test - Test button finding methods")
+		print("  /doki scan - Force universal scan for all items")
+		print("  /doki universal - Same as scan")
+		print("  /doki universalinit - Reinitialize universal scanning system")
+		print("  /doki clear - Clear all overlays")
+		print("  /doki status - Show addon status and statistics")
+		print("  /doki frames - Debug found item frames")
+		print("  /doki testmerchant - Test merchant frame detection")
 		print("  /doki debug <itemID> - Debug transmog collection status for item")
 		print("  /doki smart <itemID> - Debug smart transmog analysis for item")
-		print("  /doki class <sourceID> <appearanceID> - Debug class restrictions for specific source")
+		print("  /doki class <sourceID> <appearanceID> - Debug class restrictions")
 		print("  /doki item <itemID> - Debug basic item info and tooltip")
 		print("  /doki source <sourceID> - Debug restrictions for specific source")
 	end
