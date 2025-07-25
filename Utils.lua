@@ -1,4 +1,4 @@
--- DOKI Utils - Universal Scanning Version
+-- DOKI Utils - Universal Scanning Version with Button Texture Integration
 local addonName, DOKI = ...
 -- Initialize storage
 DOKI.currentItems = DOKI.currentItems or {}
@@ -18,13 +18,15 @@ function DOKI:GetPerformanceStats()
 		lastScanDuration = self.lastScanDuration or 0,
 		avgScanDuration = self.avgScanDuration or 0,
 		totalScans = self.totalScans or 0,
-		activeOverlays = 0,
-		overlayPoolSize = #(self.overlayPool or {}),
+		activeIndicators = 0,                      -- Changed from activeOverlays
+		texturePoolSize = #(self.texturePool or {}), -- Changed from overlayPoolSize
 		debugMode = self.db and self.db.debugMode or false,
 	}
-	-- Count active overlays
-	for _ in pairs(self.activeOverlays or {}) do
-		stats.activeOverlays = stats.activeOverlays + 1
+	-- Count active button indicators
+	for _, textureData in pairs(self.buttonTextures or {}) do
+		if textureData.isActive then
+			stats.activeIndicators = stats.activeIndicators + 1
+		end
 	end
 
 	return stats
@@ -37,8 +39,8 @@ function DOKI:ShowPerformanceStats()
 	print(string.format("Last scan duration: %.3fs", stats.lastScanDuration))
 	print(string.format("Average scan duration: %.3fs", stats.avgScanDuration))
 	print(string.format("Total scans performed: %d", stats.totalScans))
-	print(string.format("Active overlays: %d", stats.activeOverlays))
-	print(string.format("Overlay pool size: %d", stats.overlayPoolSize))
+	print(string.format("Active indicators: %d", stats.activeIndicators)) -- Changed from overlays
+	print(string.format("Texture pool size: %d", stats.texturePoolSize))
 	print(string.format("Debug mode: %s", stats.debugMode and "ON (reduces performance)" or "OFF"))
 	-- Performance assessment
 	if stats.lastScanDuration > 0.1 then
@@ -77,10 +79,9 @@ end
 function DOKI:UniversalItemScan()
 	if not self.db or not self.db.enabled then return 0 end
 
-	-- CRITICAL FIX: Clear all existing universal overlays before scanning
-	-- This prevents stale overlays from remaining when items move or change
-	self:ClearUniversalOverlays()
-	local overlayCount = 0
+	-- REMOVED: self:ClearUniversalOverlays() - this was causing flickering
+	-- The button texture system now handles selective updates internally
+	local indicatorCount = 0
 	self.foundFramesThisScan = {}
 	-- Performance optimization: Reset debug counters only if debug is enabled
 	if self.db.debugMode then
@@ -91,37 +92,40 @@ function DOKI:UniversalItemScan()
 	local startTime = GetTime()
 	-- Direct merchant scanning (if merchant is open)
 	if MerchantFrame and MerchantFrame:IsVisible() then
-		overlayCount = overlayCount + self:ScanMerchantFramesDirectly()
+		indicatorCount = indicatorCount + self:ScanMerchantFramesDirectly()
 	end
 
 	-- Direct bag scanning (ElvUI and Blizzard)
-	overlayCount = overlayCount + self:ScanBagFramesDirectly()
+	indicatorCount = indicatorCount + self:ScanBagFramesDirectly()
 	local scanDuration = GetTime() - startTime
 	-- Track performance metrics
 	self:TrackScanPerformance(scanDuration)
 	-- Performance optimization: Only do debug output if debug mode is enabled
 	if self.db.debugMode then
-		print(string.format("|cffff69b4DOKI|r Optimized scan: %d overlays in %.3fs, %d items found",
-			overlayCount, scanDuration, #self.foundFramesThisScan))
+		print(string.format("|cffff69b4DOKI|r Optimized scan: %d indicators in %.3fs, %d items found",
+			indicatorCount, scanDuration, #self.foundFramesThisScan))
 	end
 
-	return overlayCount
+	return indicatorCount
 end
 
 function DOKI:ScanMerchantFramesDirectly()
-	local overlayCount = 0
+	local indicatorCount = 0
 	local debugMode = self.db.debugMode
 	if debugMode then
-		print("|cffff69b4DOKI|r Scanning merchant frames directly...")
+		print("|cffff69b4DOKI|r Scanning merchant frames with button textures...")
 	end
 
+	-- Track which merchant buttons we find items on
+	local activeMerchantButtons = {}
 	for i = 1, 10 do
 		local buttonName = "MerchantItem" .. i .. "ItemButton"
 		local button = _G[buttonName]
 		if button and button:IsVisible() then
 			local itemData = self:ExtractItemFromAnyFrameOptimized(button, buttonName)
 			if itemData then
-				overlayCount = overlayCount + self:CreateUniversalOverlay(button, itemData)
+				activeMerchantButtons[button] = true
+				indicatorCount = indicatorCount + self:CreateUniversalIndicator(button, itemData)
 				-- Store for debugging only if debug is enabled
 				if debugMode then
 					table.insert(self.foundFramesThisScan, {
@@ -130,22 +134,40 @@ function DOKI:ScanMerchantFramesDirectly()
 						itemData = itemData,
 					})
 					-- Limit debug output to reduce overhead
-					if overlayCount <= 3 then
+					if indicatorCount <= 3 then
 						local itemName = C_Item.GetItemInfo(itemData.itemID) or "Unknown"
 						print(string.format("|cffff69b4DOKI|r Direct merchant: %s (ID: %d)",
 							itemName, itemData.itemID))
 					end
 				end
+			else
+				-- No item on this button, remove any indicator
+				self:RemoveButtonIndicator(button)
 			end
 		end
 	end
 
-	return overlayCount
+	-- Clean up indicators on merchant buttons that are no longer visible or have no items
+	for button, textureData in pairs(self.buttonTextures or {}) do
+		if textureData.isActive then
+			local buttonName = ""
+			local nameSuccess, name = pcall(button.GetName, button)
+			if nameSuccess and name and name:match("MerchantItem%d+ItemButton") then
+				if not activeMerchantButtons[button] then
+					-- This merchant button no longer has an item or isn't visible
+					self:RemoveButtonIndicator(button)
+				end
+			end
+		end
+	end
+
+	return indicatorCount
 end
 
 function DOKI:ScanBagFramesDirectly()
-	local overlayCount = 0
+	local indicatorCount = 0
 	local debugMode = self.db.debugMode
+	local activeBagButtons = {}
 	-- Scan ElvUI bags if ElvUI is active
 	if ElvUI and self:IsElvUIBagVisible() then
 		local E = ElvUI[1]
@@ -153,7 +175,7 @@ function DOKI:ScanBagFramesDirectly()
 			local B = E:GetModule("Bags", true)
 			if B and (B.BagFrame and B.BagFrame:IsShown()) then
 				if debugMode then
-					print("|cffff69b4DOKI|r Scanning ElvUI bags...")
+					print("|cffff69b4DOKI|r Scanning ElvUI bags with button textures...")
 				end
 
 				local elvUIItemsFound = 0
@@ -175,7 +197,8 @@ function DOKI:ScanBagFramesDirectly()
 									if elvUIButton and elvUIButton:IsVisible() then
 										local itemData = self:ExtractItemFromAnyFrameOptimized(elvUIButton, elvUIButtonName)
 										if itemData then
-											overlayCount = overlayCount + self:CreateUniversalOverlay(elvUIButton, itemData)
+											activeBagButtons[elvUIButton] = true
+											indicatorCount = indicatorCount + self:CreateUniversalIndicator(elvUIButton, itemData)
 											elvUIItemsFound = elvUIItemsFound + 1
 											if debugMode then
 												table.insert(self.foundFramesThisScan, {
@@ -187,6 +210,20 @@ function DOKI:ScanBagFramesDirectly()
 										end
 
 										break -- Found working pattern, skip others
+									end
+								end
+							else
+								-- No item in this slot, check if there's an indicator to remove
+								local possibleNames = {
+									string.format("ElvUI_ContainerFrameBag%dSlot%dHash", bagID, slotID),
+									string.format("ElvUI_ContainerFrameBag%dSlot%d", bagID, slotID),
+									string.format("ElvUI_ContainerFrameBag%dSlot%dCenter", bagID, slotID),
+								}
+								for _, elvUIButtonName in ipairs(possibleNames) do
+									local elvUIButton = _G[elvUIButtonName]
+									if elvUIButton then
+										self:RemoveButtonIndicator(elvUIButton)
+										break
 									end
 								end
 							end
@@ -212,7 +249,7 @@ function DOKI:ScanBagFramesDirectly()
 	-- Scan Blizzard bags
 	if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
 		if debugMode then
-			print("|cffff69b4DOKI|r Scanning Blizzard bags...")
+			print("|cffff69b4DOKI|r Scanning Blizzard bags with button textures...")
 		end
 
 		if ContainerFrameCombinedBags.EnumerateValidItems then
@@ -221,7 +258,8 @@ function DOKI:ScanBagFramesDirectly()
 					local frameName = itemButton:GetName() or "CombinedBagItem"
 					local itemData = self:ExtractItemFromAnyFrameOptimized(itemButton, frameName)
 					if itemData then
-						overlayCount = overlayCount + self:CreateUniversalOverlay(itemButton, itemData)
+						activeBagButtons[itemButton] = true
+						indicatorCount = indicatorCount + self:CreateUniversalIndicator(itemButton, itemData)
 						if debugMode then
 							table.insert(self.foundFramesThisScan, {
 								frame = itemButton,
@@ -235,7 +273,28 @@ function DOKI:ScanBagFramesDirectly()
 		end
 	end
 
-	return overlayCount
+	-- Clean up indicators on bag buttons that no longer have items (only if bags are visible)
+	if (ElvUI and self:IsElvUIBagVisible()) or (ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown()) then
+		for button, textureData in pairs(self.buttonTextures or {}) do
+			if textureData.isActive then
+				local buttonName = ""
+				local nameSuccess, name = pcall(button.GetName, button)
+				if nameSuccess and name then
+					-- Check if this is a bag button that's no longer active
+					local isBagButton = name:match("ElvUI_ContainerFrame") or name:match("CombinedBag")
+					if isBagButton and not activeBagButtons[button] then
+						-- Check if button is still visible and valid
+						local success, isVisible = pcall(button.IsVisible, button)
+						if not success or not isVisible then
+							self:RemoveButtonIndicator(button)
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return indicatorCount
 end
 
 -- ===== CONTENT VALIDATION AND CLEANUP =====
@@ -254,115 +313,137 @@ function DOKI:ValidateFrameContent(frame, expectedItemID)
 	return currentItemData.itemID == expectedItemID
 end
 
-function DOKI:CleanupStaleOverlays()
-	local removedCount = 0
-	local toRemove = {}
-	for overlayKey, overlay in pairs(self.activeOverlays) do
-		if overlayKey:match("^universal_") and overlay then
-			local frame = overlay:GetParent()
-			if not frame then
-				-- No parent frame, definitely stale
-				table.insert(toRemove, overlayKey)
-				removedCount = removedCount + 1
-			else
-				-- Check if parent frame is still visible
-				local success, isVisible = pcall(frame.IsVisible, frame)
-				if not success or not isVisible then
-					table.insert(toRemove, overlayKey)
-					removedCount = removedCount + 1
-				end
-			end
-		end
-	end
-
-	-- Remove stale overlays
-	for _, overlayKey in ipairs(toRemove) do
-		local overlay = self.activeOverlays[overlayKey]
-		if overlay then
-			self:ReleaseOverlay(overlay)
+-- Updated to use button texture system
+function DOKI:CreateUniversalIndicator(frame, itemData)
+	if itemData.isCollected then
+		-- If item is collected, remove any existing indicator
+		if self.RemoveButtonIndicator then
+			self:RemoveButtonIndicator(frame)
 		end
 
-		self.activeOverlays[overlayKey] = nil
+		return 0
 	end
 
-	if self.db and self.db.debugMode and removedCount > 0 then
-		print(string.format("|cffff69b4DOKI|r Cleaned up %d stale overlays", removedCount))
-	end
-
-	return removedCount
-end
-
-function DOKI:CreateUniversalOverlay(frame, itemData)
-	if itemData.isCollected then return 0 end
-
-	-- Enhanced frame validation before creating overlay
+	-- Enhanced frame validation
 	if not frame or type(frame) ~= "table" then return 0 end
 
-	-- Check if frame is still valid and visible
 	local success, isVisible = pcall(frame.IsVisible, frame)
 	if not success or not isVisible then return 0 end
 
-	-- Check if frame has necessary methods for parenting
-	if not frame.SetParent or not frame.GetName then return 0 end
-
-	local overlayKey = "universal_" .. tostring(frame)
-	-- Clear existing overlay for this frame
-	if self.activeOverlays[overlayKey] then
-		self:ReleaseOverlay(self.activeOverlays[overlayKey])
-		self.activeOverlays[overlayKey] = nil
-	end
-
-	-- Create overlay with error handling
-	local success2, overlay = pcall(self.GetOverlay, self)
-	if not success2 or not overlay then return 0 end
-
-	local success3 = pcall(overlay.SetParent, overlay, frame)
-	if not success3 then
-		self:ReleaseOverlay(overlay)
-		return 0
-	end
-
-	local success4 = pcall(overlay.SetAllPoints, overlay, frame)
-	if not success4 then
-		self:ReleaseOverlay(overlay)
-		return 0
-	end
-
-	-- Set color
-	if itemData.showYellowD then
-		overlay:SetColor(1, 1, 0)     -- Yellow
-	else
-		overlay:SetColor(1, 0.41, 0.71) -- Pink
-	end
-
-	overlay:Show()
-	self.activeOverlays[overlayKey] = overlay
-	-- Store item ID with overlay for validation
-	overlay.itemID = itemData.itemID
-	if self.db and self.db.debugMode then
-		local itemName = C_Item.GetItemInfo(itemData.itemID) or "Unknown"
-		local frameName = ""
-		local nameSuccess, name = pcall(frame.GetName, frame)
-		if nameSuccess and name then
-			frameName = name
-		else
-			frameName = "unnamed"
+	-- Check if indicator already exists and is correct
+	if self.buttonTextures and self.buttonTextures[frame] then
+		local existingTexture = self.buttonTextures[frame]
+		if existingTexture and existingTexture.isActive then
+			-- Indicator already exists and is active, avoid recreation
+			return 0
 		end
-
-		print(string.format("|cffff69b4DOKI|r Created universal overlay for %s (ID: %d) on %s [%s]",
-			itemName, itemData.itemID, frameName, itemData.frameType))
 	end
 
-	return 1
+	-- Add button indicator using new system
+	if self.AddButtonIndicator then
+		local success = self:AddButtonIndicator(frame, itemData)
+		return success and 1 or 0
+	end
+
+	-- Fallback to legacy system if button texture system not available
+	return 0
 end
 
-function DOKI:ClearUniversalOverlays()
-	for overlayKey, overlay in pairs(self.activeOverlays) do
-		if overlayKey:match("^universal_") then
-			self:ReleaseOverlay(overlay)
-			self.activeOverlays[overlayKey] = nil
+-- Smart clear function that only clears when actually needed
+function DOKI:SmartClearForEvent(eventName)
+	-- Events that should trigger full clears (major changes)
+	local majorEvents = {
+		"MERCHANT_SHOW",
+		"MERCHANT_CLOSED",
+		"BANKFRAME_OPENED",
+		"BANKFRAME_CLOSED",
+		-- Removed ITEM_UNLOCKED from here - handle it specially
+	}
+	-- Events that should only trigger cleanup (minor changes)
+	local minorEvents = {
+		"BAG_UPDATE_COOLDOWN",
+		"BAG_SLOT_FLAGS_UPDATED",
+		"INVENTORY_SEARCH_UPDATE",
+		"ITEM_LOCKED", -- Just picking up an item shouldn't clear indicators
+	}
+	-- Events to ignore completely (too noisy)
+	local ignoredEvents = {
+		"BAG_UPDATE", -- Too frequent, handled by BAG_UPDATE_DELAYED
+	}
+	-- Check if event should be ignored
+	for _, ignoredEvent in ipairs(ignoredEvents) do
+		if eventName == ignoredEvent then
+			return 0
 		end
 	end
+
+	for _, majorEvent in ipairs(majorEvents) do
+		if eventName == majorEvent then
+			if self.db and self.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r Major event %s: clearing indicators", eventName))
+			end
+
+			if self.ClearAllButtonIndicators then
+				return self:ClearAllButtonIndicators()
+			end
+
+			return 0
+		end
+	end
+
+	for _, minorEvent in ipairs(minorEvents) do
+		if eventName == minorEvent then
+			if self.db and self.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r Minor event %s: cleanup only", eventName))
+			end
+
+			if self.CleanupButtonTextures then
+				return self:CleanupButtonTextures()
+			end
+
+			return 0
+		end
+	end
+
+	-- Special handling for ITEM_UNLOCKED - only clear if item actually moved
+	if eventName == "ITEM_UNLOCKED" then
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r Item unlocked - checking for actual movement"))
+		end
+
+		-- Let the scanning system handle this intelligently
+		if self.CleanupButtonTextures then
+			return self:CleanupButtonTextures()
+		end
+
+		return 0
+	end
+
+	-- Default: cleanup only for unknown events
+	if self.CleanupButtonTextures then
+		return self:CleanupButtonTextures()
+	end
+
+	return 0
+end
+
+-- Legacy compatibility functions - updated to use button texture system
+function DOKI:ClearUniversalOverlays()
+	-- Instead of clearing all indicators, just clean up invalid ones
+	if self.CleanupButtonTextures then
+		return self:CleanupButtonTextures()
+	end
+
+	return 0
+end
+
+function DOKI:ClearAllOverlays()
+	-- Only clear all when explicitly requested (like /doki clear command)
+	if self.ClearAllButtonIndicators then
+		return self:ClearAllButtonIndicators()
+	end
+
+	return 0
 end
 
 -- ===== MODERN MERCHANT SCROLL DETECTION =====
@@ -383,9 +464,9 @@ function DOKI:HookMerchantNavigation()
 					print(string.format("|cffff69b4DOKI|r Merchant ScrollBox wheel: %s", direction))
 				end
 
-				-- Mark as scrolling and clear overlays immediately
+				-- Mark as scrolling and use smart clearing
 				doki.isScrolling = true
-				doki:ClearUniversalOverlays()
+				doki:SmartClearForEvent("MERCHANT_SCROLL")
 				-- Reset scroll end timer
 				if doki.scrollTimer then
 					doki.scrollTimer:Cancel()
@@ -434,7 +515,7 @@ function DOKI:HookMerchantNavigation()
 					print(string.format("|cffff69b4DOKI|r Merchant frame wheel: %s", direction))
 				end
 
-				doki:ClearUniversalOverlays()
+				doki:SmartClearForEvent("MERCHANT_SCROLL")
 				C_Timer.After(0.1, function()
 					if doki.db and doki.db.enabled then
 						doki:UniversalItemScan()
@@ -452,7 +533,7 @@ function DOKI:HookMerchantNavigation()
 					print("|cffff69b4DOKI|r Merchant next page clicked")
 				end
 
-				doki:ClearUniversalOverlays()
+				doki:SmartClearForEvent("MERCHANT_SHOW")
 				C_Timer.After(0.2, function()
 					if doki.db and doki.db.enabled then
 						doki:UniversalItemScan()
@@ -469,7 +550,7 @@ function DOKI:HookMerchantNavigation()
 					print("|cffff69b4DOKI|r Merchant previous page clicked")
 				end
 
-				doki:ClearUniversalOverlays()
+				doki:SmartClearForEvent("MERCHANT_SHOW")
 				C_Timer.After(0.2, function()
 					if doki.db and doki.db.enabled then
 						doki:UniversalItemScan()
@@ -524,13 +605,13 @@ function DOKI:StartMerchantContentMonitoring()
 				end
 			end
 
-			-- If content changed, clear overlays and rescan
+			-- If content changed, use smart clearing and rescan
 			if hasChanged then
 				if doki.db.debugMode then
 					print("|cffff69b4DOKI|r Merchant content changed - rescanning")
 				end
 
-				doki:ClearUniversalOverlays()
+				doki:SmartClearForEvent("MERCHANT_UPDATE")
 				C_Timer.After(0.1, function()
 					if doki.db and doki.db.enabled then
 						doki:UniversalItemScan()
@@ -582,10 +663,10 @@ function DOKI:StartFastMerchantContentMonitoring()
 				end
 			end
 
-			-- If content changed, clear overlays and rescan
+			-- If content changed, use smart clearing and rescan
 			if hasChanged then
 				print("|cffff69b4DOKI|r FAST MONITOR: Merchant content changed - rescanning")
-				doki:ClearUniversalOverlays()
+				doki:SmartClearForEvent("MERCHANT_UPDATE")
 				C_Timer.After(0.1, function()
 					if doki.db and doki.db.enabled then
 						doki:UniversalItemScan()
@@ -710,8 +791,8 @@ function DOKI:SetupElvUIHooks()
 					print("|cffff69b4DOKI|r ElvUI Layout triggered - rescanning for item movement")
 				end
 
-				-- Clear overlays first to prevent stale overlays
-				doki:ClearUniversalOverlays()
+				-- Use smart clearing instead of aggressive clearing
+				doki:SmartClearForEvent("ELVUI_LAYOUT")
 				-- Short delay to let ElvUI finish its layout
 				C_Timer.After(0.05, function()
 					if doki.db and doki.db.enabled then
@@ -737,11 +818,11 @@ function DOKI:SetupElvUIHooks()
 				-- Compare with last snapshot
 				if doki.lastBagSnapshot and not doki:CompareBagSnapshots(doki.lastBagSnapshot, currentSnapshot) then
 					if doki.db.debugMode then
-						print("|cffff69b4DOKI|r Item movement detected - updating overlays")
+						print("|cffff69b4DOKI|r Item movement detected - updating indicators")
 					end
 
-					-- Items moved - update overlays
-					doki:ClearUniversalOverlays()
+					-- Items moved - use smart clearing
+					doki:SmartClearForEvent("ITEM_MOVEMENT")
 					C_Timer.After(0.05, function()
 						if doki.db and doki.db.enabled then
 							doki:UniversalItemScan()
@@ -827,7 +908,7 @@ function DOKI:InitializeUniversalScanning()
 			self:UniversalItemScan()
 		end
 	end)
-	-- Set up throttled event-driven scanning
+	-- Set up throttled event-driven scanning with smart clearing
 	self:SetupThrottledUniversalEvents()
 	-- Initialize merchant navigation hooks
 	self:InitializeMerchantHooks()
@@ -872,10 +953,10 @@ function DOKI:SetupThrottledUniversalEvents()
 	local merchantThrottleDelay = 0.2 -- Faster for merchant events
 	self.universalEventFrame:SetScript("OnEvent", function(self, event, ...)
 		local currentTime = GetTime()
-		-- Special handling for merchant closed - clear immediately
+		-- Special handling for merchant closed - use smart clearing
 		if event == "MERCHANT_CLOSED" then
 			if DOKI.db and DOKI.db.enabled then
-				DOKI:ClearUniversalOverlays()
+				DOKI:SmartClearForEvent(event)
 			end
 
 			return
@@ -897,12 +978,19 @@ function DOKI:SetupThrottledUniversalEvents()
 					print(string.format("|cffff69b4DOKI|r Item movement event: %s", event))
 				end
 
-				-- For ITEM_UNLOCKED (movement complete), trigger immediate rescan
+				-- For ITEM_LOCKED (picking up), don't clear immediately - just note it
+				if event == "ITEM_LOCKED" then
+					-- Don't clear indicators when just picking up an item
+					-- The item is still in the same slot, just "locked"
+					return
+				end
+
+				-- For ITEM_UNLOCKED (dropping), use smart clearing and delayed scan
 				if event == "ITEM_UNLOCKED" then
-					-- Clear overlays immediately to prevent stale overlays
-					DOKI:ClearUniversalOverlays()
-					-- Quick rescan after item movement
-					C_Timer.After(0.05, function()
+					-- Use smart clearing
+					DOKI:SmartClearForEvent(event)
+					-- Longer delay to let the item settle in its new location
+					C_Timer.After(0.15, function()
 						if DOKI.db and DOKI.db.enabled then
 							DOKI:UniversalItemScan()
 						end
@@ -955,6 +1043,8 @@ function DOKI:SetupThrottledUniversalEvents()
 			print(string.format("|cffff69b4DOKI|r Event triggered: %s%s%s", event, bypassNote, scrollNote))
 		end
 
+		-- Use smart clearing instead of aggressive clearing
+		DOKI:SmartClearForEvent(event)
 		-- Shorter delay for merchant events
 		local scanDelay = isMerchantEvent and 0.1 or 0.2
 		C_Timer.After(scanDelay, function()
@@ -970,10 +1060,13 @@ function DOKI:ForceUniversalScan()
 		print("|cffff69b4DOKI|r Forcing universal scan...")
 	end
 
-	-- Clear all universal overlays first to prevent stale overlays
-	self:ClearUniversalOverlays()
-	-- Also clean up any truly stale overlays
-	self:CleanupStaleOverlays()
+	-- Use smart clearing instead of clearing all
+	self:SmartClearForEvent("FORCE_SCAN")
+	-- Also clean up any truly stale indicators
+	if self.CleanupButtonTextures then
+		self:CleanupButtonTextures()
+	end
+
 	return self:UniversalItemScan()
 end
 
@@ -1305,7 +1398,7 @@ function DOKI:IsTransmogCollected(itemID, itemLink)
 	-- Check if THIS specific variant is collected
 	local hasThisVariant = C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance(itemModifiedAppearanceID)
 	if hasThisVariant then
-		return true, false -- Have this specific variant, no overlay needed
+		return true, false -- Have this specific variant, no indicator needed
 	end
 
 	-- Don't have this variant, check if we have other sources of this appearance
@@ -1341,7 +1434,7 @@ function DOKI:IsTransmogCollectedSmart(itemID, itemLink)
 	-- Check if we have this specific variant
 	local hasThisVariant = C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance(itemModifiedAppearanceID)
 	if hasThisVariant then
-		return true, false -- Have this variant, no overlay needed
+		return true, false -- Have this variant, no indicator needed
 	end
 
 	-- We don't have this variant - check if we have equal or better sources
@@ -1351,12 +1444,12 @@ function DOKI:IsTransmogCollectedSmart(itemID, itemLink)
 			-- We have identical or less restrictive sources, so we don't need this item
 			return true, false -- Treat as collected (no D shown)
 		else
-			-- We either have no sources, or only more restrictive sources - show pink D
-			return false, false -- Show pink D (we need this item)
+			-- We either have no sources, or only more restrictive sources - show orange D
+			return false, false -- Show orange D (we need this item)
 		end
 	end
 
-	return false, false -- Default to pink D
+	return false, false -- Default to orange D
 end
 
 function DOKI:HasOtherTransmogSources(itemAppearanceID, excludeModifiedAppearanceID)
@@ -1684,7 +1777,7 @@ function DOKI:TestMerchantFrames()
 							local isCollected, showYellowD = self:IsItemCollected(itemID, itemLink)
 							print(string.format("  Collection status: %s%s",
 								isCollected and "COLLECTED" or "NOT collected",
-								showYellowD and " (yellow D)" or ""))
+								showYellowD and " (blue D)" or ""))
 						end
 					end
 				end
@@ -1742,7 +1835,7 @@ function DOKI:DebugTransmogItem(itemID)
 	local hasThisVariant = C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance(itemModifiedAppearanceID)
 	print(string.format("Has this variant: %s", tostring(hasThisVariant)))
 	if hasThisVariant then
-		print("|cffff69b4DOKI|r Result: COLLECTED - No overlay needed")
+		print("|cffff69b4DOKI|r Result: COLLECTED - No indicator needed")
 		return
 	end
 
@@ -1773,19 +1866,19 @@ function DOKI:DebugTransmogItem(itemID)
 					if hasEqualOrBetterSources then
 						print("|cffff69b4DOKI|r Result: HAVE EQUAL OR BETTER SOURCE - No D")
 					else
-						print("|cffff69b4DOKI|r Result: OTHER SOURCES MORE RESTRICTIVE - Pink D")
+						print("|cffff69b4DOKI|r Result: OTHER SOURCES MORE RESTRICTIVE - Orange D")
 					end
 				else
-					print("|cffff69b4DOKI|r Result: COLLECTED FROM OTHER SOURCE - Yellow D")
+					print("|cffff69b4DOKI|r Result: COLLECTED FROM OTHER SOURCE - Blue D")
 				end
 			else
-				print("|cffff69b4DOKI|r Result: UNCOLLECTED - Pink D")
+				print("|cffff69b4DOKI|r Result: UNCOLLECTED - Orange D")
 			end
 		else
-			print("|cffff69b4DOKI|r Result: UNCOLLECTED - Pink D")
+			print("|cffff69b4DOKI|r Result: UNCOLLECTED - Orange D")
 		end
 	else
-		print("|cffff69b4DOKI|r Result: UNCOLLECTED - Pink D")
+		print("|cffff69b4DOKI|r Result: UNCOLLECTED - Orange D")
 	end
 
 	print("|cffff69b4DOKI|r === END DEBUG ===")

@@ -34,7 +34,7 @@ local function OnEvent(self, event, ...)
 		local loadedAddon = ...
 		if loadedAddon == addonName then
 			InitializeSavedVariables()
-			DOKI:InitializeOverlaySystem()
+			DOKI:InitializeButtonTextureSystem()
 			-- Initialize universal scanning system
 			DOKI:InitializeUniversalScanning()
 			if ElvUI then
@@ -67,8 +67,8 @@ SlashCmdList["DOKI"] = function(msg)
 				DOKI:CleanupTimers()
 			end
 
-			if DOKI.ClearAllOverlays then
-				DOKI:ClearAllOverlays()
+			if DOKI.CleanupButtonTextureSystem then
+				DOKI:CleanupButtonTextureSystem()
 			end
 		else
 			-- Re-initialize when enabled
