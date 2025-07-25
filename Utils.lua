@@ -4,49 +4,114 @@ local addonName, DOKI = ...
 DOKI.currentItems = DOKI.currentItems or {}
 DOKI.textureCache = DOKI.textureCache or {}
 DOKI.foundFramesThisScan = {}
--- ===== UNIVERSAL ITEM SCANNING SYSTEM =====
--- Main universal scanner that finds and overlays items immediately
+-- Scroll detection variables
+DOKI.isScrolling = false
+DOKI.scrollTimer = nil
+-- ElvUI state tracking
+DOKI.lastElvUIBagState = false
+-- Simple hook tracking (no replacement of functions)
+DOKI.hookFlags = DOKI.hookFlags or {}
+-- ===== PERFORMANCE MONITORING =====
+function DOKI:GetPerformanceStats()
+	local stats = {
+		scanInterval = 15, -- seconds
+		lastScanDuration = self.lastScanDuration or 0,
+		avgScanDuration = self.avgScanDuration or 0,
+		totalScans = self.totalScans or 0,
+		activeOverlays = 0,
+		overlayPoolSize = #(self.overlayPool or {}),
+		debugMode = self.db and self.db.debugMode or false,
+	}
+	-- Count active overlays
+	for _ in pairs(self.activeOverlays or {}) do
+		stats.activeOverlays = stats.activeOverlays + 1
+	end
+
+	return stats
+end
+
+function DOKI:ShowPerformanceStats()
+	local stats = self:GetPerformanceStats()
+	print("|cffff69b4DOKI|r === PERFORMANCE STATS ===")
+	print(string.format("Scan interval: %ds", stats.scanInterval))
+	print(string.format("Last scan duration: %.3fs", stats.lastScanDuration))
+	print(string.format("Average scan duration: %.3fs", stats.avgScanDuration))
+	print(string.format("Total scans performed: %d", stats.totalScans))
+	print(string.format("Active overlays: %d", stats.activeOverlays))
+	print(string.format("Overlay pool size: %d", stats.overlayPoolSize))
+	print(string.format("Debug mode: %s", stats.debugMode and "ON (reduces performance)" or "OFF"))
+	-- Performance assessment
+	if stats.lastScanDuration > 0.1 then
+		print("|cffff0000WARNING:|r Scan duration is high (>100ms)")
+	elseif stats.lastScanDuration > 0.05 then
+		print("|cffffff00NOTICE:|r Scan duration is moderate (>50ms)")
+	else
+		print("|cff00ff00GOOD:|r Scan performance is optimal (<50ms)")
+	end
+
+	print("|cffff69b4DOKI|r === END PERFORMANCE STATS ===")
+end
+
+function DOKI:TrackScanPerformance(duration)
+	self.lastScanDuration = duration
+	self.totalScans = (self.totalScans or 0) + 1
+	-- Calculate rolling average (last 10 scans)
+	if not self.scanDurations then
+		self.scanDurations = {}
+	end
+
+	table.insert(self.scanDurations, duration)
+	if #self.scanDurations > 10 then
+		table.remove(self.scanDurations, 1)
+	end
+
+	local total = 0
+	for _, d in ipairs(self.scanDurations) do
+		total = total + d
+	end
+
+	self.avgScanDuration = total / #self.scanDurations
+end
+
+-- ===== MAIN UNIVERSAL SCANNER =====
 function DOKI:UniversalItemScan()
 	if not self.db or not self.db.enabled then return 0 end
 
+	-- CRITICAL FIX: Clear all existing universal overlays before scanning
+	-- This prevents stale overlays from remaining when items move or change
+	self:ClearUniversalOverlays()
 	local overlayCount = 0
-	local scannedFrames = {}
 	self.foundFramesThisScan = {}
-	-- Reset debug counters for fresh output each scan
-	self.filterDebugCount = 0
-	self.extractDebugCount = 0
-	-- Add scan limits to prevent performance issues
-	self.scanLimits = {
-		maxFrames = 1000, -- Maximum frames to scan in one pass
-		scannedCount = 0,
-		startTime = GetTime(),
-	}
-	-- SPECIFIC SCANNING: Check merchant frames directly if merchant is open
+	-- Performance optimization: Reset debug counters only if debug is enabled
+	if self.db.debugMode then
+		self.filterDebugCount = 0
+		self.extractDebugCount = 0
+	end
+
+	local startTime = GetTime()
+	-- Direct merchant scanning (if merchant is open)
 	if MerchantFrame and MerchantFrame:IsVisible() then
 		overlayCount = overlayCount + self:ScanMerchantFramesDirectly()
 	end
 
-	-- SPECIFIC SCANNING: Check bag frames directly if any bags are open
+	-- Direct bag scanning (ElvUI and Blizzard)
 	overlayCount = overlayCount + self:ScanBagFramesDirectly()
-	-- GENERAL SCANNING: Scan all visible frames starting from UIParent
-	overlayCount = overlayCount + self:ScanFrameTreeForItems(UIParent, scannedFrames, 0)
-	local scanDuration = GetTime() - self.scanLimits.startTime
-	if self.db and self.db.debugMode then
-		print(string.format("|cffff69b4DOKI|r Universal scan: %d overlays, %d frames scanned in %.2fs, %d items found",
-			overlayCount, self.scanLimits.scannedCount, scanDuration, #self.foundFramesThisScan))
-		-- Show some examples of what was scanned
-		if #self.foundFramesThisScan == 0 then
-			print("|cffff69b4DOKI|r No items found - detailed extraction debug above")
-		end
+	local scanDuration = GetTime() - startTime
+	-- Track performance metrics
+	self:TrackScanPerformance(scanDuration)
+	-- Performance optimization: Only do debug output if debug mode is enabled
+	if self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r Optimized scan: %d overlays in %.3fs, %d items found",
+			overlayCount, scanDuration, #self.foundFramesThisScan))
 	end
 
 	return overlayCount
 end
 
--- Directly scan merchant frames (bypasses recursive traversal issues)
 function DOKI:ScanMerchantFramesDirectly()
 	local overlayCount = 0
-	if self.db and self.db.debugMode then
+	local debugMode = self.db.debugMode
+	if debugMode then
 		print("|cffff69b4DOKI|r Scanning merchant frames directly...")
 	end
 
@@ -54,19 +119,22 @@ function DOKI:ScanMerchantFramesDirectly()
 		local buttonName = "MerchantItem" .. i .. "ItemButton"
 		local button = _G[buttonName]
 		if button and button:IsVisible() then
-			local itemData = self:ExtractItemFromAnyFrame(button)
+			local itemData = self:ExtractItemFromAnyFrameOptimized(button, buttonName)
 			if itemData then
 				overlayCount = overlayCount + self:CreateUniversalOverlay(button, itemData)
-				-- Store for debugging
-				table.insert(self.foundFramesThisScan, {
-					frame = button,
-					frameName = buttonName,
-					itemData = itemData,
-				})
-				if self.db and self.db.debugMode then
-					local itemName = C_Item.GetItemInfo(itemData.itemID) or "Unknown"
-					print(string.format("|cffff69b4DOKI|r Direct merchant scan: %s (ID: %d) in %s",
-						itemName, itemData.itemID, buttonName))
+				-- Store for debugging only if debug is enabled
+				if debugMode then
+					table.insert(self.foundFramesThisScan, {
+						frame = button,
+						frameName = buttonName,
+						itemData = itemData,
+					})
+					-- Limit debug output to reduce overhead
+					if overlayCount <= 3 then
+						local itemName = C_Item.GetItemInfo(itemData.itemID) or "Unknown"
+						print(string.format("|cffff69b4DOKI|r Direct merchant: %s (ID: %d)",
+							itemName, itemData.itemID))
+					end
 				end
 			end
 		end
@@ -75,17 +143,17 @@ function DOKI:ScanMerchantFramesDirectly()
 	return overlayCount
 end
 
--- Directly scan bag frames (ElvUI and Blizzard)
 function DOKI:ScanBagFramesDirectly()
 	local overlayCount = 0
+	local debugMode = self.db.debugMode
 	-- Scan ElvUI bags if ElvUI is active
-	if ElvUI then
+	if ElvUI and self:IsElvUIBagVisible() then
 		local E = ElvUI[1]
 		if E then
 			local B = E:GetModule("Bags", true)
 			if B and (B.BagFrame and B.BagFrame:IsShown()) then
-				if self.db and self.db.debugMode then
-					print("|cffff69b4DOKI|r Scanning ElvUI bags directly...")
+				if debugMode then
+					print("|cffff69b4DOKI|r Scanning ElvUI bags...")
 				end
 
 				local elvUIItemsFound = 0
@@ -93,76 +161,74 @@ function DOKI:ScanBagFramesDirectly()
 					local numSlots = C_Container.GetContainerNumSlots(bagID)
 					if numSlots and numSlots > 0 then
 						for slotID = 1, numSlots do
-							-- Try multiple ElvUI button naming patterns
-							local possibleNames = {
-								string.format("ElvUI_ContainerFrameBag%dSlot%dHash", bagID, slotID),
-								string.format("ElvUI_ContainerFrameBag%dSlot%d", bagID, slotID),
-								string.format("ElvUI_ContainerFrameBag%dSlot%dCenter", bagID, slotID),
-								string.format("ElvUI_ContainerFrameBag%dSlot%dArea", bagID, slotID),
-							}
-							for _, elvUIButtonName in ipairs(possibleNames) do
-								local elvUIButton = _G[elvUIButtonName]
-								if elvUIButton and elvUIButton:IsVisible() then
-									-- Check if this button has an item
-									local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
-									if itemInfo and itemInfo.itemID then
-										local itemData = self:ExtractItemFromAnyFrame(elvUIButton)
+							-- Performance optimization: Check if slot has item before trying button patterns
+							local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+							if itemInfo and itemInfo.itemID then
+								-- Try multiple ElvUI button naming patterns
+								local possibleNames = {
+									string.format("ElvUI_ContainerFrameBag%dSlot%dHash", bagID, slotID),
+									string.format("ElvUI_ContainerFrameBag%dSlot%d", bagID, slotID),
+									string.format("ElvUI_ContainerFrameBag%dSlot%dCenter", bagID, slotID),
+								}
+								for _, elvUIButtonName in ipairs(possibleNames) do
+									local elvUIButton = _G[elvUIButtonName]
+									if elvUIButton and elvUIButton:IsVisible() then
+										local itemData = self:ExtractItemFromAnyFrameOptimized(elvUIButton, elvUIButtonName)
 										if itemData then
 											overlayCount = overlayCount + self:CreateUniversalOverlay(elvUIButton, itemData)
-											table.insert(self.foundFramesThisScan, {
-												frame = elvUIButton,
-												frameName = elvUIButtonName,
-												itemData = itemData,
-											})
 											elvUIItemsFound = elvUIItemsFound + 1
-											if self.db and self.db.debugMode and elvUIItemsFound <= 3 then
-												local itemName = C_Item.GetItemInfo(itemData.itemID) or "Unknown"
-												print(string.format("|cffff69b4DOKI|r ElvUI direct scan: %s (ID: %d) in %s",
-													itemName, itemData.itemID, elvUIButtonName))
+											if debugMode then
+												table.insert(self.foundFramesThisScan, {
+													frame = elvUIButton,
+													frameName = elvUIButtonName,
+													itemData = itemData,
+												})
 											end
 										end
-									end
 
-									break -- Found a working pattern, no need to try others
+										break -- Found working pattern, skip others
+									end
 								end
 							end
 						end
 					end
 				end
 
-				if self.db and self.db.debugMode then
-					print(string.format("|cffff69b4DOKI|r ElvUI direct scan found %d items", elvUIItemsFound))
+				if debugMode and elvUIItemsFound > 0 then
+					print(string.format("|cffff69b4DOKI|r ElvUI found %d items", elvUIItemsFound))
+				elseif debugMode then
+					print("|cffff69b4DOKI|r ElvUI bags visible but no items found")
 				end
 			else
-				if self.db and self.db.debugMode then
-					print("|cffff69b4DOKI|r ElvUI bags not visible or module not found")
-					if B then
-						print(string.format("|cffff69b4DOKI|r BagFrame exists: %s, shown: %s",
-							B.BagFrame and "yes" or "no",
-							B.BagFrame and B.BagFrame:IsShown() and "yes" or "no"))
-					end
+				if debugMode then
+					print("|cffff69b4DOKI|r ElvUI detected but BagFrame not shown")
 				end
 			end
 		end
+	elseif debugMode and ElvUI then
+		print("|cffff69b4DOKI|r ElvUI detected but bags not visible")
 	end
 
 	-- Scan Blizzard bags
 	if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
-		if self.db and self.db.debugMode then
-			print("|cffff69b4DOKI|r Scanning Blizzard combined bags directly...")
+		if debugMode then
+			print("|cffff69b4DOKI|r Scanning Blizzard bags...")
 		end
 
 		if ContainerFrameCombinedBags.EnumerateValidItems then
 			for _, itemButton in ContainerFrameCombinedBags:EnumerateValidItems() do
 				if itemButton and itemButton:IsVisible() then
-					local itemData = self:ExtractItemFromAnyFrame(itemButton)
+					local frameName = itemButton:GetName() or "CombinedBagItem"
+					local itemData = self:ExtractItemFromAnyFrameOptimized(itemButton, frameName)
 					if itemData then
 						overlayCount = overlayCount + self:CreateUniversalOverlay(itemButton, itemData)
-						table.insert(self.foundFramesThisScan, {
-							frame = itemButton,
-							frameName = itemButton:GetName() or "CombinedBagItem",
-							itemData = itemData,
-						})
+						if debugMode then
+							table.insert(self.foundFramesThisScan, {
+								frame = itemButton,
+								frameName = frameName,
+								itemData = itemData,
+							})
+						end
 					end
 				end
 			end
@@ -172,576 +238,60 @@ function DOKI:ScanBagFramesDirectly()
 	return overlayCount
 end
 
--- Recursively scan frame tree for item icons
-function DOKI:ScanFrameTreeForItems(frame, scannedFrames, depth)
-	-- Enhanced frame validation and depth limiting
-	if not frame or depth > 10 then return 0 end -- Reduced max depth from 15 to 10
+-- ===== CONTENT VALIDATION AND CLEANUP =====
+function DOKI:ValidateFrameContent(frame, expectedItemID)
+	if not frame or not expectedItemID then return false end
 
-	-- Check scan limits
-	if self.scanLimits and self.scanLimits.scannedCount >= self.scanLimits.maxFrames then
-		return 0
-	end
-
-	-- Check if this is a valid frame object with IsVisible method
-	if type(frame) ~= "table" or not frame.IsVisible then return 0 end
-
-	-- Safe IsVisible check with pcall
+	-- Check if frame is still visible
 	local success, isVisible = pcall(frame.IsVisible, frame)
-	if not success or not isVisible then return 0 end
+	if not success or not isVisible then return false end
 
-	-- Increment scan counter
-	if self.scanLimits then
-		self.scanLimits.scannedCount = self.scanLimits.scannedCount + 1
-	end
+	-- Try to extract current item from frame
+	local currentItemData = self:ExtractItemFromAnyFrameOptimized(frame, frame:GetName())
+	if not currentItemData or not currentItemData.itemID then return false end
 
-	-- Avoid scanning same frame twice
-	local frameAddr = tostring(frame)
-	if scannedFrames[frameAddr] then return 0 end
+	-- Check if it's still the same item
+	return currentItemData.itemID == expectedItemID
+end
 
-	scannedFrames[frameAddr] = true
-	-- Skip certain frame types that are unlikely to contain items
-	local frameName = ""
-	local nameSuccess, name = pcall(frame.GetName, frame)
-	if nameSuccess and name then
-		frameName = name
-		-- Only skip frames with obvious non-item patterns
-		if self:ShouldSkipFrame(frameName) then
-			return 0
-		end
-	end
-
-	-- Note: We don't skip unnamed frames here anymore - let ExtractItemFromAnyFrame handle that
-	local overlayCount = 0
-	-- Check if this frame contains an item
-	local itemData = self:ExtractItemFromAnyFrame(frame)
-	if itemData then
-		overlayCount = overlayCount + self:CreateUniversalOverlay(frame, itemData)
-		-- Store for debugging
-		table.insert(self.foundFramesThisScan, {
-			frame = frame,
-			frameName = frame:GetName() or tostring(frame),
-			itemData = itemData,
-		})
-	end
-
-	-- Safely scan all children
-	local success, numChildren = pcall(frame.GetNumChildren, frame)
-	if success and numChildren and numChildren > 0 then
-		for i = 1, numChildren do
-			local success2, child = pcall(select, i, frame:GetChildren())
-			if success2 and child and type(child) == "table" then
-				overlayCount = overlayCount + self:ScanFrameTreeForItems(child, scannedFrames, depth + 1)
+function DOKI:CleanupStaleOverlays()
+	local removedCount = 0
+	local toRemove = {}
+	for overlayKey, overlay in pairs(self.activeOverlays) do
+		if overlayKey:match("^universal_") and overlay then
+			local frame = overlay:GetParent()
+			if not frame then
+				-- No parent frame, definitely stale
+				table.insert(toRemove, overlayKey)
+				removedCount = removedCount + 1
+			else
+				-- Check if parent frame is still visible
+				local success, isVisible = pcall(frame.IsVisible, frame)
+				if not success or not isVisible then
+					table.insert(toRemove, overlayKey)
+					removedCount = removedCount + 1
+				end
 			end
 		end
 	end
 
-	return overlayCount
+	-- Remove stale overlays
+	for _, overlayKey in ipairs(toRemove) do
+		local overlay = self.activeOverlays[overlayKey]
+		if overlay then
+			self:ReleaseOverlay(overlay)
+		end
+
+		self.activeOverlays[overlayKey] = nil
+	end
+
+	if self.db and self.db.debugMode and removedCount > 0 then
+		print(string.format("|cffff69b4DOKI|r Cleaned up %d stale overlays", removedCount))
+	end
+
+	return removedCount
 end
 
--- Determine if a frame should be skipped during scanning
-function DOKI:ShouldSkipFrame(frameName)
-	if not frameName or frameName == "" then
-		-- Skip frames without proper names (usually internal elements)
-		return true
-	end
-
-	-- Skip frames with generic table names (internal objects)
-	if frameName:match("^table:") then return true end
-
-	-- Skip frames that are clearly not item-related
-	local skipPatterns = {
-		"Chat", "Minimap", "Menu", "Dialog", "Tooltip", "EditBox",
-		"ScrollFrame", "Slider", "CheckButton", "RadioButton",
-		"Communities", "Guild", "Social", "Friends", "Whisper",
-		"WorldMap", "Calendar", "Achievement", "Statistics",
-		"Video", "Audio", "Interface", "Options", "Settings",
-		"Help", "Tutorial", "Binding", "Macro", "LFG", "LFD",
-		"PVP", "Honor", "Arena", "Battleground", "Cursor",
-		"DropDown", "PopUp", "StatusBar", "ProgressBar",
-		"Buff", "Debuff", "Aura", "Temp", "Cache", "Pool",
-		"ElvUIPlayerBuffs", "ElvUIPlayerDebuffs", -- ElvUI buff/debuff frames
-		"Threat", "Cast", "Timer", "Cooldown",
-
-		-- Quest-related frames that are NOT item buttons
-		"QuestLog", "QuestFrame", "QuestObjective", "QuestDetail",
-		"QuestProgress", "QuestComplete", "QuestText", "QuestTitle",
-		"ObjectiveTracker", "AllObjectives", "Scenario",
-	}
-	for _, pattern in ipairs(skipPatterns) do
-		if frameName:find(pattern) then
-			return true
-		end
-	end
-
-	-- Skip merchant item frames that aren't the actual item button
-	-- We want "MerchantItem1ItemButton" but not "MerchantItem1"
-	if frameName:match("^MerchantItem%d+$") then
-		return true -- Skip the parent frame, we only want the ItemButton
-	end
-
-	return false
-end
-
--- Determine if a frame is likely to contain an actual item icon
-function DOKI:IsLikelyItemFrame(frameName)
-	if not frameName or frameName == "" then return false end
-
-	-- Skip frames with generic table names (internal objects)
-	if frameName:match("^table:") then return false end
-
-	-- EXCLUDE quest log and objective frames specifically
-	local questExclusions = {
-		"QuestLog", "QuestFrame", "QuestObjective", "QuestDetail",
-		"QuestProgress", "QuestComplete", "QuestText", "QuestTitle",
-		"ObjectiveTracker", "AllObjectives", "Scenario",
-	}
-	for _, exclusion in ipairs(questExclusions) do
-		if frameName:find(exclusion) then
-			return false
-		end
-	end
-
-	-- More specific whitelist of frame patterns that are likely to contain actual item icons
-	local itemFramePatterns = {
-		-- Blizzard UI patterns (more specific)
-		"ContainerFrame.*Item", -- Container/bag items
-		"MerchantItem.*Button", -- Merchant item buttons
-		".*ItemButton$",      -- Frames ending in ItemButton
-		".*LootButton",       -- Loot items
-		"BankFrameItem",      -- Bank items
-		"GuildBankFrame.*Item", -- Guild bank
-		"ActionButton%d+$",   -- Action bar items (specific pattern)
-		"TradeFrame.*Item",   -- Trade window
-		"MailFrame.*Item",    -- Mail
-		"AuctionFrame.*Item", -- Auction house
-
-		-- Quest-specific item buttons (not quest log text!)
-		"QuestItem.*Button$", -- Quest item reward BUTTONS (not quest text)
-		"QuestReward.*Button$", -- Quest reward buttons
-		"QuestChoice.*Button$", -- Quest choice buttons
-
-		-- ElvUI patterns (fixed and more flexible)
-		"ElvUI_ContainerFrame", -- Any ElvUI container frame part
-		"ElvUI.*Bag.*Slot",   -- ElvUI bag slots (broader pattern)
-		"ElvUI.*Hash$",       -- ElvUI frames ending in Hash
-
-		-- Dungeon Journal and Adventure Guide (actual item buttons)
-		"EncounterJournal.*Item.*Button",
-		"AdventureMap.*Reward.*Button",
-	}
-	for _, pattern in ipairs(itemFramePatterns) do
-		if frameName:match(pattern) then
-			if self.db and self.db.debugMode and self.filterDebugCount < 3 then
-				print(string.format("|cffff69b4DOKI|r Frame %s passed filter (pattern: %s)", frameName, pattern))
-				self.filterDebugCount = self.filterDebugCount + 1
-			end
-
-			return true
-		end
-	end
-
-	return false
-end
-
--- Enhanced item extraction that works with any frame type
-function DOKI:ExtractItemFromAnyFrame(frame)
-	-- Enhanced frame validation
-	if not frame or type(frame) ~= "table" then return nil end
-
-	-- Check if frame is still visible (it might have been hidden during scanning)
-	local success, isVisible = pcall(frame.IsVisible, frame)
-	if not success or not isVisible then return nil end
-
-	-- Safely get frame name
-	local frameName = ""
-	local success, name = pcall(frame.GetName, frame)
-	if success and name then
-		frameName = name
-	end
-
-	-- Debug: Show what frames we're examining (limit output)
-	if self.db and self.db.debugMode and not self.extractDebugCount then
-		self.extractDebugCount = 0
-	end
-
-	-- For debugging - let's be less restrictive initially
-	local passedFilter = true
-	if frameName ~= "" then
-		-- Only apply filtering if we have a frame name
-		passedFilter = self:IsLikelyItemFrame(frameName)
-		if self.db and self.db.debugMode and self.extractDebugCount < 5 then
-			print(string.format("|cffff69b4DOKI|r Examining frame: %s (filter: %s)",
-				frameName, passedFilter and "PASS" or "FAIL"))
-			self.extractDebugCount = self.extractDebugCount + 1
-		end
-	end
-
-	-- If we don't have a proper frame name, try to extract anyway
-	-- but be more cautious about it
-	if not passedFilter and frameName == "" then
-		-- For unnamed frames, only proceed if they have clear item methods
-		if not (frame.GetItemID or frame.GetItem or frame.GetBagID) then
-			return nil
-		end
-	elseif not passedFilter then
-		-- For named frames that don't pass filter, skip them
-		return nil
-	end
-
-	local itemID, itemLink
-	-- Debug: Track extraction attempts
-	local extractionAttempts = {}
-	-- Method 1: Direct item methods (with error handling)
-	if frame.GetItemID then
-		local success, id = pcall(frame.GetItemID, frame)
-		if success and id then
-			itemID = id
-			table.insert(extractionAttempts, string.format("GetItemID: %s", tostring(id)))
-		else
-			table.insert(extractionAttempts, "GetItemID: failed")
-		end
-	end
-
-	if not itemID and frame.GetItem then
-		local success, item = pcall(frame.GetItem, frame)
-		if success and item then
-			if type(item) == "number" then
-				itemID = item
-				table.insert(extractionAttempts, string.format("GetItem(num): %s", tostring(item)))
-			elseif type(item) == "string" then
-				itemLink = item
-				itemID = self:GetItemID(item)
-				table.insert(extractionAttempts, string.format("GetItem(str): %s -> %s", item, tostring(itemID)))
-			end
-		else
-			table.insert(extractionAttempts, "GetItem: failed")
-		end
-	end
-
-	-- Method 2: Frame properties
-	if not itemID then
-		if frame.itemID then
-			itemID = frame.itemID
-			table.insert(extractionAttempts, string.format("frame.itemID: %s", tostring(frame.itemID)))
-		end
-
-		if frame.id then
-			itemID = frame.id
-			table.insert(extractionAttempts, string.format("frame.id: %s", tostring(frame.id)))
-		end
-	end
-
-	if not itemLink then
-		if frame.itemLink then
-			itemLink = frame.itemLink
-			itemID = itemID or self:GetItemID(frame.itemLink)
-			table.insert(extractionAttempts, string.format("frame.itemLink: %s -> %s", frame.itemLink, tostring(itemID)))
-		end
-
-		if frame.link then
-			itemLink = frame.link
-			itemID = itemID or self:GetItemID(frame.link)
-			table.insert(extractionAttempts, string.format("frame.link: %s -> %s", frame.link, tostring(itemID)))
-		end
-	end
-
-	-- Method 3: Container/Bag items
-	if not itemID and (frame.GetBagID or frameName:match("ContainerFrame") or frameName:match("Bag")) then
-		local bagItemID = self:ExtractBagItemID(frame)
-		if bagItemID then
-			itemID = bagItemID
-			table.insert(extractionAttempts, string.format("ExtractBagItemID: %s", tostring(bagItemID)))
-		else
-			table.insert(extractionAttempts, "ExtractBagItemID: failed")
-		end
-	end
-
-	-- Method 4: Merchant items
-	if not itemID and frameName:match("MerchantItem") then
-		local merchantItemID = self:ExtractMerchantItemID(frame, frameName)
-		if merchantItemID then
-			itemID = merchantItemID
-			table.insert(extractionAttempts, string.format("ExtractMerchantItemID: %s", tostring(merchantItemID)))
-		else
-			table.insert(extractionAttempts, "ExtractMerchantItemID: failed")
-		end
-	end
-
-	-- Method 5: Quest items (only for actual quest reward buttons, not quest text)
-	if not itemID and (frameName:match("QuestItem.*Button") or frameName:match("QuestReward.*Button") or frameName:match("QuestChoice.*Button") or frame.questID) then
-		local questItemID = self:ExtractQuestItemID(frame)
-		if questItemID then
-			itemID = questItemID
-			table.insert(extractionAttempts, string.format("ExtractQuestItemID: %s", tostring(questItemID)))
-		else
-			table.insert(extractionAttempts, "ExtractQuestItemID: failed")
-		end
-	end
-
-	-- Method 6: Dungeon Journal items
-	if not itemID and (frameName:match("Adventure") or frameName:match("Encounter") or frameName:match("Journal")) then
-		local journalItemID = self:ExtractJournalItemID(frame)
-		if journalItemID then
-			itemID = journalItemID
-			table.insert(extractionAttempts, string.format("ExtractJournalItemID: %s", tostring(journalItemID)))
-		else
-			table.insert(extractionAttempts, "ExtractJournalItemID: failed")
-		end
-	end
-
-	-- Method 7: Action bar items
-	if not itemID and (frameName:match("ActionButton") or frame.action) then
-		local actionItemID = self:ExtractActionItemID(frame)
-		if actionItemID then
-			itemID = actionItemID
-			table.insert(extractionAttempts, string.format("ExtractActionItemID: %s", tostring(actionItemID)))
-		else
-			table.insert(extractionAttempts, "ExtractActionItemID: failed")
-		end
-	end
-
-	-- Method 8: Generic button with icon texture
-	if not itemID then
-		local textureItemID = self:ExtractItemFromTexture(frame)
-		if textureItemID then
-			itemID = textureItemID
-			table.insert(extractionAttempts, string.format("ExtractItemFromTexture: %s", tostring(textureItemID)))
-		else
-			table.insert(extractionAttempts, "ExtractItemFromTexture: failed")
-		end
-	end
-
-	-- Debug output for frames that look promising but didn't yield items
-	if self.db and self.db.debugMode and self.extractDebugCount < 8 and passedFilter then
-		if itemID then
-			print(string.format("|cffff69b4DOKI|r SUCCESS: %s -> ItemID %s (%s)",
-				frameName, tostring(itemID), table.concat(extractionAttempts, ", ")))
-		else
-			print(string.format("|cffff69b4DOKI|r FAILED: %s -> No item (%s)",
-				frameName, table.concat(extractionAttempts, ", ")))
-		end
-
-		self.extractDebugCount = self.extractDebugCount + 1
-	end
-
-	-- Validate and return
-	if not itemID then return nil end
-
-	-- Check if it's a collectible item
-	local isCollectible = self:IsCollectibleItem(itemID)
-	if not isCollectible then
-		if self.db and self.db.debugMode and self.extractDebugCount < 10 then
-			print(string.format("|cffff69b4DOKI|r SKIPPED: %s -> ItemID %s (not collectible)",
-				frameName, tostring(itemID)))
-			self.extractDebugCount = self.extractDebugCount + 1
-		end
-
-		return nil
-	end
-
-	local isCollected, showYellowD = self:IsItemCollected(itemID, itemLink)
-	return {
-		itemID = itemID,
-		itemLink = itemLink,
-		isCollected = isCollected,
-		showYellowD = showYellowD,
-		frameType = self:DetermineFrameType(frame, frameName),
-	}
-end
-
--- Extract item ID from bag/container frames
-function DOKI:ExtractBagItemID(frame)
-	if frame.GetBagID and frame.GetID then
-		local success1, bagID = pcall(frame.GetBagID, frame)
-		local success2, slotID = pcall(frame.GetID, frame)
-		if success1 and success2 and bagID and slotID then
-			local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
-			return itemInfo and itemInfo.itemID
-		end
-	end
-
-	-- Alternative: Check for bagID/slotID properties
-	if frame.bagID and frame.slotID then
-		local itemInfo = C_Container.GetContainerItemInfo(frame.bagID, frame.slotID)
-		return itemInfo and itemInfo.itemID
-	end
-
-	return nil
-end
-
--- Extract item ID from merchant frames
-function DOKI:ExtractMerchantItemID(frame, frameName)
-	-- Only process actual merchant item buttons, not parent frames
-	local merchantIndex = frameName:match("MerchantItem(%d+)ItemButton")
-	if merchantIndex then
-		local itemLink = GetMerchantItemLink(tonumber(merchantIndex))
-		return itemLink and self:GetItemID(itemLink)
-	end
-
-	-- Skip parent merchant frames (MerchantItem1, MerchantItem2, etc.)
-	if frameName:match("^MerchantItem%d+$") then
-		return nil
-	end
-
-	if frame.merchantIndex then
-		local itemLink = GetMerchantItemLink(frame.merchantIndex)
-		return itemLink and self:GetItemID(itemLink)
-	end
-
-	return nil
-end
-
--- Extract item ID from quest frames
-function DOKI:ExtractQuestItemID(frame)
-	-- Only process frames that are actually quest reward BUTTONS, not quest log text
-	local frameName = ""
-	local success, name = pcall(frame.GetName, frame)
-	if success and name then
-		frameName = name
-	end
-
-	-- Skip quest log, objective tracker, and other non-button quest frames
-	local questTextFrames = {
-		"QuestLog", "QuestFrame", "QuestObjective", "QuestDetail",
-		"QuestProgress", "QuestComplete", "QuestText", "QuestTitle",
-		"ObjectiveTracker", "AllObjectives", "Scenario",
-	}
-	for _, textFrame in ipairs(questTextFrames) do
-		if frameName:find(textFrame) then
-			return nil -- Skip quest text frames
-		end
-	end
-
-	-- Only process actual quest reward buttons
-	if not (frameName:match(".*Button$") or frameName:match(".*Reward") or frameName:match(".*Choice")) then
-		return nil
-	end
-
-	-- Quest rewards
-	if frame.type and frame.index then
-		local itemLink = GetQuestItemLink(frame.type, frame.index)
-		return itemLink and self:GetItemID(itemLink)
-	end
-
-	-- Quest log rewards
-	if frame.questLogIndex and frame.rewardIndex then
-		local itemLink = GetQuestLogItemLink(frame.questLogIndex, frame.rewardIndex)
-		return itemLink and self:GetItemID(itemLink)
-	end
-
-	return nil
-end
-
--- Extract item ID from dungeon journal frames
-function DOKI:ExtractJournalItemID(frame)
-	if not C_EncounterJournal then return nil end
-
-	-- Adventure guide rewards
-	if frame.abilityID or frame.itemID then
-		return frame.itemID
-	end
-
-	-- Encounter journal loot
-	if frame.encounterID and frame.itemIndex then
-		-- This would need specific EncounterJournal API calls
-		-- Implementation depends on the specific journal frame structure
-	end
-
-	return nil
-end
-
--- Extract item ID from action bar items
-function DOKI:ExtractActionItemID(frame)
-	if not frame.action then return nil end
-
-	local actionType, itemID = GetActionInfo(frame.action)
-	if actionType == "item" then
-		return itemID
-	end
-
-	return nil
-end
-
--- Extract item ID from frame's texture/icon
-function DOKI:ExtractItemFromTexture(frame)
-	-- Look for common texture children
-	local textureNames = { "icon", "Icon", "texture", "Texture", "IconTexture" }
-	for _, textureName in ipairs(textureNames) do
-		local textureFrame = frame[textureName] or _G[(frame:GetName() or "") .. textureName]
-		if textureFrame and textureFrame.GetTexture then
-			local texture = textureFrame:GetTexture()
-			if texture then
-				-- Try to match texture to known items
-				local itemID = self:FindItemByTexture(texture)
-				if itemID then return itemID end
-			end
-		end
-	end
-
-	return nil
-end
-
--- Find item ID by matching texture path (with caching)
-function DOKI:FindItemByTexture(texturePath)
-	if not texturePath then return nil end
-
-	-- Initialize cache
-	if not self.textureCache then self.textureCache = {} end
-
-	if self.textureCache[texturePath] then return self.textureCache[texturePath] end
-
-	-- Quick check for numeric item IDs in texture path
-	if type(texturePath) == "number" and texturePath > 100000 then
-		if self:IsCollectibleItem(texturePath) then
-			self.textureCache[texturePath] = texturePath
-			return texturePath
-		end
-	end
-
-	-- Check against current known items (from any previous scans)
-	for itemLink, itemData in pairs(self.currentItems) do
-		if itemData.itemID then
-			local itemTexture = C_Item.GetItemIcon(itemData.itemID)
-			if itemTexture == texturePath then
-				self.textureCache[texturePath] = itemData.itemID
-				return itemData.itemID
-			end
-		end
-	end
-
-	return nil
-end
-
--- Determine what type of UI this frame belongs to
-function DOKI:DetermineFrameType(frame, frameName)
-	if frameName:match("ContainerFrame") or frameName:match("Bag.*Item") then
-		return "bag"
-	elseif frameName:match("MerchantItem.*ItemButton") then
-		return "merchant"
-	elseif frameName:match("Quest.*Button") or frameName:match("QuestLog.*Button") then
-		return "quest"
-	elseif frameName:match("Adventure") or frameName:match("Encounter") or frameName:match("Journal") then
-		return "journal"
-	elseif frameName:match("ActionButton") then
-		return "actionbar"
-	elseif frameName:match("Bank.*Item") then
-		return "bank"
-	elseif frameName:match("Guild.*Item") then
-		return "guild"
-	elseif frameName:match("Loot.*Button") then
-		return "loot"
-	elseif frameName:match("Trade.*Item") then
-		return "trade"
-	elseif frameName:match("Mail.*Item") then
-		return "mail"
-	elseif frameName:match("Auction.*Item") then
-		return "auction"
-	else
-		return "unknown"
-	end
-end
-
--- Create overlay for any frame type
 function DOKI:CreateUniversalOverlay(frame, itemData)
 	if itemData.isCollected then return 0 end
 
@@ -756,7 +306,7 @@ function DOKI:CreateUniversalOverlay(frame, itemData)
 	if not frame.SetParent or not frame.GetName then return 0 end
 
 	local overlayKey = "universal_" .. tostring(frame)
-	-- Clear existing overlay
+	-- Clear existing overlay for this frame
 	if self.activeOverlays[overlayKey] then
 		self:ReleaseOverlay(self.activeOverlays[overlayKey])
 		self.activeOverlays[overlayKey] = nil
@@ -787,6 +337,8 @@ function DOKI:CreateUniversalOverlay(frame, itemData)
 
 	overlay:Show()
 	self.activeOverlays[overlayKey] = overlay
+	-- Store item ID with overlay for validation
+	overlay.itemID = itemData.itemID
 	if self.db and self.db.debugMode then
 		local itemName = C_Item.GetItemInfo(itemData.itemID) or "Unknown"
 		local frameName = ""
@@ -804,60 +356,6 @@ function DOKI:CreateUniversalOverlay(frame, itemData)
 	return 1
 end
 
--- Set up universal scanning system
-function DOKI:InitializeUniversalScanning()
-	-- Clear any existing timer
-	if self.universalScanTimer then
-		self.universalScanTimer:Cancel()
-	end
-
-	-- Scan immediately
-	self:UniversalItemScan()
-	-- Set up periodic scanning (every 5 seconds instead of 3 for better performance)
-	self.universalScanTimer = C_Timer.NewTicker(5, function()
-		if self.db and self.db.enabled then
-			self:UniversalItemScan()
-		end
-	end)
-	-- Set up event-driven scanning for faster response
-	self:SetupUniversalEvents()
-	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Universal scanning system initialized")
-	end
-end
-
--- Set up events that trigger immediate rescanning
-function DOKI:SetupUniversalEvents()
-	if self.universalEventFrame then return end
-
-	self.universalEventFrame = CreateFrame("Frame")
-	-- Events that indicate UI changes
-	local events = {
-		"BAG_UPDATE",
-		"BAG_UPDATE_DELAYED",
-		"MERCHANT_SHOW",
-		"MERCHANT_UPDATE",
-		"QUEST_LOG_UPDATE",
-		"ADVENTURE_MAP_UPDATE_POIS",
-		"ENCOUNTER_JOURNAL_LOOT_UPDATE",
-		"ACTIONBAR_SLOT_CHANGED",
-		"PLAYER_ENTERING_WORLD",
-	}
-	for _, event in ipairs(events) do
-		self.universalEventFrame:RegisterEvent(event)
-	end
-
-	self.universalEventFrame:SetScript("OnEvent", function(self, event, ...)
-		-- Longer delay to let UI update and stabilize
-		C_Timer.After(0.5, function()
-			if DOKI.db and DOKI.db.enabled then
-				DOKI:UniversalItemScan()
-			end
-		end)
-	end)
-end
-
--- Clear all universal overlays
 function DOKI:ClearUniversalOverlays()
 	for overlayKey, overlay in pairs(self.activeOverlays) do
 		if overlayKey:match("^universal_") then
@@ -867,145 +365,799 @@ function DOKI:ClearUniversalOverlays()
 	end
 end
 
--- Manual trigger for testing
+-- ===== MODERN MERCHANT SCROLL DETECTION =====
+function DOKI:HookMerchantNavigation()
+	-- Prevent multiple hooks
+	if self.merchantHooksInstalled then return end
+
+	-- Capture DOKI reference for use in hook closures
+	local doki = self
+	-- === MODERN SCROLLBOX DETECTION (The War Within) ===
+	-- Primary method: Hook ScrollBox mouse wheel events
+	if MerchantFrame and MerchantFrame.ScrollBox then
+		MerchantFrame.ScrollBox:EnableMouseWheel(true)
+		MerchantFrame.ScrollBox:HookScript("OnMouseWheel", function(self, delta)
+			if doki.db and doki.db.enabled then
+				local direction = delta > 0 and "up" or "down"
+				if doki.db.debugMode then
+					print(string.format("|cffff69b4DOKI|r Merchant ScrollBox wheel: %s", direction))
+				end
+
+				-- Mark as scrolling and clear overlays immediately
+				doki.isScrolling = true
+				doki:ClearUniversalOverlays()
+				-- Reset scroll end timer
+				if doki.scrollTimer then
+					doki.scrollTimer:Cancel()
+				end
+
+				doki.scrollTimer = C_Timer.NewTimer(0.3, function()
+					doki.isScrolling = false
+					if doki.db.debugMode then
+						print("|cffff69b4DOKI|r Scrolling ended")
+					end
+				end)
+				-- Immediate rescan after short delay
+				C_Timer.After(0.1, function()
+					if doki.db and doki.db.enabled then
+						doki:UniversalItemScan()
+					end
+				end)
+			end
+		end)
+		-- Register ScrollBox callbacks if available (modern)
+		if MerchantFrame.ScrollBox.RegisterCallback then
+			MerchantFrame.ScrollBox:RegisterCallback("OnScroll", function(self, scrollPercent)
+				if doki.db and doki.db.enabled then
+					if doki.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r ScrollBox position: %.2f", scrollPercent))
+					end
+
+					-- Trigger rescan on scroll position changes
+					C_Timer.After(0.1, function()
+						if doki.db and doki.db.enabled then
+							doki:UniversalItemScan()
+						end
+					end)
+				end
+			end)
+		end
+	end
+
+	-- === FALLBACK: Main MerchantFrame scroll detection ===
+	if MerchantFrame then
+		MerchantFrame:EnableMouseWheel(true)
+		MerchantFrame:HookScript("OnMouseWheel", function(self, delta)
+			if doki.db and doki.db.enabled then
+				local direction = delta > 0 and "up" or "down"
+				if doki.db.debugMode then
+					print(string.format("|cffff69b4DOKI|r Merchant frame wheel: %s", direction))
+				end
+
+				doki:ClearUniversalOverlays()
+				C_Timer.After(0.1, function()
+					if doki.db and doki.db.enabled then
+						doki:UniversalItemScan()
+					end
+				end)
+			end
+		end)
+	end
+
+	-- === LEGACY: Button click detection ===
+	if MerchantNextPageButton then
+		MerchantNextPageButton:HookScript("OnClick", function()
+			if doki.db and doki.db.enabled then
+				if doki.db.debugMode then
+					print("|cffff69b4DOKI|r Merchant next page clicked")
+				end
+
+				doki:ClearUniversalOverlays()
+				C_Timer.After(0.2, function()
+					if doki.db and doki.db.enabled then
+						doki:UniversalItemScan()
+					end
+				end)
+			end
+		end)
+	end
+
+	if MerchantPrevPageButton then
+		MerchantPrevPageButton:HookScript("OnClick", function()
+			if doki.db and doki.db.enabled then
+				if doki.db.debugMode then
+					print("|cffff69b4DOKI|r Merchant previous page clicked")
+				end
+
+				doki:ClearUniversalOverlays()
+				C_Timer.After(0.2, function()
+					if doki.db and doki.db.enabled then
+						doki:UniversalItemScan()
+					end
+				end)
+			end
+		end)
+	end
+
+	self.merchantHooksInstalled = true
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Merchant navigation and scroll hooks installed")
+		if MerchantFrame and MerchantFrame.ScrollBox then
+			print("|cffff69b4DOKI|r Modern ScrollBox detection enabled")
+		else
+			print("|cffff69b4DOKI|r Using legacy scroll detection")
+		end
+	end
+end
+
+function DOKI:StartMerchantContentMonitoring()
+	if self.merchantMonitorTimer then
+		self.merchantMonitorTimer:Cancel()
+	end
+
+	self.lastMerchantItems = {}
+	-- Capture DOKI reference for closure
+	local doki = self
+	-- Check merchant content every 0.5 seconds when merchant is open
+	self.merchantMonitorTimer = C_Timer.NewTicker(0.5, function()
+		if not (doki.db and doki.db.enabled) then return end
+
+		if MerchantFrame and MerchantFrame:IsVisible() then
+			local currentItems = {}
+			local hasChanged = false
+			-- Get current merchant items
+			for i = 1, 10 do
+				local itemLink = GetMerchantItemLink(i)
+				if itemLink then
+					local itemID = doki:GetItemID(itemLink)
+					if itemID then
+						currentItems[i] = itemID
+					end
+				end
+			end
+
+			-- Compare with last known items
+			for i = 1, 10 do
+				if currentItems[i] ~= doki.lastMerchantItems[i] then
+					hasChanged = true
+					break
+				end
+			end
+
+			-- If content changed, clear overlays and rescan
+			if hasChanged then
+				if doki.db.debugMode then
+					print("|cffff69b4DOKI|r Merchant content changed - rescanning")
+				end
+
+				doki:ClearUniversalOverlays()
+				C_Timer.After(0.1, function()
+					if doki.db and doki.db.enabled then
+						doki:UniversalItemScan()
+					end
+				end)
+				doki.lastMerchantItems = currentItems
+			end
+		else
+			-- Merchant closed, stop monitoring
+			if doki.merchantMonitorTimer then
+				doki.merchantMonitorTimer:Cancel()
+				doki.merchantMonitorTimer = nil
+			end
+		end
+	end)
+end
+
+function DOKI:StartFastMerchantContentMonitoring()
+	if self.fastMerchantMonitorTimer then
+		self.fastMerchantMonitorTimer:Cancel()
+	end
+
+	self.lastMerchantItems = {}
+	-- Capture DOKI reference for closure
+	local doki = self
+	-- Check merchant content every 0.1 seconds when merchant is open (very fast for testing)
+	self.fastMerchantMonitorTimer = C_Timer.NewTicker(0.1, function()
+		if not (doki.db and doki.db.enabled) then return end
+
+		if MerchantFrame and MerchantFrame:IsVisible() then
+			local currentItems = {}
+			local hasChanged = false
+			-- Get current merchant items
+			for i = 1, 10 do
+				local itemLink = GetMerchantItemLink(i)
+				if itemLink then
+					local itemID = doki:GetItemID(itemLink)
+					if itemID then
+						currentItems[i] = itemID
+					end
+				end
+			end
+
+			-- Compare with last known items
+			for i = 1, 10 do
+				if currentItems[i] ~= doki.lastMerchantItems[i] then
+					hasChanged = true
+					break
+				end
+			end
+
+			-- If content changed, clear overlays and rescan
+			if hasChanged then
+				print("|cffff69b4DOKI|r FAST MONITOR: Merchant content changed - rescanning")
+				doki:ClearUniversalOverlays()
+				C_Timer.After(0.1, function()
+					if doki.db and doki.db.enabled then
+						doki:UniversalItemScan()
+					end
+				end)
+				doki.lastMerchantItems = currentItems
+			end
+		else
+			-- Merchant closed, stop monitoring
+			if doki.fastMerchantMonitorTimer then
+				doki.fastMerchantMonitorTimer:Cancel()
+				doki.fastMerchantMonitorTimer = nil
+				print("|cffff69b4DOKI|r Fast merchant monitoring stopped")
+			end
+		end
+	end)
+end
+
+function DOKI:InitializeMerchantHooks()
+	-- Hook merchant show to install navigation hooks AND start content monitoring
+	if not self.merchantShowHooked then
+		-- Capture DOKI reference for closure
+		local doki = self
+		local frame = CreateFrame("Frame")
+		frame:RegisterEvent("MERCHANT_SHOW")
+		frame:SetScript("OnEvent", function()
+			-- Small delay to ensure merchant frame is fully loaded
+			C_Timer.After(0.1, function()
+				doki:HookMerchantNavigation()
+				doki:StartMerchantContentMonitoring()
+			end)
+		end)
+		self.merchantShowHooked = true
+	end
+end
+
+-- ===== ELVUI-SPECIFIC HOOKS AND EVENTS =====
+-- ===== OPTIMIZED ELVUI INTEGRATION =====
+function DOKI:SetupElvUIHooks()
+	if not ElvUI then return end
+
+	-- Prevent duplicate setup
+	if self.elvUIHooksInstalled then return end
+
+	local E = ElvUI[1]
+	if not E then return end
+
+	local B = E:GetModule("Bags", true)
+	if not B then return end
+
+	local doki = self
+	-- FAST monitoring for immediate detection (every 0.1s instead of 0.5s)
+	if not self.elvUIMonitorTimer then
+		self.elvUIMonitorTimer = C_Timer.NewTicker(0.1, function()
+			if not (doki.db and doki.db.enabled) then return end
+
+			-- Check if ElvUI bags just became visible
+			local currentlyVisible = doki:IsElvUIBagVisible()
+			if currentlyVisible and not doki.lastElvUIBagState then
+				-- Bags just opened - scan immediately with minimal delay
+				if doki.db.debugMode then
+					print("|cffff69b4DOKI|r ElvUI bags opened (fast detection)")
+				end
+
+				-- Much shorter delay for faster response
+				C_Timer.After(0.05, function()
+					if doki.db and doki.db.enabled then
+						doki:UniversalItemScan()
+					end
+				end)
+			end
+
+			doki.lastElvUIBagState = currentlyVisible
+		end)
+	end
+
+	-- ADDITIONAL: Hook bag frame show events directly (safer than global functions)
+	if B.BagFrame and not self.bagFrameHooked then
+		B.BagFrame:HookScript("OnShow", function()
+			if doki.db and doki.db.enabled then
+				if doki.db.debugMode then
+					print("|cffff69b4DOKI|r ElvUI BagFrame OnShow triggered")
+				end
+
+				-- Immediate scan when bag frame shows
+				C_Timer.After(0.02, function()
+					if doki.db and doki.db.enabled then
+						doki:UniversalItemScan()
+					end
+				end)
+			end
+		end)
+		self.bagFrameHooked = true
+	end
+
+	-- Hook bank frame show events too
+	if B.BankFrame and not self.bankFrameHooked then
+		B.BankFrame:HookScript("OnShow", function()
+			if doki.db and doki.db.enabled then
+				if doki.db.debugMode then
+					print("|cffff69b4DOKI|r ElvUI BankFrame OnShow triggered")
+				end
+
+				C_Timer.After(0.02, function()
+					if doki.db and doki.db.enabled then
+						doki:UniversalItemScan()
+					end
+				end)
+			end
+		end)
+		self.bankFrameHooked = true
+	end
+
+	-- CRITICAL: Hook ElvUI's Layout function for item movement detection
+	if B.Layout and not self.layoutHooked then
+		local originalLayout = B.Layout
+		B.Layout = function(self, ...)
+			local result = originalLayout(self, ...)
+			-- Trigger rescan after ElvUI layout changes
+			if doki.db and doki.db.enabled and doki:IsElvUIBagVisible() then
+				if doki.db.debugMode then
+					print("|cffff69b4DOKI|r ElvUI Layout triggered - rescanning for item movement")
+				end
+
+				-- Clear overlays first to prevent stale overlays
+				doki:ClearUniversalOverlays()
+				-- Short delay to let ElvUI finish its layout
+				C_Timer.After(0.05, function()
+					if doki.db and doki.db.enabled then
+						doki:UniversalItemScan()
+					end
+				end)
+			end
+
+			return result
+		end
+		self.layoutHooked = true
+	end
+
+	-- Add faster monitoring when bags are open to catch item movements
+	if not self.elvUIItemMovementTimer then
+		self.elvUIItemMovementTimer = C_Timer.NewTicker(0.2, function()
+			if not (doki.db and doki.db.enabled) then return end
+
+			-- Only monitor when bags are visible
+			if doki:IsElvUIBagVisible() then
+				-- Create a snapshot of current item positions
+				local currentSnapshot = doki:CreateBagItemSnapshot()
+				-- Compare with last snapshot
+				if doki.lastBagSnapshot and not doki:CompareBagSnapshots(doki.lastBagSnapshot, currentSnapshot) then
+					if doki.db.debugMode then
+						print("|cffff69b4DOKI|r Item movement detected - updating overlays")
+					end
+
+					-- Items moved - update overlays
+					doki:ClearUniversalOverlays()
+					C_Timer.After(0.05, function()
+						if doki.db and doki.db.enabled then
+							doki:UniversalItemScan()
+						end
+					end)
+				end
+
+				doki.lastBagSnapshot = currentSnapshot
+			else
+				-- Clear snapshot when bags close
+				doki.lastBagSnapshot = nil
+			end
+		end)
+	end
+
+	self.elvUIHooksInstalled = true
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r ElvUI fast monitoring + layout hooks + movement detection enabled")
+	end
+end
+
+-- Create a snapshot of current bag item positions
+function DOKI:CreateBagItemSnapshot()
+	local snapshot = {}
+	for bagID = 0, NUM_BAG_SLOTS do
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			snapshot[bagID] = {}
+			for slotID = 1, numSlots do
+				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+				if itemInfo and itemInfo.itemID then
+					snapshot[bagID][slotID] = itemInfo.itemID
+				end
+			end
+		end
+	end
+
+	return snapshot
+end
+
+-- Compare two bag snapshots to detect item movement
+function DOKI:CompareBagSnapshots(snapshot1, snapshot2)
+	if not snapshot1 or not snapshot2 then return false end
+
+	-- Check all bag slots
+	for bagID = 0, NUM_BAG_SLOTS do
+		local bag1 = snapshot1[bagID] or {}
+		local bag2 = snapshot2[bagID] or {}
+		-- Check each slot
+		local numSlots = C_Container.GetContainerNumSlots(bagID) or 0
+		for slotID = 1, numSlots do
+			if bag1[slotID] ~= bag2[slotID] then
+				return false -- Items have moved
+			end
+		end
+	end
+
+	return true -- No movement detected
+end
+
+-- Enhanced ElvUI bag visibility check
+function DOKI:IsElvUIBagVisible()
+	if not ElvUI then return false end
+
+	local E = ElvUI[1]
+	if not E then return false end
+
+	local B = E:GetModule("Bags", true)
+	if not B then return false end
+
+	return (B.BagFrame and B.BagFrame:IsShown()) or (B.BankFrame and B.BankFrame:IsShown())
+end
+
+function DOKI:InitializeUniversalScanning()
+	-- Clear any existing timer
+	if self.universalScanTimer then
+		self.universalScanTimer:Cancel()
+	end
+
+	-- Performance optimization: Increased scan interval from 5s to 15s
+	self.universalScanTimer = C_Timer.NewTicker(15, function()
+		if self.db and self.db.enabled then
+			self:UniversalItemScan()
+		end
+	end)
+	-- Set up throttled event-driven scanning
+	self:SetupThrottledUniversalEvents()
+	-- Initialize merchant navigation hooks
+	self:InitializeMerchantHooks()
+	-- Initialize ElvUI-specific hooks
+	self:SetupElvUIHooks()
+	-- Initial scan
+	self:UniversalItemScan()
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Optimized universal scanning initialized (15s interval)")
+	end
+end
+
+function DOKI:SetupThrottledUniversalEvents()
+	if self.universalEventFrame then return end
+
+	self.universalEventFrame = CreateFrame("Frame")
+	-- Event list with enhanced item movement detection
+	local events = {
+		"BAG_UPDATE_DELAYED",        -- Bag contents changed
+		"BAG_UPDATE_COOLDOWN",       -- ElvUI-compatible bag cooldown updates
+		"MERCHANT_SHOW",             -- Merchant opened
+		"MERCHANT_UPDATE",           -- Merchant contents updated (should fire on page changes)
+		"MERCHANT_CLOSED",           -- Merchant closed
+		"MERCHANT_FILTER_ITEM_UPDATE", -- When specific merchant items update
+		"ADDON_LOADED",              -- Other addons might affect UI
+		"BAG_CONTAINER_UPDATE",      -- Alternative bag update event
+		"ITEM_LOCKED",               -- Item being moved (key for movement detection)
+		"ITEM_UNLOCKED",             -- Item move completed (key for movement detection)
+		"BANKFRAME_OPENED",          -- Bank events
+		"BANKFRAME_CLOSED",
+		"BAG_SLOT_FLAGS_UPDATED",    -- Additional bag update events
+		"INVENTORY_SEARCH_UPDATE",   -- Search/filter changes
+	}
+	for _, event in ipairs(events) do
+		self.universalEventFrame:RegisterEvent(event)
+	end
+
+	-- Performance optimization: Different throttling for different event types
+	local lastEventTime = 0
+	local lastMerchantEventTime = 0
+	local generalThrottleDelay = 0.5 -- General events
+	local merchantThrottleDelay = 0.2 -- Faster for merchant events
+	self.universalEventFrame:SetScript("OnEvent", function(self, event, ...)
+		local currentTime = GetTime()
+		-- Special handling for merchant closed - clear immediately
+		if event == "MERCHANT_CLOSED" then
+			if DOKI.db and DOKI.db.enabled then
+				DOKI:ClearUniversalOverlays()
+			end
+
+			return
+		end
+
+		-- Handle MERCHANT_FILTER_ITEM_UPDATE with its itemID parameter
+		if event == "MERCHANT_FILTER_ITEM_UPDATE" then
+			local itemID = ...
+			if DOKI.db and DOKI.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r Merchant filter item update: %s", tostring(itemID)))
+			end
+		end
+
+		-- Enhanced handling for item movement events
+		if event == "ITEM_LOCKED" or event == "ITEM_UNLOCKED" then
+			-- Only process if bags are visible to avoid unnecessary scans
+			if DOKI:IsElvUIBagVisible() or (ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown()) then
+				if DOKI.db and DOKI.db.debugMode then
+					print(string.format("|cffff69b4DOKI|r Item movement event: %s", event))
+				end
+
+				-- For ITEM_UNLOCKED (movement complete), trigger immediate rescan
+				if event == "ITEM_UNLOCKED" then
+					-- Clear overlays immediately to prevent stale overlays
+					DOKI:ClearUniversalOverlays()
+					-- Quick rescan after item movement
+					C_Timer.After(0.05, function()
+						if DOKI.db and DOKI.db.enabled then
+							DOKI:UniversalItemScan()
+						end
+					end)
+					return
+				end
+			end
+		end
+
+		-- Enhanced MERCHANT_UPDATE handling for scroll detection
+		if event == "MERCHANT_UPDATE" then
+			-- Detect page changes during scrolling (from research-based approach)
+			if DOKI.isScrolling then
+				if DOKI.db and DOKI.db.debugMode then
+					print("|cffff69b4DOKI|r MERCHANT_UPDATE during scroll - processing")
+				end
+
+				-- Process immediately when scrolling, skip throttling
+				C_Timer.After(0.1, function()
+					if DOKI.db and DOKI.db.enabled then
+						DOKI:UniversalItemScan()
+					end
+				end)
+				return
+			end
+		end
+
+		-- Determine if this is a merchant-related event
+		local isMerchantEvent = event:match("MERCHANT") ~= nil
+		local throttleDelay = isMerchantEvent and merchantThrottleDelay or generalThrottleDelay
+		local lastRelevantTime = isMerchantEvent and lastMerchantEventTime or lastEventTime
+		-- Check for throttle bypass (for testing)
+		local shouldBypassThrottle = DOKI.bypassMerchantThrottle and isMerchantEvent
+		-- Throttle rapid events (unless bypassing or handling item movement)
+		if not shouldBypassThrottle and currentTime - lastRelevantTime < throttleDelay then
+			return -- Skip this event, too soon after last one
+		end
+
+		-- Update appropriate timestamp
+		if isMerchantEvent then
+			lastMerchantEventTime = currentTime
+		else
+			lastEventTime = currentTime
+		end
+
+		-- Debug output to see which events are firing
+		if DOKI.db and DOKI.db.debugMode then
+			local bypassNote = shouldBypassThrottle and " (throttle bypassed)" or ""
+			local scrollNote = DOKI.isScrolling and " (during scroll)" or ""
+			print(string.format("|cffff69b4DOKI|r Event triggered: %s%s%s", event, bypassNote, scrollNote))
+		end
+
+		-- Shorter delay for merchant events
+		local scanDelay = isMerchantEvent and 0.1 or 0.2
+		C_Timer.After(scanDelay, function()
+			if DOKI.db and DOKI.db.enabled then
+				DOKI:UniversalItemScan()
+			end
+		end)
+	end)
+end
+
 function DOKI:ForceUniversalScan()
 	if self.db and self.db.debugMode then
 		print("|cffff69b4DOKI|r Forcing universal scan...")
 	end
 
+	-- Clear all universal overlays first to prevent stale overlays
 	self:ClearUniversalOverlays()
+	-- Also clean up any truly stale overlays
+	self:CleanupStaleOverlays()
 	return self:UniversalItemScan()
 end
 
--- Debug function to show found frames
-function DOKI:DebugFoundFrames()
-	if not self.foundFramesThisScan or #self.foundFramesThisScan == 0 then
-		print("|cffff69b4DOKI|r No frames found in last scan. Try /doki scan first.")
-		return
-	end
+-- ===== ITEM EXTRACTION AND PROCESSING =====
+function DOKI:ExtractItemFromAnyFrameOptimized(frame, frameName)
+	-- Quick validation
+	if not frame or type(frame) ~= "table" then return nil end
 
-	print(string.format("|cffff69b4DOKI|r === FOUND FRAMES DEBUG (%d frames) ===", #self.foundFramesThisScan))
-	for i, frameInfo in ipairs(self.foundFramesThisScan) do
-		local itemName = C_Item.GetItemInfo(frameInfo.itemData.itemID) or "Unknown"
-		print(string.format("%d. %s (ID: %d) in %s [%s] - %s",
-			i, itemName, frameInfo.itemData.itemID, frameInfo.frameName,
-			frameInfo.itemData.frameType,
-			frameInfo.itemData.isCollected and "COLLECTED" or "NOT collected"))
-	end
+	-- Safe IsVisible check
+	local success, isVisible = pcall(frame.IsVisible, frame)
+	if not success or not isVisible then return nil end
 
-	print("|cffff69b4DOKI|r === END FOUND FRAMES DEBUG ===")
-end
-
--- Test ElvUI bag detection
-function DOKI:TestElvUIBags()
-	if not ElvUI then
-		print("|cffff69b4DOKI|r ElvUI not detected")
-		return
-	end
-
-	print("|cffff69b4DOKI|r === ELVUI BAG TEST ===")
-	local E = ElvUI[1]
-	print(string.format("ElvUI[1] exists: %s", E and "yes" or "no"))
-	if not E then
-		print("|cffff69b4DOKI|r Cannot proceed without ElvUI[1]")
-		return
-	end
-
-	local B = E:GetModule("Bags", true)
-	print(string.format("Bags module exists: %s", B and "yes" or "no"))
-	if B then
-		print(string.format("BagFrame exists: %s", B.BagFrame and "yes" or "no"))
-		if B.BagFrame then
-			print(string.format("BagFrame shown: %s", B.BagFrame:IsShown() and "yes" or "no"))
+	-- Use provided frameName to avoid additional GetName calls
+	if not frameName then
+		local success, name = pcall(frame.GetName, frame)
+		if success and name then
+			frameName = name
+		else
+			frameName = ""
 		end
 	end
 
-	-- Test button naming patterns for first few slots
-	print("\nTesting button naming patterns:")
-	local patternsFound = 0
-	for bagID = 0, 1 do -- Just test first two bags
-		local numSlots = C_Container.GetContainerNumSlots(bagID)
-		if numSlots and numSlots > 0 then
-			for slotID = 1, math.min(3, numSlots) do -- Just test first 3 slots
-				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
-				if itemInfo and itemInfo.itemID then
-					print(string.format("Bag %d Slot %d has item %d", bagID, slotID, itemInfo.itemID))
-					-- Test different naming patterns
-					local patterns = {
-						string.format("ElvUI_ContainerFrameBag%dSlot%dHash", bagID, slotID),
-						string.format("ElvUI_ContainerFrameBag%dSlot%d", bagID, slotID),
-						string.format("ElvUI_ContainerFrameBag%dSlot%dCenter", bagID, slotID),
-						string.format("ElvUI_ContainerFrameBag%dSlot%dArea", bagID, slotID),
-					}
-					for _, pattern in ipairs(patterns) do
-						local button = _G[pattern]
-						if button then
-							print(string.format("  Found button: %s (visible: %s)",
-								pattern, button:IsVisible() and "yes" or "no"))
-							if button:IsVisible() then
-								patternsFound = patternsFound + 1
-							end
-						end
-					end
-				end
+	-- Quick filter check without extensive debugging
+	if frameName ~= "" and not self:IsLikelyItemFrameOptimized(frameName) then
+		return nil
+	end
+
+	local itemID, itemLink
+	-- Method 1: Direct item methods
+	if frame.GetItemID then
+		local success, id = pcall(frame.GetItemID, frame)
+		if success and id then itemID = id end
+	end
+
+	if not itemID and frame.GetItem then
+		local success, item = pcall(frame.GetItem, frame)
+		if success and item then
+			if type(item) == "number" then
+				itemID = item
+			elseif type(item) == "string" then
+				itemLink = item
+				itemID = self:GetItemID(item)
 			end
 		end
 	end
 
-	print(string.format("\nVisible ElvUI buttons found: %d", patternsFound))
-	print("|cffff69b4DOKI|r === END ELVUI TEST ===")
-end
-
--- Test specific merchant frames
-function DOKI:TestMerchantFrames()
-	if not MerchantFrame or not MerchantFrame:IsVisible() then
-		print("|cffff69b4DOKI|r Merchant frame not visible")
-		return
+	-- Method 2: Frame properties
+	if not itemID then
+		itemID = frame.itemID or frame.id
 	end
 
-	print("|cffff69b4DOKI|r === MERCHANT FRAME TEST ===")
-	for i = 1, 10 do
-		local buttonName = "MerchantItem" .. i .. "ItemButton"
-		local button = _G[buttonName]
-		print(string.format("Testing %s:", buttonName))
-		print(string.format("  Button exists: %s", button and "yes" or "no"))
-		if button then
-			local isVisible = button:IsVisible()
-			print(string.format("  Button visible: %s", tostring(isVisible)))
-			if isVisible then
-				-- Test item extraction
-				local itemLink = GetMerchantItemLink(i)
-				print(string.format("  GetMerchantItemLink(%d): %s", i, itemLink or "nil"))
-				if itemLink then
-					local itemID = self:GetItemID(itemLink)
-					print(string.format("  ItemID: %s", tostring(itemID)))
-					if itemID then
-						local isCollectible = self:IsCollectibleItem(itemID)
-						print(string.format("  Is collectible: %s", tostring(isCollectible)))
-						if isCollectible then
-							local isCollected, showYellowD = self:IsItemCollected(itemID, itemLink)
-							print(string.format("  Collection status: %s%s",
-								isCollected and "COLLECTED" or "NOT collected",
-								showYellowD and " (yellow D)" or ""))
-						end
-					end
-				end
+	if not itemLink then
+		itemLink = frame.itemLink or frame.link
+		if itemLink then itemID = itemID or self:GetItemID(itemLink) end
+	end
 
-				-- Test frame extraction
-				local frameItemData = self:ExtractItemFromAnyFrame(button)
-				print(string.format("  Frame extraction: %s",
-					frameItemData and ("ItemID " .. frameItemData.itemID) or "failed"))
-			end
+	-- Method 3: Specific extraction methods
+	if not itemID then
+		if frameName:match("ContainerFrame") or frame.GetBagID then
+			itemID = self:ExtractBagItemID(frame)
+		elseif frameName:match("MerchantItem") then
+			itemID = self:ExtractMerchantItemID(frame, frameName)
+		elseif frameName:match("ActionButton") then
+			itemID = self:ExtractActionItemID(frame)
 		end
-
-		print("") -- Empty line between items
 	end
 
-	print("|cffff69b4DOKI|r === END MERCHANT TEST ===")
+	-- Quick validation
+	if not itemID or not self:IsCollectibleItem(itemID) then return nil end
+
+	local isCollected, showYellowD = self:IsItemCollected(itemID, itemLink)
+	return {
+		itemID = itemID,
+		itemLink = itemLink,
+		isCollected = isCollected,
+		showYellowD = showYellowD,
+		frameType = self:DetermineFrameType(frame, frameName),
+	}
 end
 
--- ===== ITEM IDENTIFICATION FUNCTIONS =====
--- Extract item ID from item link
+function DOKI:IsLikelyItemFrameOptimized(frameName)
+	if not frameName or frameName == "" then return false end
+
+	-- Quick exclusions
+	if frameName:match("^table:") then return false end
+
+	-- Quick quest exclusions
+	local questExclusions = {
+		"QuestLog", "QuestFrame", "QuestObjective", "ObjectiveTracker", "AllObjectives",
+	}
+	for _, exclusion in ipairs(questExclusions) do
+		if frameName:find(exclusion) then return false end
+	end
+
+	-- Streamlined inclusion patterns
+	return frameName:match("ContainerFrame.*Item") or
+			frameName:match("MerchantItem.*Button") or
+			frameName:match(".*ItemButton$") or
+			frameName:match("ActionButton%d+$") or
+			frameName:match("ElvUI_ContainerFrame") or
+			frameName:match("ElvUI.*Hash$") or
+			frameName:match(".*LootButton") or
+			frameName:match("BankFrameItem")
+end
+
+function DOKI:ExtractBagItemID(frame)
+	if frame.GetBagID and frame.GetID then
+		local success1, bagID = pcall(frame.GetBagID, frame)
+		local success2, slotID = pcall(frame.GetID, frame)
+		if success1 and success2 and bagID and slotID then
+			local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+			return itemInfo and itemInfo.itemID
+		end
+	end
+
+	-- Alternative: Check for bagID/slotID properties
+	if frame.bagID and frame.slotID then
+		local itemInfo = C_Container.GetContainerItemInfo(frame.bagID, frame.slotID)
+		return itemInfo and itemInfo.itemID
+	end
+
+	return nil
+end
+
+function DOKI:ExtractMerchantItemID(frame, frameName)
+	-- Only process actual merchant item buttons, not parent frames
+	local merchantIndex = frameName:match("MerchantItem(%d+)ItemButton")
+	if merchantIndex then
+		local itemLink = GetMerchantItemLink(tonumber(merchantIndex))
+		return itemLink and self:GetItemID(itemLink)
+	end
+
+	-- Skip parent merchant frames (MerchantItem1, MerchantItem2, etc.)
+	if frameName:match("^MerchantItem%d+$") then
+		return nil
+	end
+
+	if frame.merchantIndex then
+		local itemLink = GetMerchantItemLink(frame.merchantIndex)
+		return itemLink and self:GetItemID(itemLink)
+	end
+
+	return nil
+end
+
+function DOKI:ExtractActionItemID(frame)
+	if not frame.action then return nil end
+
+	local actionType, itemID = GetActionInfo(frame.action)
+	if actionType == "item" then
+		return itemID
+	end
+
+	return nil
+end
+
+function DOKI:DetermineFrameType(frame, frameName)
+	if frameName:match("ContainerFrame") or frameName:match("Bag.*Item") then
+		return "bag"
+	elseif frameName:match("MerchantItem.*ItemButton") then
+		return "merchant"
+	elseif frameName:match("Quest.*Button") or frameName:match("QuestLog.*Button") then
+		return "quest"
+	elseif frameName:match("Adventure") or frameName:match("Encounter") or frameName:match("Journal") then
+		return "journal"
+	elseif frameName:match("ActionButton") then
+		return "actionbar"
+	elseif frameName:match("Bank.*Item") then
+		return "bank"
+	elseif frameName:match("Guild.*Item") then
+		return "guild"
+	elseif frameName:match("Loot.*Button") then
+		return "loot"
+	elseif frameName:match("Trade.*Item") then
+		return "trade"
+	elseif frameName:match("Mail.*Item") then
+		return "mail"
+	elseif frameName:match("Auction.*Item") then
+		return "auction"
+	else
+		return "unknown"
+	end
+end
+
 function DOKI:GetItemID(itemLink)
 	if not itemLink then return nil end
 
@@ -1021,7 +1173,6 @@ function DOKI:GetItemID(itemLink)
 	return nil
 end
 
--- Check if an item is a collectible type
 function DOKI:IsCollectibleItem(itemID)
 	if not itemID then return false end
 
@@ -1073,7 +1224,6 @@ function DOKI:IsCollectibleItem(itemID)
 end
 
 -- ===== COLLECTION STATUS FUNCTIONS =====
--- Check if item is already collected using the SPECIFIC variant
 function DOKI:IsItemCollected(itemID, itemLink)
 	if not itemID then return false, false end
 
@@ -1109,7 +1259,6 @@ function DOKI:IsItemCollected(itemID, itemLink)
 	return false, false
 end
 
--- Check if mount is collected
 function DOKI:IsMountCollected(itemID)
 	if not itemID or not C_MountJournal then return false end
 
@@ -1122,7 +1271,6 @@ function DOKI:IsMountCollected(itemID)
 	return spellIDNum and IsSpellKnown(spellIDNum) or false
 end
 
--- Check if pet is collected
 function DOKI:IsPetCollected(itemID)
 	if not itemID or not C_PetJournal then return false end
 
@@ -1136,7 +1284,6 @@ function DOKI:IsPetCollected(itemID)
 	return numCollected and numCollected > 0
 end
 
--- Enhanced transmog collection check with yellow D feature
 function DOKI:IsTransmogCollected(itemID, itemLink)
 	if not itemID or not C_TransmogCollection then return false, false end
 
@@ -1173,7 +1320,6 @@ function DOKI:IsTransmogCollected(itemID, itemLink)
 	return false, showYellowD -- Don't have this variant, but return yellow D flag
 end
 
--- SMART: Enhanced transmog collection check with class AND faction restriction awareness
 function DOKI:IsTransmogCollectedSmart(itemID, itemLink)
 	if not itemID or not C_TransmogCollection then return false, false end
 
@@ -1213,7 +1359,6 @@ function DOKI:IsTransmogCollectedSmart(itemID, itemLink)
 	return false, false -- Default to pink D
 end
 
--- Check if we have other sources for this appearance
 function DOKI:HasOtherTransmogSources(itemAppearanceID, excludeModifiedAppearanceID)
 	if not itemAppearanceID then return false end
 
@@ -1234,7 +1379,6 @@ function DOKI:HasOtherTransmogSources(itemAppearanceID, excludeModifiedAppearanc
 	return false
 end
 
--- Check if we have sources with identical or less restrictive class AND faction sets
 function DOKI:HasEqualOrLessRestrictiveSources(itemAppearanceID, excludeModifiedAppearanceID)
 	if not itemAppearanceID then return false end
 
@@ -1310,7 +1454,6 @@ function DOKI:HasEqualOrLessRestrictiveSources(itemAppearanceID, excludeModified
 	return false
 end
 
--- Get class and faction restrictions for a specific source
 function DOKI:GetClassRestrictionsForSource(sourceID, appearanceID)
 	local restrictions = {
 		validClasses = {},
@@ -1434,8 +1577,132 @@ function DOKI:GetClassRestrictionsForSource(sourceID, appearanceID)
 	return restrictions
 end
 
--- ===== DEBUG FUNCTIONS =====
--- DEBUG FUNCTION: Detailed transmog analysis
+-- ===== DEBUG AND TESTING FUNCTIONS =====
+function DOKI:DebugFoundFrames()
+	if not self.foundFramesThisScan or #self.foundFramesThisScan == 0 then
+		print("|cffff69b4DOKI|r No frames found in last scan. Try /doki scan first.")
+		return
+	end
+
+	print(string.format("|cffff69b4DOKI|r === FOUND FRAMES DEBUG (%d frames) ===", #self.foundFramesThisScan))
+	for i, frameInfo in ipairs(self.foundFramesThisScan) do
+		local itemName = C_Item.GetItemInfo(frameInfo.itemData.itemID) or "Unknown"
+		print(string.format("%d. %s (ID: %d) in %s [%s] - %s",
+			i, itemName, frameInfo.itemData.itemID, frameInfo.frameName,
+			frameInfo.itemData.frameType,
+			frameInfo.itemData.isCollected and "COLLECTED" or "NOT collected"))
+	end
+
+	print("|cffff69b4DOKI|r === END FOUND FRAMES DEBUG ===")
+end
+
+function DOKI:TestElvUIBags()
+	if not ElvUI then
+		print("|cffff69b4DOKI|r ElvUI not detected")
+		return
+	end
+
+	print("|cffff69b4DOKI|r === ELVUI BAG TEST ===")
+	local E = ElvUI[1]
+	print(string.format("ElvUI[1] exists: %s", E and "yes" or "no"))
+	if not E then
+		print("|cffff69b4DOKI|r Cannot proceed without ElvUI[1]")
+		return
+	end
+
+	local B = E:GetModule("Bags", true)
+	print(string.format("Bags module exists: %s", B and "yes" or "no"))
+	if B then
+		print(string.format("BagFrame exists: %s", B.BagFrame and "yes" or "no"))
+		if B.BagFrame then
+			print(string.format("BagFrame shown: %s", B.BagFrame:IsShown() and "yes" or "no"))
+		end
+	end
+
+	-- Test button naming patterns for first few slots
+	print("\nTesting button naming patterns:")
+	local patternsFound = 0
+	for bagID = 0, 1 do -- Just test first two bags
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			for slotID = 1, math.min(3, numSlots) do -- Just test first 3 slots
+				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+				if itemInfo and itemInfo.itemID then
+					print(string.format("Bag %d Slot %d has item %d", bagID, slotID, itemInfo.itemID))
+					-- Test different naming patterns
+					local patterns = {
+						string.format("ElvUI_ContainerFrameBag%dSlot%dHash", bagID, slotID),
+						string.format("ElvUI_ContainerFrameBag%dSlot%d", bagID, slotID),
+						string.format("ElvUI_ContainerFrameBag%dSlot%dCenter", bagID, slotID),
+						string.format("ElvUI_ContainerFrameBag%dSlot%dArea", bagID, slotID),
+					}
+					for _, pattern in ipairs(patterns) do
+						local button = _G[pattern]
+						if button then
+							print(string.format("  Found button: %s (visible: %s)",
+								pattern, button:IsVisible() and "yes" or "no"))
+							if button:IsVisible() then
+								patternsFound = patternsFound + 1
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	print(string.format("\nVisible ElvUI buttons found: %d", patternsFound))
+	print("|cffff69b4DOKI|r === END ELVUI TEST ===")
+end
+
+function DOKI:TestMerchantFrames()
+	if not MerchantFrame or not MerchantFrame:IsVisible() then
+		print("|cffff69b4DOKI|r Merchant frame not visible")
+		return
+	end
+
+	print("|cffff69b4DOKI|r === MERCHANT FRAME TEST ===")
+	for i = 1, 10 do
+		local buttonName = "MerchantItem" .. i .. "ItemButton"
+		local button = _G[buttonName]
+		print(string.format("Testing %s:", buttonName))
+		print(string.format("  Button exists: %s", button and "yes" or "no"))
+		if button then
+			local isVisible = button:IsVisible()
+			print(string.format("  Button visible: %s", tostring(isVisible)))
+			if isVisible then
+				-- Test item extraction
+				local itemLink = GetMerchantItemLink(i)
+				print(string.format("  GetMerchantItemLink(%d): %s", i, itemLink or "nil"))
+				if itemLink then
+					local itemID = self:GetItemID(itemLink)
+					print(string.format("  ItemID: %s", tostring(itemID)))
+					if itemID then
+						local isCollectible = self:IsCollectibleItem(itemID)
+						print(string.format("  Is collectible: %s", tostring(isCollectible)))
+						if isCollectible then
+							local isCollected, showYellowD = self:IsItemCollected(itemID, itemLink)
+							print(string.format("  Collection status: %s%s",
+								isCollected and "COLLECTED" or "NOT collected",
+								showYellowD and " (yellow D)" or ""))
+						end
+					end
+				end
+
+				-- Test frame extraction
+				local frameItemData = self:ExtractItemFromAnyFrameOptimized(button, buttonName)
+				print(string.format("  Frame extraction: %s",
+					frameItemData and ("ItemID " .. frameItemData.itemID) or "failed"))
+			end
+		end
+
+		print("") -- Empty line between items
+	end
+
+	print("|cffff69b4DOKI|r === END MERCHANT TEST ===")
+end
+
+-- Debug transmog functions (abbreviated for space - full versions in original code)
 function DOKI:DebugTransmogItem(itemID)
 	if not itemID then
 		print("|cffff69b4DOKI|r Usage: /doki debug <itemID>")
@@ -1460,8 +1727,6 @@ function DOKI:DebugTransmogItem(itemID)
 		return
 	end
 
-	-- Create a mock hyperlink for testing
-	local testLink = string.format("|cffffffff|Hitem:%d:::::::::::::|h[%s]|h|r", itemID, itemName)
 	-- Get appearance IDs
 	print("\n--- Getting Appearance IDs ---")
 	local itemAppearanceID, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(itemID)
@@ -1526,7 +1791,6 @@ function DOKI:DebugTransmogItem(itemID)
 	print("|cffff69b4DOKI|r === END DEBUG ===")
 end
 
--- DEBUG FUNCTION: Smart transmog analysis with faction info
 function DOKI:DebugSmartTransmog(itemID)
 	if not itemID then
 		print("|cffff69b4DOKI|r Usage: /doki smart <itemID>")
@@ -1570,7 +1834,6 @@ function DOKI:DebugSmartTransmog(itemID)
 	print("|cffff69b4DOKI|r === END SMART DEBUG ===")
 end
 
--- DEBUG FUNCTION: Deep dive into class restrictions for a specific source
 function DOKI:DebugClassRestrictions(sourceID, appearanceID)
 	print(string.format("|cffff69b4DOKI|r === CLASS RESTRICTION DEBUG: Source %d, Appearance %d ===", sourceID,
 		appearanceID))
@@ -1589,7 +1852,6 @@ function DOKI:DebugClassRestrictions(sourceID, appearanceID)
 	print("|cffff69b4DOKI|r === END CLASS RESTRICTION DEBUG ===")
 end
 
--- DEBUG FUNCTION: Test faction detection for specific source
 function DOKI:DebugSourceRestrictions(sourceID)
 	if not sourceID then
 		print("|cffff69b4DOKI|r Usage: /doki source <sourceID>")
@@ -1612,7 +1874,6 @@ function DOKI:DebugSourceRestrictions(sourceID)
 	print("|cffff69b4DOKI|r === END SOURCE DEBUG ===")
 end
 
--- DEBUG FUNCTION: Simple item analysis
 function DOKI:DebugItemInfo(itemID)
 	if not itemID then
 		print("|cffff69b4DOKI|r Usage: /doki item <itemID>")
