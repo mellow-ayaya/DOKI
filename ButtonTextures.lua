@@ -50,12 +50,12 @@ function DOKI:GetButtonTexture(button)
 	-- Position at top-right corner
 	local iconTexture = self:FindButtonIcon(button)
 	if iconTexture then
-		textureData.texture:SetPoint("TOPRIGHT", iconTexture, "TOPRIGHT", -2, -2)
+		textureData.texture:SetPoint("TOPRIGHT", iconTexture, "TOPRIGHT", 2, 2)
 	else
-		textureData.texture:SetPoint("TOPRIGHT", button, "TOPRIGHT", -2, -2)
+		textureData.texture:SetPoint("TOPRIGHT", button, "TOPRIGHT", 2, 2)
 	end
 
-	textureData.texture:SetSize(16, 16)
+	textureData.texture:SetSize(12, 12)
 	textureData.button = button
 	self.buttonTextures[button] = textureData
 	return textureData
