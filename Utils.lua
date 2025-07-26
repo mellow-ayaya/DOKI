@@ -1,4 +1,4 @@
--- DOKI Utils - War Within Complete Fix
+-- DOKI Utils - War Within Complete Fix with Merchant Scroll Detection (All Old API Removed)
 local addonName, DOKI = ...
 -- Initialize storage
 DOKI.currentItems = DOKI.currentItems or {}
@@ -7,6 +7,165 @@ DOKI.foundFramesThisScan = {}
 -- Cache for collection status to avoid redundant API calls
 DOKI.collectionCache = DOKI.collectionCache or {}
 DOKI.lastCacheUpdate = 0
+-- ===== MERCHANT SCROLL DETECTION SYSTEM =====
+DOKI.merchantScrollDetector = {
+	isScrolling = false,
+	scrollTimer = nil,
+	lastMerchantState = nil,
+	merchantOpen = false,
+}
+function DOKI:InitializeMerchantScrollDetection()
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Initializing merchant scroll detection...")
+	end
+
+	-- Method 1: Hook ScrollBox mouse wheel (modern War Within approach) - if available
+	if MerchantFrame and MerchantFrame.ScrollBox then
+		MerchantFrame.ScrollBox:EnableMouseWheel(true)
+		MerchantFrame.ScrollBox:HookScript("OnMouseWheel", function(self, delta)
+			DOKI:OnMerchantMouseWheel(delta)
+		end)
+		-- Register ScrollBox callbacks if available
+		if MerchantFrame.ScrollBox.RegisterCallback then
+			MerchantFrame.ScrollBox:RegisterCallback("OnScroll", function(self, scrollPercent)
+				DOKI:OnMerchantScrollPosition(scrollPercent)
+			end)
+		end
+
+		if self.db and self.db.debugMode then
+			print("|cffff69b4DOKI|r Hooked ScrollBox mouse wheel events")
+		end
+	else
+		if self.db and self.db.debugMode then
+			print("|cffff69b4DOKI|r ScrollBox not found, using fallback methods")
+		end
+	end
+
+	-- Method 2: Hook main merchant frame (fallback and primary for classic merchants)
+	if MerchantFrame then
+		MerchantFrame:EnableMouseWheel(true)
+		MerchantFrame:HookScript("OnMouseWheel", function(self, delta)
+			DOKI:OnMerchantMouseWheel(delta)
+		end)
+		if self.db and self.db.debugMode then
+			print("|cffff69b4DOKI|r Hooked MerchantFrame mouse wheel events")
+		end
+	end
+
+	-- Method 3: Hook merchant update functions
+	hooksecurefunc("MerchantFrame_Update", function()
+		if DOKI.merchantScrollDetector.isScrolling then
+			DOKI:OnMerchantScrollPageChange()
+		end
+	end)
+end
+
+function DOKI:OnMerchantMouseWheel(delta)
+	if not (MerchantFrame and MerchantFrame:IsVisible()) then return end
+
+	local direction = delta > 0 and "up" or "down"
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r Merchant scroll detected: %s", direction))
+	end
+
+	-- Mark as scrolling
+	self.merchantScrollDetector.isScrolling = true
+	-- Reset scroll end timer
+	if self.merchantScrollDetector.scrollTimer then
+		self.merchantScrollDetector.scrollTimer:Cancel()
+	end
+
+	self.merchantScrollDetector.scrollTimer = C_Timer.NewTimer(0.3, function()
+		DOKI.merchantScrollDetector.isScrolling = false
+		if DOKI.db and DOKI.db.debugMode then
+			print("|cffff69b4DOKI|r Merchant scrolling ended")
+		end
+	end)
+	-- Immediate response to scroll
+	self:OnMerchantScrollPageChange()
+end
+
+function DOKI:OnMerchantScrollPosition(scrollPercent)
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r Merchant scroll position: %.2f", scrollPercent))
+	end
+
+	self:OnMerchantScrollPageChange()
+end
+
+function DOKI:OnMerchantScrollPageChange()
+	if not (MerchantFrame and MerchantFrame:IsVisible()) then return end
+
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Merchant page changed via scroll - updating indicators")
+	end
+
+	-- FIXED: Don't rely on API state comparison since GetMerchantNumItems()
+	-- returns ALL items, not just visible ones. Always update on scroll.
+	C_Timer.After(0.1, function()
+		if self.db and self.db.enabled and MerchantFrame and MerchantFrame:IsVisible() then
+			-- Force a surgical update to detect button changes
+			local changedCount = self:TriggerImmediateSurgicalUpdate()
+			if self.db and self.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r Merchant scroll update: triggered surgical update"))
+			end
+		end
+	end)
+end
+
+function DOKI:GetCurrentMerchantState()
+	local state = {}
+	local numItems = GetMerchantNumItems()
+	for i = 1, numItems do
+		-- FIXED: Use new War Within API
+		local itemInfo = C_MerchantFrame.GetItemInfo(i)
+		if itemInfo and itemInfo.name then     -- Item exists
+			state[i] = {
+				name = itemInfo.name,
+				texture = itemInfo.texture,
+				price = itemInfo.price,
+				quantity = itemInfo.stackCount,
+				available = itemInfo.numAvailable,
+				isPurchasable = itemInfo.isPurchasable,
+			}
+		end
+	end
+
+	return state
+end
+
+function DOKI:CompareMerchantState(state1, state2)
+	if not state1 and not state2 then return true end
+
+	if not state1 or not state2 then return false end
+
+	-- Quick count comparison
+	local count1, count2 = 0, 0
+	for _ in pairs(state1) do count1 = count1 + 1 end
+
+	for _ in pairs(state2) do count2 = count2 + 1 end
+
+	if count1 ~= count2 then return false end
+
+	-- Compare items
+	for i, item1 in pairs(state1) do
+		local item2 = state2[i]
+		if not item2 then return false end
+
+		-- FIXED: Handle table structures properly
+		if type(item1) == "table" and type(item2) == "table" then
+			if item1.name ~= item2.name or item1.texture ~= item2.texture or item1.price ~= item2.price then
+				return false
+			end
+		else
+			-- Fallback for non-table data
+			if item1 ~= item2 then return false end
+		end
+	end
+
+	return true
+end
+
 -- ===== SURGICAL UPDATE THROTTLING =====
 DOKI.lastSurgicalUpdate = 0
 DOKI.surgicalUpdateThrottleTime = 0.05 -- 50ms minimum between updates
@@ -213,7 +372,7 @@ function DOKI:FullItemScan(withDelay)
 	if withDelay then
 		C_Timer.After(0.15, function()
 			if self.db and self.db.enabled then
-				self:FullItemScan(false) -- Run without delay on retry
+				self:FullItemScan(false)         -- Run without delay on retry
 			end
 		end)
 		return 0
@@ -245,18 +404,174 @@ function DOKI:FullItemScan(withDelay)
 	return indicatorCount
 end
 
+-- Helper function to get item info directly from merchant button
+function DOKI:GetItemFromMerchantButton(button, slotIndex)
+	if not button then return nil, nil end
+
+	-- Method 1: Check if button has item properties directly (War Within - this works!)
+	if button.link and button.hasItem then
+		local itemID = self:GetItemID(button.link)
+		if itemID then
+			return itemID, button.link
+		end
+	end
+
+	-- FIXED: Don't use API fallback - if button doesn't have direct item data, it's empty
+	-- The API returns all items regardless of what page is visible, so we can't rely on it
+	-- Check if button is visible but has no item
+	if button:IsVisible() then
+		return "EMPTY_SLOT", nil
+	end
+
+	return nil, nil
+end
+
+-- ===== FIXED MERCHANT FRAME SCANNING =====
 function DOKI:ScanMerchantFrames()
 	local indicatorCount = 0
 	if not (MerchantFrame and MerchantFrame:IsVisible()) then
 		return 0
 	end
 
-	-- TODO: Merchant detection needs fixing - skip for now
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Merchant scanning temporarily disabled (needs fixing)")
+		print("|cffff69b4DOKI|r Scanning merchant frames...")
 	end
 
-	return 0
+	-- Scan only visible merchant button slots (not all API items)
+	for i = 1, 12 do   -- Most merchants have 10-12 visible slots
+		local possibleButtonNames = {
+			string.format("MerchantItem%dItemButton", i),
+			string.format("MerchantItem%d", i),
+		}
+		for _, buttonName in ipairs(possibleButtonNames) do
+			local button = _G[buttonName]
+			if button and button:IsVisible() then
+				-- Get item directly from the button
+				local itemID, itemLink = self:GetItemFromMerchantButton(button, i)
+				-- FIXED: Skip empty slots entirely for indicator creation
+				if itemID and itemID ~= "EMPTY_SLOT" and self:IsCollectibleItem(itemID, itemLink) then
+					local isCollected, showYellowD = self:IsItemCollected(itemID, itemLink)
+					-- Only create indicator if NOT collected
+					if not isCollected then
+						local itemData = {
+							itemID = itemID,
+							itemLink = itemLink,
+							isCollected = isCollected,
+							showYellowD = showYellowD,
+							frameType = "merchant",
+						}
+						-- Try to create indicator
+						local success = self:AddButtonIndicator(button, itemData)
+						if success then
+							indicatorCount = indicatorCount + 1
+							if self.db.debugMode then
+								local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+								print(string.format("|cffff69b4DOKI|r Created indicator for %s (ID: %d) on %s",
+									itemName, itemID, buttonName))
+							end
+						end
+
+						table.insert(self.foundFramesThisScan, {
+							frame = button,
+							frameName = buttonName,
+							itemData = itemData,
+						})
+					else
+						if self.db.debugMode then
+							local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+							print(string.format("|cffff69b4DOKI|r Skipping %s (ID: %d) on %s - ALREADY COLLECTED",
+								itemName, itemID, buttonName))
+						end
+					end
+				elseif itemID == "EMPTY_SLOT" then
+					if self.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r Skipping %s - EMPTY SLOT", buttonName))
+					end
+				elseif itemID then
+					if self.db.debugMode then
+						local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+						print(string.format("|cffff69b4DOKI|r Skipping %s (ID: %d) on %s - NOT COLLECTIBLE",
+							itemName, itemID, buttonName))
+					end
+				end
+
+				break
+			end
+		end
+	end
+
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r Merchant scan complete: %d indicators created", indicatorCount))
+	end
+
+	return indicatorCount
+end
+
+function DOKI:FindMerchantItemButton(frame)
+	if not frame then return nil end
+
+	-- Common button names and properties
+	local buttonFields = { "ItemButton", "itemButton", "button", "Button" }
+	for _, field in ipairs(buttonFields) do
+		local button = frame[field]
+		if button and type(button) == "table" and button.IsVisible then
+			local success, isVisible = pcall(button.IsVisible, button)
+			if success and isVisible then
+				return button
+			end
+		end
+	end
+
+	-- Search children
+	local children = { frame:GetChildren() }
+	for _, child in ipairs(children) do
+		if child and child.IsVisible then
+			local success, isVisible = pcall(child.IsVisible, child)
+			if success and isVisible then
+				-- Check if this looks like an item button
+				if child.GetNormalTexture or child.icon or child.Icon then
+					return child
+				end
+			end
+		end
+	end
+
+	return nil
+end
+
+function DOKI:CleanupMerchantTextures()
+	if not self.buttonTextures then return 0 end
+
+	local removedCount = 0
+	local toRemove = {}
+	for button, textureData in pairs(self.buttonTextures) do
+		if textureData.isActive then
+			-- Check if this is a merchant button that's no longer valid
+			local buttonName = ""
+			local success, name = pcall(button.GetName, button)
+			if success and name then
+				buttonName = name
+			end
+
+			if string.find(buttonName, "Merchant") then
+				-- This is a merchant button - check if merchant is still open
+				if not (MerchantFrame and MerchantFrame:IsVisible()) then
+					table.insert(toRemove, button)
+					removedCount = removedCount + 1
+				end
+			end
+		end
+	end
+
+	for _, button in ipairs(toRemove) do
+		self:RemoveButtonIndicator(button)
+	end
+
+	if self.db and self.db.debugMode and removedCount > 0 then
+		print(string.format("|cffff69b4DOKI|r Cleaned up %d merchant indicators", removedCount))
+	end
+
+	return removedCount
 end
 
 function DOKI:ScanBagFrames()
@@ -267,10 +582,6 @@ function DOKI:ScanBagFrames()
 		if E then
 			local B = E:GetModule("Bags", true)
 			if B and (B.BagFrame and B.BagFrame:IsShown()) then
-				if self.db.debugMode then
-					print("|cffff69b4DOKI|r Scanning ElvUI bags...")
-				end
-
 				for bagID = 0, NUM_BAG_SLOTS do
 					local numSlots = C_Container.GetContainerNumSlots(bagID)
 					if numSlots and numSlots > 0 then
@@ -295,24 +606,6 @@ function DOKI:ScanBagFrames()
 												frameType = "bag",
 											}
 											indicatorCount = indicatorCount + self:CreateUniversalIndicator(elvUIButton, itemData)
-											if self.db.debugMode then
-												local itemName = C_Item.GetItemInfo(itemInfo.itemID) or "Unknown"
-												local extraInfo = ""
-												if string.find(itemInfo.hyperlink, "battlepet:") then
-													local speciesID = self:GetPetSpeciesFromBattlePetLink(itemInfo.hyperlink)
-													extraInfo = string.format(" [Battlepet Species: %d]", speciesID or 0)
-												end
-
-												print(string.format("|cffff69b4DOKI|r Found %s (ID: %d) in ElvUI bag %d slot %d - %s%s",
-													itemName, itemInfo.itemID, bagID, slotID,
-													isCollected and "COLLECTED" or "NOT collected", extraInfo))
-												table.insert(self.foundFramesThisScan, {
-													frame = elvUIButton,
-													frameName = elvUIButtonName,
-													itemData = itemData,
-												})
-											end
-
 											break
 										end
 									end
@@ -329,10 +622,6 @@ function DOKI:ScanBagFrames()
 	local scannedBlizzardBags = false
 	-- Combined bags (newer interface)
 	if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
-		if self.db.debugMode then
-			print("|cffff69b4DOKI|r Scanning Blizzard combined bags...")
-		end
-
 		for bagID = 0, NUM_BAG_SLOTS do
 			local numSlots = C_Container.GetContainerNumSlots(bagID)
 			if numSlots and numSlots > 0 then
@@ -372,17 +661,6 @@ function DOKI:ScanBagFrames()
 									frameType = "bag",
 								}
 								indicatorCount = indicatorCount + self:CreateUniversalIndicator(button, itemData)
-								if self.db.debugMode then
-									local itemName = C_Item.GetItemInfo(itemInfo.itemID) or "Unknown"
-									print(string.format("|cffff69b4DOKI|r Found %s (ID: %d) in Blizzard bag %d slot %d - %s",
-										itemName, itemInfo.itemID, bagID, slotID,
-										isCollected and "COLLECTED" or "NOT collected"))
-									table.insert(self.foundFramesThisScan, {
-										frame = button,
-										frameName = button:GetName() or "CombinedBagItem",
-										itemData = itemData,
-									})
-								end
 							end
 						end
 					end
@@ -398,10 +676,6 @@ function DOKI:ScanBagFrames()
 		for bagID = 0, NUM_BAG_SLOTS do
 			local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
 			if containerFrame and containerFrame:IsVisible() then
-				if self.db.debugMode then
-					print(string.format("|cffff69b4DOKI|r Scanning container frame %d...", bagID + 1))
-				end
-
 				local numSlots = C_Container.GetContainerNumSlots(bagID)
 				if numSlots and numSlots > 0 then
 					for slotID = 1, numSlots do
@@ -424,18 +698,6 @@ function DOKI:ScanBagFrames()
 											frameType = "bag",
 										}
 										indicatorCount = indicatorCount + self:CreateUniversalIndicator(button, itemData)
-										if self.db.debugMode then
-											local itemName = C_Item.GetItemInfo(itemInfo.itemID) or "Unknown"
-											print(string.format("|cffff69b4DOKI|r Found %s (ID: %d) in container bag %d slot %d - %s",
-												itemName, itemInfo.itemID, bagID, slotID,
-												isCollected and "COLLECTED" or "NOT collected"))
-											table.insert(self.foundFramesThisScan, {
-												frame = button,
-												frameName = buttonName,
-												itemData = itemData,
-											})
-										end
-
 										break
 									end
 								end
@@ -484,7 +746,7 @@ function DOKI:CreateUniversalIndicator(frame, itemData)
 	return 0
 end
 
--- ===== WAR WITHIN EVENT SYSTEM (CLEANED) =====
+-- ===== WAR WITHIN EVENT SYSTEM (ENHANCED WITH MERCHANT SUPPORT) =====
 function DOKI:SetupMinimalEventSystem()
 	if self.eventFrame then
 		self.eventFrame:UnregisterAllEvents()
@@ -492,10 +754,11 @@ function DOKI:SetupMinimalEventSystem()
 		self.eventFrame = CreateFrame("Frame")
 	end
 
-	-- FIXED: Removed noisy events that fire constantly
+	-- Enhanced event list with merchant support
 	local events = {
 		"MERCHANT_SHOW",
 		"MERCHANT_CLOSED",
+		"MERCHANT_UPDATE",     -- Added for merchant page changes
 		"BANKFRAME_OPENED",
 		"BANKFRAME_CLOSED",
 		"ITEM_UNLOCKED",
@@ -504,11 +767,11 @@ function DOKI:SetupMinimalEventSystem()
 		"ITEM_LOCK_CHANGED",
 		"CURSOR_CHANGED",
 		-- WAR WITHIN COLLECTION EVENTS (removed noisy ones)
-		"PET_JOURNAL_LIST_UPDATE",   -- Main pet event (confirmed working)
-		"COMPANION_LEARNED",         -- Mount/pet learning (confirmed in Blizzard code)
-		"COMPANION_UNLEARNED",       -- Mount/pet unlearning (confirmed in Blizzard code)
-		"TRANSMOG_COLLECTION_UPDATED", -- When transmog is collected
-		"TOYS_UPDATED",              -- When toys are learned
+		"PET_JOURNAL_LIST_UPDATE",         -- Main pet event (confirmed working)
+		"COMPANION_LEARNED",               -- Mount/pet learning (confirmed in Blizzard code)
+		"COMPANION_UNLEARNED",             -- Mount/pet unlearning (confirmed in Blizzard code)
+		"TRANSMOG_COLLECTION_UPDATED",     -- When transmog is collected
+		"TOYS_UPDATED",                    -- When toys are learned
 	}
 	for _, event in ipairs(events) do
 		self.eventFrame:RegisterEvent(event)
@@ -517,20 +780,37 @@ function DOKI:SetupMinimalEventSystem()
 	self.eventFrame:SetScript("OnEvent", function(self, event, ...)
 		if not (DOKI.db and DOKI.db.enabled) then return end
 
-		if DOKI.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Event: %s", event))
-		end
-
-		if event == "MERCHANT_SHOW" or event == "BANKFRAME_OPENED" then
+		if event == "MERCHANT_SHOW" then
+			DOKI.merchantScrollDetector.merchantOpen = true
+			DOKI:InitializeMerchantScrollDetection()
 			C_Timer.After(0.2, function()
 				if DOKI.db and DOKI.db.enabled then
 					DOKI:FullItemScan()
 				end
 			end)
-		elseif event == "MERCHANT_CLOSED" or event == "BANKFRAME_CLOSED" then
-			if event == "MERCHANT_CLOSED" and DOKI.CleanupMerchantTextures then
+		elseif event == "MERCHANT_UPDATE" then
+			-- Detect page changes during scrolling or filter changes
+			if DOKI.merchantScrollDetector.merchantOpen then
+				C_Timer.After(0.1, function()
+					if DOKI.db and DOKI.db.enabled and MerchantFrame and MerchantFrame:IsVisible() then
+						DOKI:ScanMerchantFrames()
+					end
+				end)
+			end
+		elseif event == "MERCHANT_CLOSED" then
+			DOKI.merchantScrollDetector.merchantOpen = false
+			DOKI.merchantScrollDetector.lastMerchantState = nil
+			if DOKI.CleanupMerchantTextures then
 				DOKI:CleanupMerchantTextures()
-			elseif event == "BANKFRAME_CLOSED" and DOKI.CleanupBankTextures then
+			end
+		elseif event == "BANKFRAME_OPENED" then
+			C_Timer.After(0.2, function()
+				if DOKI.db and DOKI.db.enabled then
+					DOKI:FullItemScan()
+				end
+			end)
+		elseif event == "BANKFRAME_CLOSED" then
+			if DOKI.CleanupBankTextures then
 				DOKI:CleanupBankTextures()
 			end
 		elseif event == "ITEM_UNLOCKED" then
@@ -553,10 +833,6 @@ function DOKI:SetupMinimalEventSystem()
 			DOKI:ClearCollectionCache()
 			C_Timer.After(0.05, function()
 				if DOKI.db and DOKI.db.enabled then
-					if DOKI.db.debugMode then
-						print("|cffff69b4DOKI|r Pet collection changed - forcing full rescan with delay")
-					end
-
 					-- Use withDelay=true for potential battlepet timing issues
 					DOKI:FullItemScan(true)
 				end
@@ -566,10 +842,6 @@ function DOKI:SetupMinimalEventSystem()
 			DOKI:ClearCollectionCache()
 			C_Timer.After(0.05, function()
 				if DOKI.db and DOKI.db.enabled then
-					if DOKI.db.debugMode then
-						print("|cffff69b4DOKI|r Transmog/toy collection changed - forcing full rescan")
-					end
-
 					-- Force full scan to re-evaluate all visible items
 					DOKI:FullItemScan()
 				end
@@ -602,7 +874,7 @@ function DOKI:SetupMinimalEventSystem()
 		end
 	end)
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r War Within event system initialized (noisy events removed)")
+		print("|cffff69b4DOKI|r War Within event system initialized with merchant scroll detection")
 	end
 end
 
@@ -642,11 +914,13 @@ function DOKI:InitializeUniversalScanning()
 	self:SetupMinimalEventSystem()
 	self:FullItemScan()
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r War Within surgical system initialized")
+		print("|cffff69b4DOKI|r War Within surgical system initialized with merchant support")
 		print("  |cff00ff00•|r Regular updates: 0.2s interval")
 		print("  |cff00ff00•|r Clean events: Removed noisy COMPANION_UPDATE, etc.")
-		print("  |cff00ff00•|r Battlepet support: Caged pet detection added")
+		print("  |cff00ff00•|r Battlepet support: Caged pet detection")
 		print("  |cff00ff00•|r Timing fix: Delays for battlepet caging")
+		print("  |cff00ff00•|r |cffff8000NEW:|r Merchant scroll detection")
+		print("  |cff00ff00•|r |cffff8000NEW:|r OnMouseWheel + MERCHANT_UPDATE events")
 		print(string.format("  |cff00ff00•|r Throttling: %.0fms minimum between updates",
 			self.surgicalUpdateThrottleTime * 1000))
 	end
@@ -751,11 +1025,6 @@ function DOKI:IsPetSpeciesCollected(speciesID)
 
 	-- Check if we have any of this pet species
 	local numCollected, limit = C_PetJournal.GetNumCollectedInfo(speciesID)
-	if self.db and self.db.debugMode then
-		print(string.format("|cffff69b4DOKI|r Pet Species %d: %d/%d collected",
-			speciesID, numCollected or 0, limit or 3))
-	end
-
 	return numCollected and numCollected > 0
 end
 
@@ -767,11 +1036,6 @@ function DOKI:IsItemCollected(itemID, itemLink)
 	local petSpeciesID = self:GetPetSpeciesFromBattlePetLink(itemLink)
 	if petSpeciesID then
 		local isCollected = self:IsPetSpeciesCollected(petSpeciesID)
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Caged Pet (Species: %d): %s",
-				petSpeciesID, isCollected and "COLLECTED" or "NOT COLLECTED"))
-		end
-
 		-- Cache the result using itemLink as key since no itemID
 		self:SetCachedCollectionStatus(petSpeciesID, itemLink, isCollected, false)
 		return isCollected, false
@@ -828,10 +1092,6 @@ function DOKI:IsMountCollectedWarWithin(itemID)
 	if not mountID then
 		-- Item might not be loaded yet, or not a mount item
 		C_Item.RequestLoadItemDataByID(itemID)
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Mount item %d: No mount ID from GetMountFromItem", itemID))
-		end
-
 		return false
 	end
 
@@ -839,12 +1099,6 @@ function DOKI:IsMountCollectedWarWithin(itemID)
 	local name, spellID, icon, isActive, isUsable, sourceType, isFavorite,
 	isFactionSpecific, faction, shouldHideOnChar, isCollected, mountIDReturn, isSteadyFlight = C_MountJournal
 			.GetMountInfoByID(mountID)
-	if self.db and self.db.debugMode then
-		local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
-		print(string.format("|cffff69b4DOKI|r Mount %s (Item: %d, Mount: %d): %s",
-			itemName, itemID, mountID, isCollected and "COLLECTED" or "NOT COLLECTED"))
-	end
-
 	return isCollected or false
 end
 
@@ -858,21 +1112,11 @@ function DOKI:IsPetCollectedWarWithin(itemID)
 	if not speciesID then
 		-- Pet data not loaded yet
 		C_Item.RequestLoadItemDataByID(itemID)
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Pet item %d: No species ID yet, requesting data", itemID))
-		end
-
 		return false
 	end
 
 	-- Check if we have any of this pet species
 	local numCollected, limit = C_PetJournal.GetNumCollectedInfo(speciesID)
-	if self.db and self.db.debugMode then
-		local petName = name or "Unknown Pet"
-		print(string.format("|cffff69b4DOKI|r Pet %s (ID: %d, Species: %d): %d/%d collected",
-			petName, itemID, speciesID, numCollected or 0, limit or 3))
-	end
-
 	return numCollected and numCollected > 0
 end
 
@@ -919,21 +1163,13 @@ function DOKI:IsTransmogCollectedSmart(itemID, itemLink)
 	end
 
 	if not itemModifiedAppearanceID then
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r No appearance ID for item %d", itemID))
-		end
-
 		return false, false
 	end
 
 	-- Check if we have this specific variant
 	local hasThisVariant = C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance(itemModifiedAppearanceID)
 	if hasThisVariant then
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Item %d - have this specific variant", itemID))
-		end
-
-		return true, false -- Have this variant, no indicator needed
+		return true, false     -- Have this variant, no indicator needed
 	end
 
 	-- We don't have this variant - check if we have equal or better sources
@@ -941,28 +1177,14 @@ function DOKI:IsTransmogCollectedSmart(itemID, itemLink)
 		local hasEqualOrBetterSources = self:HasEqualOrLessRestrictiveSources(itemAppearanceID, itemModifiedAppearanceID)
 		if hasEqualOrBetterSources then
 			-- We have identical or less restrictive sources, so we don't need this item
-			if self.db and self.db.debugMode then
-				print(string.format("|cffff69b4DOKI|r Item %d - have equal or better sources, no D needed", itemID))
-			end
-
-			return true, false -- Treat as collected (no D shown)
+			return true, false       -- Treat as collected (no D shown)
 		else
 			-- We either have no sources, or only more restrictive sources - show orange D
-			local hasAnySources = self:HasOtherTransmogSources(itemAppearanceID, itemModifiedAppearanceID)
-			if self.db and self.db.debugMode then
-				if hasAnySources then
-					print(string.format(
-						"|cffff69b4DOKI|r Item %d - have other sources but they're more restrictive, show orange D", itemID))
-				else
-					print(string.format("|cffff69b4DOKI|r Item %d - no sources at all, show orange D", itemID))
-				end
-			end
-
-			return false, false -- Show orange D (we need this item)
+			return false, false       -- Show orange D (we need this item)
 		end
 	end
 
-	return false, false -- Default to orange D
+	return false, false   -- Default to orange D
 end
 
 -- Get class and faction restrictions for a specific source
@@ -971,7 +1193,7 @@ function DOKI:GetClassRestrictionsForSource(sourceID, appearanceID)
 		validClasses = {},
 		armorType = nil,
 		hasClassRestriction = false,
-		faction = nil, -- "Alliance", "Horde", or nil (both factions)
+		faction = nil,     -- "Alliance", "Horde", or nil (both factions)
 		hasFactionRestriction = false,
 	}
 	-- Get the item from the source
@@ -993,16 +1215,12 @@ function DOKI:GetClassRestrictionsForSource(sourceID, appearanceID)
 	end
 
 	if not linkedItemID then
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Could not get item ID for source %d", sourceID))
-		end
-
 		return restrictions
 	end
 
 	-- Get item properties for armor type
 	local success3, _, _, _, _, _, classID, subClassID = pcall(C_Item.GetItemInfoInstant, linkedItemID)
-	if success3 and classID == 4 then -- Armor
+	if success3 and classID == 4 then   -- Armor
 		restrictions.armorType = subClassID
 	end
 
@@ -1012,7 +1230,6 @@ function DOKI:GetClassRestrictionsForSource(sourceID, appearanceID)
 	tooltip:SetItemByID(linkedItemID)
 	tooltip:Show()
 	local foundClassRestriction = false
-	local foundFactionRestriction = false
 	local restrictedClasses = {}
 	for i = 1, tooltip:NumLines() do
 		local line = _G["DOKIClassTooltip" .. sourceID .. "TextLeft" .. i]
@@ -1054,28 +1271,12 @@ function DOKI:GetClassRestrictionsForSource(sourceID, appearanceID)
 
 				-- Check for faction restrictions
 				local lowerText = string.lower(text)
-				if string.find(lowerText, "alliance") then
-					if string.find(lowerText, "require") or string.find(lowerText, "only") or
-							string.find(lowerText, "exclusive") or string.find(lowerText, "specific") or
-							string.find(lowerText, "reputation") or string.find(text, "Alliance") then
-						foundFactionRestriction = true
-						restrictions.faction = "Alliance"
-						restrictions.hasFactionRestriction = true
-						if self.db and self.db.debugMode then
-							print(string.format("|cffff69b4DOKI|r Found Alliance restriction for item %d: %s", linkedItemID, text))
-						end
-					end
-				elseif string.find(lowerText, "horde") then
-					if string.find(lowerText, "require") or string.find(lowerText, "only") or
-							string.find(lowerText, "exclusive") or string.find(lowerText, "specific") or
-							string.find(lowerText, "reputation") or string.find(text, "Horde") then
-						foundFactionRestriction = true
-						restrictions.faction = "Horde"
-						restrictions.hasFactionRestriction = true
-						if self.db and self.db.debugMode then
-							print(string.format("|cffff69b4DOKI|r Found Horde restriction for item %d: %s", linkedItemID, text))
-						end
-					end
+				if string.find(lowerText, "alliance") and (string.find(lowerText, "require") or string.find(lowerText, "only")) then
+					restrictions.faction = "Alliance"
+					restrictions.hasFactionRestriction = true
+				elseif string.find(lowerText, "horde") and (string.find(lowerText, "require") or string.find(lowerText, "only")) then
+					restrictions.faction = "Horde"
+					restrictions.hasFactionRestriction = true
 				end
 			end
 		end
@@ -1083,23 +1284,20 @@ function DOKI:GetClassRestrictionsForSource(sourceID, appearanceID)
 
 	tooltip:Hide()
 	if foundClassRestriction then
-		-- Item has explicit class restrictions
 		restrictions.validClasses = restrictedClasses
 		restrictions.hasClassRestriction = true
 	else
-		-- No class restrictions found - use armor type defaults
-		if restrictions.armorType == 1 then                                      -- Cloth
-			restrictions.validClasses = { 5, 8, 9 }                                -- Priest, Mage, Warlock
-		elseif restrictions.armorType == 2 then                                  -- Leather
-			restrictions.validClasses = { 4, 10, 11, 12 }                          -- Rogue, Monk, Druid, Demon Hunter
-		elseif restrictions.armorType == 3 then                                  -- Mail
-			restrictions.validClasses = { 3, 7, 13 }                               -- Hunter, Shaman, Evoker
-		elseif restrictions.armorType == 4 then                                  -- Plate
-			restrictions.validClasses = { 1, 2, 6 }                                -- Warrior, Paladin, Death Knight
-		elseif classID == 2 then                                                 -- Weapon
-			restrictions.validClasses = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 } -- All classes
+		-- Use armor type defaults
+		if restrictions.armorType == 1 then
+			restrictions.validClasses = { 5, 8, 9 }                                         -- Cloth: Priest, Mage, Warlock
+		elseif restrictions.armorType == 2 then
+			restrictions.validClasses = { 4, 10, 11, 12 }                                   -- Leather: Rogue, Monk, Druid, DH
+		elseif restrictions.armorType == 3 then
+			restrictions.validClasses = { 3, 7, 13 }                                        -- Mail: Hunter, Shaman, Evoker
+		elseif restrictions.armorType == 4 then
+			restrictions.validClasses = { 1, 2, 6 }                                         -- Plate: Warrior, Paladin, DK
 		else
-			restrictions.validClasses = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 } -- Unknown, assume all
+			restrictions.validClasses = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 }       -- All classes
 		end
 	end
 
@@ -1110,11 +1308,9 @@ end
 function DOKI:HasEqualOrLessRestrictiveSources(itemAppearanceID, excludeModifiedAppearanceID)
 	if not itemAppearanceID then return false end
 
-	-- Get all sources for this appearance
 	local success, allSources = pcall(C_TransmogCollection.GetAllAppearanceSources, itemAppearanceID)
 	if not success or not allSources then return false end
 
-	-- Get class and faction restrictions for the current item
 	local currentItemRestrictions = self:GetClassRestrictionsForSource(excludeModifiedAppearanceID, itemAppearanceID)
 	if not currentItemRestrictions then return false end
 
@@ -1123,83 +1319,22 @@ function DOKI:HasEqualOrLessRestrictiveSources(itemAppearanceID, excludeModified
 		if sourceID ~= excludeModifiedAppearanceID then
 			local success2, hasSource = pcall(C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance, sourceID)
 			if success2 and hasSource then
-				-- Get restrictions for this known source
 				local sourceRestrictions = self:GetClassRestrictionsForSource(sourceID, itemAppearanceID)
 				if sourceRestrictions then
 					local sourceClassCount = #sourceRestrictions.validClasses
 					local currentClassCount = #currentItemRestrictions.validClasses
-					-- Compare faction restrictions (faction-agnostic logic)
+					-- Compare faction restrictions
 					local factionEquivalent = false
-					-- For factions to be equivalent, they must be exactly the same
 					if sourceRestrictions.hasFactionRestriction == currentItemRestrictions.hasFactionRestriction then
 						if not sourceRestrictions.hasFactionRestriction then
-							-- Both have no faction restriction = equivalent
 							factionEquivalent = true
 						elseif sourceRestrictions.faction == currentItemRestrictions.faction then
-							-- Both have same faction restriction = equivalent
 							factionEquivalent = true
 						end
 					end
 
-					-- Only compare class restrictions if faction restrictions are equivalent
-					if factionEquivalent then
-						-- Check if source is less restrictive in terms of classes
-						if sourceClassCount > currentClassCount then
-							if self.db and self.db.debugMode then
-								print(string.format(
-									"|cffff69b4DOKI|r Found less restrictive source %d (usable by %d classes vs %d, same faction restrictions)",
-									sourceID, sourceClassCount, currentClassCount))
-							end
-
-							return true
-						end
-
-						-- Check if source has identical class restrictions
-						if sourceClassCount == currentClassCount then
-							-- Create sorted lists to compare classes
-							local sourceCopy = {}
-							local currentCopy = {}
-							for _, classID in ipairs(sourceRestrictions.validClasses) do
-								table.insert(sourceCopy, classID)
-							end
-
-							for _, classID in ipairs(currentItemRestrictions.validClasses) do
-								table.insert(currentCopy, classID)
-							end
-
-							table.sort(sourceCopy)
-							table.sort(currentCopy)
-							-- Check if they're identical
-							local identical = true
-							for i = 1, #sourceCopy do
-								if sourceCopy[i] ~= currentCopy[i] then
-									identical = false
-									break
-								end
-							end
-
-							if identical then
-								if self.db and self.db.debugMode then
-									local factionText = sourceRestrictions.hasFactionRestriction and
-											(" (same " .. sourceRestrictions.faction .. " restriction)") or " (no faction restriction)"
-									print(string.format("|cffff69b4DOKI|r Found identical restriction source %d (same classes: %s)%s",
-										sourceID, table.concat(sourceCopy, ", "), factionText))
-								end
-
-								return true
-							end
-						end
-					else
-						-- Different faction restrictions - sources are not equivalent
-						if self.db and self.db.debugMode then
-							local currentFactionText = currentItemRestrictions.hasFactionRestriction and
-									currentItemRestrictions.faction or "none"
-							local sourceFactionText = sourceRestrictions.hasFactionRestriction and
-									sourceRestrictions.faction or "none"
-							print(string.format(
-								"|cffff69b4DOKI|r Source %d has different faction restrictions (%s vs %s) - not equivalent",
-								sourceID, sourceFactionText, currentFactionText))
-						end
+					if factionEquivalent and sourceClassCount >= currentClassCount then
+						return true
 					end
 				end
 			end

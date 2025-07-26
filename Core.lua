@@ -1,4 +1,4 @@
--- DOKI Core - Complete War Within Fix
+-- DOKI Core - Complete War Within Fix with Enhanced Merchant Support
 local addonName, DOKI = ...
 -- Initialize addon namespace
 DOKI.currentItems = {}
@@ -34,9 +34,11 @@ local function OnEvent(self, event, ...)
 			DOKI:InitializeButtonTextureSystem()
 			DOKI:InitializeUniversalScanning()
 			if ElvUI then
-				print("|cffff69b4DOKI|r loaded with War Within surgical system + ElvUI support. Type /doki for commands.")
+				print(
+					"|cffff69b4DOKI|r loaded with War Within surgical system + ElvUI support + Merchant scroll detection. Type /doki for commands.")
 			else
-				print("|cffff69b4DOKI|r loaded with War Within surgical system. Type /doki for commands.")
+				print(
+					"|cffff69b4DOKI|r loaded with War Within surgical system + Merchant scroll detection. Type /doki for commands.")
 			end
 
 			frame:UnregisterEvent("ADDON_LOADED")
@@ -47,7 +49,7 @@ end
 -- Register events
 frame:RegisterEvent("ADDON_LOADED")
 frame:SetScript("OnEvent", OnEvent)
--- Enhanced slash commands with battlepet support
+-- Enhanced slash commands with merchant and battlepet support
 SLASH_DOKI1 = "/doki"
 SlashCmdList["DOKI"] = function(msg)
 	local command = string.lower(strtrim(msg or ""))
@@ -139,12 +141,14 @@ SlashCmdList["DOKI"] = function(msg)
 			DOKI.db.debugMode and "On" or "Off"))
 		print(string.format("|cffff69b4DOKI|r Active indicators: %d (%d battlepets)", indicatorCount, battlepetCount))
 		print(string.format("|cffff69b4DOKI|r Tracked buttons: %d", snapshotCount))
-		print("|cffff69b4DOKI|r System: War Within Enhanced Surgical System")
+		print("|cffff69b4DOKI|r System: War Within Enhanced Surgical System with Merchant Support")
 		print("  |cff00ff00•|r Regular updates: 0.2s interval")
 		print("  |cff00ff00•|r Clean events: Noisy events removed")
 		print("  |cff00ff00•|r Battlepet support: Caged pet detection")
 		print("  |cff00ff00•|r Mount fix: GetMountFromItem API")
 		print("  |cff00ff00•|r Pet timing: Collection event delays")
+		print("  |cff00ff00•|r |cffff8000NEW:|r Merchant scroll detection")
+		print("  |cff00ff00•|r |cffff8000NEW:|r OnMouseWheel + MERCHANT_UPDATE events")
 		print(string.format("  |cff00ff00•|r Throttling: %.0fms minimum between updates",
 			(DOKI.surgicalUpdateThrottleTime or 0.05) * 1000))
 		if DOKI.totalUpdates and DOKI.totalUpdates > 0 then
@@ -154,6 +158,13 @@ SlashCmdList["DOKI"] = function(msg)
 				print(string.format("  |cffffff00•|r Throttled updates: %d", DOKI.throttledUpdates))
 			end
 		end
+
+		-- Show merchant status
+		local merchantOpen = MerchantFrame and MerchantFrame:IsVisible()
+		local merchantScrolling = DOKI.merchantScrollDetector and DOKI.merchantScrollDetector.isScrolling
+		print(string.format("  |cff00ff00•|r Merchant: %s%s",
+			merchantOpen and "Open" or "Closed",
+			merchantScrolling and " (scrolling)" or ""))
 	elseif command == "testbags" then
 		print("|cffff69b4DOKI|r === TESTING BAG DETECTION ===")
 		print("|cffff69b4DOKI|r Checking for visible bag frames...")
@@ -223,6 +234,137 @@ SlashCmdList["DOKI"] = function(msg)
 		else
 			print("|cffff69b4DOKI|r No bags visible - open your bags and try again")
 		end
+
+		-- NEW: Merchant testing commands
+	elseif command == "testmerchant" or command == "merchant" then
+		print("|cffff69b4DOKI|r === TESTING MERCHANT DETECTION ===")
+		local merchantOpen = MerchantFrame and MerchantFrame:IsVisible()
+		print(string.format("  Merchant frame visible: %s", tostring(merchantOpen)))
+		if not merchantOpen then
+			print("|cffff69b4DOKI|r Please open a merchant and try again")
+			return
+		end
+
+		-- Test scroll detection setup
+		print("  Merchant scroll detection status:")
+		if MerchantFrame.ScrollBox then
+			print("    ✅ ScrollBox exists")
+			local hasMouseWheel = MerchantFrame.ScrollBox:IsMouseWheelEnabled()
+			print(string.format("    Mouse wheel enabled: %s", tostring(hasMouseWheel)))
+			if MerchantFrame.ScrollBox.RegisterCallback then
+				print("    ✅ RegisterCallback available")
+			else
+				print("    ❌ RegisterCallback not available")
+			end
+		else
+			print("    ❌ ScrollBox not found")
+		end
+
+		-- Test merchant items
+		local numItems = GetMerchantNumItems()
+		print(string.format("  Merchant has %d items", numItems))
+		local collectibleCount = 0
+		for i = 1, numItems do
+			local itemLink = GetMerchantItemLink(i)
+			if itemLink then
+				local itemID = DOKI:GetItemID(itemLink)
+				if itemID and DOKI:IsCollectibleItem(itemID, itemLink) then
+					collectibleCount = collectibleCount + 1
+					local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+					local isCollected = DOKI:IsItemCollected(itemID, itemLink)
+					print(string.format("    Item %d: %s (ID: %d) - %s",
+						i, itemName, itemID, isCollected and "COLLECTED" or "NEEDS INDICATOR"))
+				end
+			end
+		end
+
+		print(string.format("  Collectible items found: %d", collectibleCount))
+		-- Test merchant scanning
+		local indicatorCount = DOKI:ScanMerchantFrames()
+		print(string.format("  Scan result: %d indicators created", indicatorCount))
+		-- Test scroll state
+		local scrollDetector = DOKI.merchantScrollDetector
+		if scrollDetector then
+			print(string.format("  Scroll detector state: open=%s, scrolling=%s",
+				tostring(scrollDetector.merchantOpen), tostring(scrollDetector.isScrolling)))
+		end
+	elseif command == "testscroll" then
+		print("|cffff69b4DOKI|r === TESTING MERCHANT SCROLL SIMULATION ===")
+		if not (MerchantFrame and MerchantFrame:IsVisible()) then
+			print("|cffff69b4DOKI|r Please open a merchant first")
+			return
+		end
+
+		print("|cffff69b4DOKI|r Simulating scroll down...")
+		DOKI:OnMerchantMouseWheel(-1)
+		C_Timer.After(1, function()
+			print("|cffff69b4DOKI|r Simulating scroll up...")
+			DOKI:OnMerchantMouseWheel(1)
+		end)
+	elseif command == "merchantstate" then
+		print("|cffff69b4DOKI|r === MERCHANT STATE DEBUG ===")
+		if not (MerchantFrame and MerchantFrame:IsVisible()) then
+			print("|cffff69b4DOKI|r Merchant is closed")
+			return
+		end
+
+		local currentState = DOKI:GetCurrentMerchantState()
+		local itemCount = 0
+		for _ in pairs(currentState) do itemCount = itemCount + 1 end
+
+		print(string.format("  Current merchant state: %d items", itemCount))
+		for i, item in pairs(currentState) do
+			-- FIXED: Handle table structure properly
+			local itemName = "Unknown"
+			if type(item) == "table" and item.name then
+				itemName = tostring(item.name)
+			elseif type(item) == "string" then
+				itemName = item
+			end
+
+			print(string.format("    Slot %d: %s", i, itemName))
+		end
+
+		local lastState = DOKI.merchantScrollDetector and DOKI.merchantScrollDetector.lastMerchantState
+		if lastState then
+			local lastItemCount = 0
+			for _ in pairs(lastState) do lastItemCount = lastItemCount + 1 end
+
+			print(string.format("  Last merchant state: %d items", lastItemCount))
+			local statesEqual = DOKI:CompareMerchantState(currentState, lastState)
+			print(string.format("  States are equal: %s", tostring(statesEqual)))
+		else
+			print("  No previous merchant state recorded")
+		end
+	elseif command == "merchantbuttons" or command == "checkbuttons" then
+		print("|cffff69b4DOKI|r === MERCHANT BUTTON DEBUG ===")
+		if not (MerchantFrame and MerchantFrame:IsVisible()) then
+			print("|cffff69b4DOKI|r Merchant is closed")
+			return
+		end
+
+		print("|cffff69b4DOKI|r Checking what items are currently visible in merchant buttons:")
+		for i = 1, 12 do
+			local button = _G[string.format("MerchantItem%dItemButton", i)] or _G[string.format("MerchantItem%d", i)]
+			if button and button:IsVisible() then
+				local itemID, itemLink = DOKI:GetItemFromMerchantButton(button, i)
+				if itemID == "EMPTY_SLOT" then
+					print(string.format("  Slot %d: EMPTY (button visible but no item)", i))
+				elseif itemID then
+					local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+					local isCollectible = DOKI:IsCollectibleItem(itemID, itemLink)
+					local isCollected = isCollectible and DOKI:IsItemCollected(itemID, itemLink) or false
+					print(string.format("  Slot %d: %s (ID: %d) - %s, %s",
+						i, itemName, itemID,
+						isCollectible and "Collectible" or "Not Collectible",
+						isCollected and "Collected" or "Needs Indicator"))
+				else
+					print(string.format("  Slot %d: No item detected", i))
+				end
+			else
+				print(string.format("  Slot %d: Button not visible", i))
+			end
+		end
 	elseif command == "testconnection" or command == "testbridge" then
 		print("|cffff69b4DOKI|r === TESTING SURGICAL→TEXTURE CONNECTION ===")
 		print("|cffff69b4DOKI|r Testing the bridge between surgical detection and button textures...")
@@ -252,9 +394,29 @@ SlashCmdList["DOKI"] = function(msg)
 		if DOKI.eventFrame then
 			print("  ✅ Event frame exists")
 			print("  ✅ Listening for: PET_JOURNAL_LIST_UPDATE, COMPANION_LEARNED/UNLEARNED")
+			print("  ✅ |cffff8000NEW:|r Listening for: MERCHANT_SHOW, MERCHANT_UPDATE, MERCHANT_CLOSED")
 			print("  ✅ Removed noisy events: COMPANION_UPDATE, MOUNT_JOURNAL_USABILITY_CHANGED")
 		else
 			print("  ❌ Event frame missing!")
+		end
+
+		print("|cffff69b4DOKI|r Merchant system status:")
+		if DOKI.InitializeMerchantScrollDetection then
+			print("  ✅ Merchant scroll detection available")
+			if MerchantFrame and MerchantFrame:IsVisible() then
+				print("  ✅ Merchant is open - testing scroll hooks")
+				local scrollBox = MerchantFrame.ScrollBox
+				if scrollBox then
+					print("    ✅ ScrollBox found")
+					print(string.format("    Mouse wheel enabled: %s", tostring(scrollBox:IsMouseWheelEnabled())))
+				else
+					print("    ❌ ScrollBox not found")
+				end
+			else
+				print("  ⚠️ Merchant is closed - open a merchant to test")
+			end
+		else
+			print("  ❌ Merchant scroll detection missing!")
 		end
 
 		print("|cffff69b4DOKI|r Connection test complete!")
@@ -330,7 +492,7 @@ SlashCmdList["DOKI"] = function(msg)
 			print("|cffff69b4DOKI|r Frame debug function not available")
 		end
 	else
-		print("|cffff69b4DOKI|r War Within Enhanced Surgical System Commands:")
+		print("|cffff69b4DOKI|r War Within Enhanced Surgical System with Merchant Support Commands:")
 		print("")
 		print("Basic controls:")
 		print("  /doki toggle - Enable/disable addon")
@@ -355,17 +517,25 @@ SlashCmdList["DOKI"] = function(msg)
 		print("  /doki battlepet - Debug battlepet snapshot tracking")
 		print("  /doki frames - Debug found item frames")
 		print("")
+		print("|cffff8000NEW - Merchant testing:|r")
+		print("  /doki testmerchant - Test merchant frame detection")
+		print("  /doki testscroll - Simulate merchant scroll events")
+		print("  /doki merchantstate - Debug current merchant state")
+		print("  /doki merchantbuttons - Check what's visible in merchant buttons")
+		print("")
 		print("|cff00ff00War Within Enhanced Features:|r")
 		print("  |cff00ff00•|r Fixed mount detection (GetMountFromItem API)")
 		print("  |cff00ff00•|r Enhanced pet detection with collection events")
 		print("  |cff00ff00•|r |cffff8000NEW:|r Battlepet (caged pet) support")
 		print("  |cff00ff00•|r |cffff8000FIXED:|r Removed noisy events (COMPANION_UPDATE, etc.)")
 		print("  |cff00ff00•|r |cffff8000IMPROVED:|r Timing delays for pet caging")
+		print("  |cff00ff00•|r |cffff8000NEW:|r Merchant scroll detection")
+		print("  |cff00ff00•|r |cffff8000NEW:|r OnMouseWheel + MERCHANT_UPDATE events")
 		print("  |cff00ff00•|r Enhanced surgical updates with battlepet tracking")
 		print("  |cff00ff00•|r Indicators follow items automatically")
 		print("  |cff00ff00•|r Ultra-fast throttling (50ms) prevents spam")
 		print("  |cff00ff00•|r Indicators appear in TOP-RIGHT corner")
 		print("")
-		print("|cffff8000Try caging/learning pets - indicators should update immediately!|r")
+		print("|cffff8000Try scrolling in merchant frames - indicators should update immediately!|r")
 	end
 end

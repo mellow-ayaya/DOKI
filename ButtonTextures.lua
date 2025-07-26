@@ -1,10 +1,10 @@
--- DOKI Button Texture System - Complete War Within Fix with Battlepet Support
+-- DOKI Button Texture System - Complete War Within Fix with Battlepet Support + Merchant Integration
 local addonName, DOKI = ...
 -- Storage
 DOKI.buttonTextures = {}
 DOKI.texturePool = {}
 DOKI.indicatorTexturePath = "Interface\\AddOns\\DOKI\\Media\\uncollected"
--- FIXED: Enhanced surgical update tracking for battlepets
+-- FIXED: Enhanced surgical update tracking for battlepets and merchant
 DOKI.lastButtonSnapshot = {}
 DOKI.buttonItemMap = {}
 -- ===== TEXTURE CREATION =====
@@ -117,9 +117,13 @@ function DOKI:FindButtonIcon(button)
 	local regions = { button:GetRegions() }
 	for _, region in ipairs(regions) do
 		if region:GetObjectType() == "Texture" then
-			local texture = region:GetTexture()
-			if texture and texture ~= "" and not string.find(texture:lower(), "border") then
-				return region
+			local textureFile = region:GetTexture()
+			-- FIXED: Check if textureFile is valid and region has GetTexture method
+			if textureFile and textureFile ~= "" and region.GetTexture then
+				local textureName = tostring(textureFile):lower()
+				if not string.find(textureName, "border") and not string.find(textureName, "background") then
+					return region
+				end
 			end
 		end
 	end
@@ -143,7 +147,7 @@ function DOKI:ReleaseButtonTexture(button)
 	table.insert(self.texturePool, textureData)
 end
 
--- ===== ENHANCED SNAPSHOT SYSTEM FOR BATTLEPETS =====
+-- ===== ENHANCED SNAPSHOT SYSTEM FOR BATTLEPETS + MERCHANT =====
 function DOKI:CreateButtonSnapshot()
 	local snapshot = {}
 	-- FIXED: Store both itemID and itemLink for battlepet support
@@ -247,18 +251,33 @@ function DOKI:CreateButtonSnapshot()
 		end
 	end
 
-	-- Merchant buttons (when implemented)
+	-- ENHANCED: Merchant buttons - get items directly from visible buttons
 	if MerchantFrame and MerchantFrame:IsVisible() then
-		for i = 1, 10 do
-			local buttonName = "MerchantItem" .. i .. "ItemButton"
-			local button = _G[buttonName]
-			if button and button:IsVisible() then
-				local itemLink = GetMerchantItemLink(i)
-				if itemLink then
-					local itemID = self:GetItemID(itemLink)
+		-- Scan only the visible merchant button slots
+		for i = 1, 12 do -- Check up to 12 merchant slots
+			local possibleButtonNames = {
+				string.format("MerchantItem%dItemButton", i),
+				string.format("MerchantItem%d", i),
+			}
+			for _, buttonName in ipairs(possibleButtonNames) do
+				local button = _G[buttonName]
+				if button and button:IsVisible() then
+					-- Try to get item info directly from the button
+					local itemID, itemLink = self:GetItemFromMerchantButton(button, i)
 					if itemID then
-						addToSnapshot(button, itemID, itemLink)
+						if itemID == "EMPTY_SLOT" then
+							-- Add empty slot to snapshot so surgical update can detect when buttons lose items
+							snapshot[button] = {
+								itemID = nil,
+								itemLink = nil,
+								isEmpty = true,
+							}
+						else
+							addToSnapshot(button, itemID, itemLink)
+						end
 					end
+
+					break
 				end
 			end
 		end
@@ -267,7 +286,7 @@ function DOKI:CreateButtonSnapshot()
 	return snapshot
 end
 
--- ===== ENHANCED SURGICAL UPDATE PROCESSING FOR BATTLEPETS =====
+-- ===== ENHANCED SURGICAL UPDATE PROCESSING FOR BATTLEPETS + MERCHANT =====
 function DOKI:ProcessSurgicalUpdate()
 	local currentSnapshot = self:CreateButtonSnapshot()
 	local changes = {
@@ -275,11 +294,16 @@ function DOKI:ProcessSurgicalUpdate()
 		added = {},
 		changed = {},
 	}
-	-- FIXED: Enhanced comparison that handles both itemID and itemLink (for battlepets)
+	-- FIXED: Enhanced comparison that handles both itemID and itemLink (for battlepets) and empty slots
 	local function itemsEqual(oldItem, newItem)
 		if not oldItem and not newItem then return true end
 
 		if not oldItem or not newItem then return false end
+
+		-- Handle empty slots
+		if oldItem.isEmpty and newItem.isEmpty then return true end
+
+		if oldItem.isEmpty or newItem.isEmpty then return false end
 
 		-- Compare itemIDs
 		if oldItem.itemID ~= newItem.itemID then return false end
@@ -324,17 +348,28 @@ function DOKI:ProcessSurgicalUpdate()
 				extraInfo = " (battlepet)"
 			end
 
-			print(string.format("|cffff69b4DOKI|r Removed indicator: button lost item %d%s",
-				change.oldItemData.itemID, extraInfo))
+			-- Check if this was a merchant button
+			local buttonName = ""
+			local success, name = pcall(change.button.GetName, change.button)
+			if success and name and string.find(name, "Merchant") then
+				extraInfo = extraInfo .. " (merchant)"
+			end
+
+			local itemID = change.oldItemData.itemID or "unknown"
+			print(string.format("|cffff69b4DOKI|r Removed indicator: button lost item %s%s",
+				tostring(itemID), extraInfo))
 		end
 	end
 
 	-- Update buttons that changed items
 	for _, change in ipairs(changes.changed) do
 		self:RemoveButtonIndicator(change.button)
-		local itemData = self:GetItemDataForSurgicalUpdate(change.newItemData.itemID, change.newItemData.itemLink)
-		if itemData and not itemData.isCollected then
-			self:AddButtonIndicator(change.button, itemData)
+		-- Only add new indicator if the new item is not empty and not collected
+		if not change.newItemData.isEmpty then
+			local itemData = self:GetItemDataForSurgicalUpdate(change.newItemData.itemID, change.newItemData.itemLink)
+			if itemData and not itemData.isCollected then
+				self:AddButtonIndicator(change.button, itemData)
+			end
 		end
 
 		updateCount = updateCount + 1
@@ -349,25 +384,45 @@ function DOKI:ProcessSurgicalUpdate()
 				newExtra = " (battlepet)"
 			end
 
-			print(string.format("|cffff69b4DOKI|r Changed indicator: %d%s → %d%s",
-				change.oldItemData.itemID, oldExtra, change.newItemData.itemID, newExtra))
+			-- Check if this is a merchant button
+			local buttonName = ""
+			local success, name = pcall(change.button.GetName, change.button)
+			if success and name and string.find(name, "Merchant") then
+				oldExtra = oldExtra .. " (merchant)"
+				newExtra = newExtra .. " (merchant)"
+			end
+
+			local oldItemID = change.oldItemData.itemID or "empty"
+			local newItemID = change.newItemData.isEmpty and "empty" or (change.newItemData.itemID or "unknown")
+			print(string.format("|cffff69b4DOKI|r Changed indicator: %s%s → %s%s",
+				tostring(oldItemID), oldExtra, tostring(newItemID), newExtra))
 		end
 	end
 
 	-- Add indicators to buttons that gained items
 	for _, change in ipairs(changes.added) do
-		local itemData = self:GetItemDataForSurgicalUpdate(change.newItemData.itemID, change.newItemData.itemLink)
-		if itemData and not itemData.isCollected then
-			self:AddButtonIndicator(change.button, itemData)
-			updateCount = updateCount + 1
-			if self.db and self.db.debugMode then
-				local extraInfo = ""
-				if change.newItemData.itemLink and string.find(change.newItemData.itemLink, "battlepet:") then
-					extraInfo = " (battlepet)"
-				end
+		-- Only add indicator if the new item is not empty
+		if not change.newItemData.isEmpty then
+			local itemData = self:GetItemDataForSurgicalUpdate(change.newItemData.itemID, change.newItemData.itemLink)
+			if itemData and not itemData.isCollected then
+				self:AddButtonIndicator(change.button, itemData)
+				updateCount = updateCount + 1
+				if self.db and self.db.debugMode then
+					local extraInfo = ""
+					if change.newItemData.itemLink and string.find(change.newItemData.itemLink, "battlepet:") then
+						extraInfo = " (battlepet)"
+					end
 
-				print(string.format("|cffff69b4DOKI|r Added indicator: button gained item %d%s",
-					change.newItemData.itemID, extraInfo))
+					-- Check if this is a merchant button
+					local buttonName = ""
+					local success, name = pcall(change.button.GetName, change.button)
+					if success and name and string.find(name, "Merchant") then
+						extraInfo = extraInfo .. " (merchant)"
+					end
+
+					print(string.format("|cffff69b4DOKI|r Added indicator: button gained item %s%s",
+						tostring(change.newItemData.itemID), extraInfo))
+				end
 			end
 		end
 	end
@@ -384,6 +439,9 @@ end
 
 -- ADDED: Enhanced item data retrieval for surgical updates (supports battlepets)
 function DOKI:GetItemDataForSurgicalUpdate(itemID, itemLink)
+	-- FIXED: Handle empty slots - return nil so no indicator is created
+	if itemID == "EMPTY_SLOT" or not itemID then return nil end
+
 	-- ADDED: Handle caged pets first
 	if itemLink then
 		local petSpeciesID = self:GetPetSpeciesFromBattlePetLink(itemLink)
@@ -400,7 +458,7 @@ function DOKI:GetItemDataForSurgicalUpdate(itemID, itemLink)
 		end
 	end
 
-	if not itemID or not self:IsCollectibleItem(itemID, itemLink) then return nil end
+	if not self:IsCollectibleItem(itemID, itemLink) then return nil end
 
 	local isCollected, showYellowD = self:IsItemCollected(itemID, itemLink)
 	return {
@@ -455,6 +513,11 @@ function DOKI:AddButtonIndicator(button, itemData)
 		local extraInfo = ""
 		if itemData.petSpeciesID then
 			extraInfo = string.format(" [Battlepet Species: %d]", itemData.petSpeciesID)
+		end
+
+		-- Check if this is a merchant button
+		if buttonName and string.find(buttonName, "Merchant") then
+			extraInfo = extraInfo .. " [Merchant]"
 		end
 
 		print(string.format("|cffff69b4DOKI|r Added indicator for %s (ID: %d) on %s%s",
@@ -526,6 +589,42 @@ function DOKI:CleanupButtonTextures()
 	return removedCount
 end
 
+-- ===== MERCHANT-SPECIFIC CLEANUP =====
+function DOKI:CleanupMerchantTextures()
+	if not self.buttonTextures then return 0 end
+
+	local removedCount = 0
+	local toRemove = {}
+	for button, textureData in pairs(self.buttonTextures) do
+		if textureData.isActive then
+			-- Check if this is a merchant button that's no longer valid
+			local buttonName = ""
+			local success, name = pcall(button.GetName, button)
+			if success and name then
+				buttonName = name
+			end
+
+			if string.find(buttonName, "Merchant") then
+				-- This is a merchant button - check if merchant is still open
+				if not (MerchantFrame and MerchantFrame:IsVisible()) then
+					table.insert(toRemove, button)
+					removedCount = removedCount + 1
+				end
+			end
+		end
+	end
+
+	for _, button in ipairs(toRemove) do
+		self:RemoveButtonIndicator(button)
+	end
+
+	if self.db and self.db.debugMode and removedCount > 0 then
+		print(string.format("|cffff69b4DOKI|r Cleaned up %d merchant indicators", removedCount))
+	end
+
+	return removedCount
+end
+
 -- ===== INITIALIZATION =====
 function DOKI:InitializeButtonTextureSystem()
 	self.buttonTextures = self.buttonTextures or {}
@@ -534,7 +633,7 @@ function DOKI:InitializeButtonTextureSystem()
 	self.buttonItemMap = {}
 	self:ValidateTexture()
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Enhanced button texture system initialized with battlepet support")
+		print("|cffff69b4DOKI|r Enhanced button texture system initialized with battlepet + merchant support")
 	end
 end
 
@@ -575,6 +674,7 @@ function DOKI:DebugButtonTextures()
 	local activeCount = 0
 	local totalCount = 0
 	local battlepetCount = 0
+	local merchantCount = 0
 	for button, textureData in pairs(self.buttonTextures) do
 		totalCount = totalCount + 1
 		if textureData.isActive then
@@ -582,10 +682,18 @@ function DOKI:DebugButtonTextures()
 			if textureData.itemLink and string.find(textureData.itemLink, "battlepet:") then
 				battlepetCount = battlepetCount + 1
 			end
+
+			-- Check if this is a merchant button
+			local buttonName = ""
+			local success, name = pcall(button.GetName, button)
+			if success and name and string.find(name, "Merchant") then
+				merchantCount = merchantCount + 1
+			end
 		end
 	end
 
-	print(string.format("Button textures: %d total, %d active (%d battlepets)", totalCount, activeCount, battlepetCount))
+	print(string.format("Button textures: %d total, %d active (%d battlepets, %d merchant)",
+		totalCount, activeCount, battlepetCount, merchantCount))
 	print(string.format("Texture pool size: %d", #self.texturePool))
 	print(string.format("Button tracking: %d buttons in snapshot",
 		self.lastButtonSnapshot and self:TableCount(self.lastButtonSnapshot) or 0))
@@ -608,7 +716,21 @@ function DOKI:TestButtonTextureCreation()
 
 	-- Find a visible button
 	local testButton = nil
-	if ElvUI and self:IsElvUIBagVisible() then
+	-- Try merchant first if available
+	if MerchantFrame and MerchantFrame:IsVisible() then
+		for i = 1, 10 do
+			local buttonName = "MerchantItem" .. i .. "ItemButton"
+			local button = _G[buttonName]
+			if button and button:IsVisible() then
+				testButton = button
+				print("|cffff69b4DOKI|r Using merchant button for test")
+				break
+			end
+		end
+	end
+
+	-- Fallback to bag buttons
+	if not testButton and ElvUI and self:IsElvUIBagVisible() then
 		for bagID = 0, 1 do
 			local numSlots = C_Container.GetContainerNumSlots(bagID)
 			if numSlots and numSlots > 0 then
@@ -617,6 +739,7 @@ function DOKI:TestButtonTextureCreation()
 					local button = _G[buttonName]
 					if button and button:IsVisible() then
 						testButton = button
+						print("|cffff69b4DOKI|r Using bag button for test")
 						break
 					end
 				end
@@ -637,11 +760,11 @@ function DOKI:TestButtonTextureCreation()
 		local success = self:AddButtonIndicator(testButton, testData)
 		if success then
 			print("|cffff69b4DOKI|r Test indicator created (orange, top-right)")
-			print("|cffff69b4DOKI|r Try moving items to test response")
+			print("|cffff69b4DOKI|r Try moving items or scrolling merchant to test response")
 		else
 			print("|cffff69b4DOKI|r Failed to create test indicator")
 		end
 	else
-		print("|cffff69b4DOKI|r No suitable button found - open bags first")
+		print("|cffff69b4DOKI|r No suitable button found - open bags or merchant first")
 	end
 end
