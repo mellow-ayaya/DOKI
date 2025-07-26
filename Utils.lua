@@ -6,12 +6,12 @@ DOKI.textureCache = DOKI.textureCache or {}
 DOKI.foundFramesThisScan = {}
 -- ===== SURGICAL UPDATE THROTTLING =====
 DOKI.lastSurgicalUpdate = 0
-DOKI.surgicalUpdateThrottleTime = 0.15 -- 150ms minimum between updates
+DOKI.surgicalUpdateThrottleTime = 0.05 -- 50ms minimum between updates (reduced from 150ms)
 DOKI.pendingSurgicalUpdate = false
 -- ===== PERFORMANCE MONITORING =====
 function DOKI:GetPerformanceStats()
 	local stats = {
-		updateInterval = 0.5,
+		updateInterval = 0.2, -- Updated to reflect new faster interval
 		lastUpdateDuration = self.lastUpdateDuration or 0,
 		avgUpdateDuration = self.avgUpdateDuration or 0,
 		totalUpdates = self.totalUpdates or 0,
@@ -468,9 +468,12 @@ function DOKI:SetupMinimalEventSystem()
 		"MERCHANT_CLOSED",
 		"BANKFRAME_OPENED",
 		"BANKFRAME_CLOSED",
-		"ITEM_UNLOCKED",
-		"BAG_UPDATE",
-		"BAG_UPDATE_DELAYED",
+		"ITEM_UNLOCKED",     -- When item is dropped
+		"BAG_UPDATE",        -- When bag contents change
+		"BAG_UPDATE_DELAYED", -- Delayed bag update
+		"ITEM_LOCK_CHANGED", -- When item lock status changes (pickup/drop)
+		"BAG_UPDATE_COOLDOWN", -- Another bag update event
+		"CURSOR_CHANGED",    -- When cursor state changes (item pickup/drop)
 	}
 	for _, event in ipairs(events) do
 		self.eventFrame:RegisterEvent(event)
@@ -496,12 +499,20 @@ function DOKI:SetupMinimalEventSystem()
 				DOKI:CleanupBankTextures()
 			end
 		elseif event == "ITEM_UNLOCKED" then
-			C_Timer.After(0.05, function()
+			-- Item movement detected - immediate response
+			C_Timer.After(0.02, function() -- Reduced from 0.05s to 0.02s
 				if DOKI.db and DOKI.db.enabled then
 					DOKI:TriggerImmediateSurgicalUpdate()
 				end
 			end)
-		elseif event == "BAG_UPDATE" or event == "BAG_UPDATE_DELAYED" then
+		elseif event == "ITEM_LOCK_CHANGED" or event == "CURSOR_CHANGED" then
+			-- Item pickup/drop detected - very immediate response
+			C_Timer.After(0.01, function() -- Even faster for these events
+				if DOKI.db and DOKI.db.enabled then
+					DOKI:TriggerImmediateSurgicalUpdate()
+				end
+			end)
+		elseif event == "BAG_UPDATE" or event == "BAG_UPDATE_DELAYED" or event == "BAG_UPDATE_COOLDOWN" then
 			-- Check if should update based on UI visibility
 			local shouldUpdate = false
 			if ElvUI and DOKI:IsElvUIBagVisible() then
@@ -541,8 +552,8 @@ function DOKI:InitializeUniversalScanning()
 
 	self.lastSurgicalUpdate = 0
 	self.pendingSurgicalUpdate = false
-	-- Surgical update timer (0.5s intervals)
-	self.surgicalTimer = C_Timer.NewTicker(0.5, function()
+	-- Enhanced surgical update timer (0.2s intervals for more responsive fallback)
+	self.surgicalTimer = C_Timer.NewTicker(0.2, function() -- Reduced from 0.5s to 0.2s
 		if self.db and self.db.enabled then
 			local anyUIVisible = false
 			if ElvUI and self:IsElvUIBagVisible() then
@@ -559,7 +570,9 @@ function DOKI:InitializeUniversalScanning()
 				end
 			end
 
-			if anyUIVisible or (MerchantFrame and MerchantFrame:IsVisible()) then
+			-- Also check if cursor has an item (indicates active item movement)
+			local cursorHasItem = C_Cursor and C_Cursor.GetCursorItem() and true or false
+			if anyUIVisible or (MerchantFrame and MerchantFrame:IsVisible()) or cursorHasItem then
 				DOKI:SurgicalUpdate(false)
 			end
 		end
@@ -567,7 +580,11 @@ function DOKI:InitializeUniversalScanning()
 	self:SetupMinimalEventSystem()
 	self:FullItemScan()
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Clean surgical system initialized")
+		print("|cffff69b4DOKI|r Enhanced surgical system initialized")
+		print("  |cff00ff00•|r Regular updates: 0.2s interval (enhanced responsiveness)")
+		print("  |cff00ff00•|r Immediate updates: Multiple events + cursor detection")
+		print(string.format("  |cff00ff00•|r Throttling: %.0fms minimum between updates",
+			self.surgicalUpdateThrottleTime * 1000))
 	end
 end
 
