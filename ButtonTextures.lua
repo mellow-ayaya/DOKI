@@ -1,4 +1,4 @@
--- DOKI Button Texture System - Complete War Within Fix with Battlepet Support + Merchant Integration
+-- DOKI Button Texture System - Complete War Within Fix with Battlepet Support + Merchant Integration + Enhanced Features
 local addonName, DOKI = ...
 -- Storage
 DOKI.buttonTextures = {}
@@ -637,7 +637,13 @@ function DOKI:InitializeButtonTextureSystem()
 	end
 end
 
+-- ENHANCED: Cleanup with delayed scan cancellation
 function DOKI:CleanupButtonTextureSystem()
+	-- Cancel any pending delayed scans
+	if self.CancelDelayedScan then
+		self:CancelDelayedScan()
+	end
+
 	self:ClearAllButtonIndicators()
 	for button, textureData in pairs(self.buttonTextures) do
 		self:ReleaseButtonTexture(button)
@@ -697,6 +703,13 @@ function DOKI:DebugButtonTextures()
 	print(string.format("Texture pool size: %d", #self.texturePool))
 	print(string.format("Button tracking: %d buttons in snapshot",
 		self.lastButtonSnapshot and self:TableCount(self.lastButtonSnapshot) or 0))
+	-- ADDED: Show delayed scan status
+	if self.delayedScanTimer then
+		print(string.format("Delayed cleanup scan: PENDING"))
+	else
+		print(string.format("Delayed cleanup scan: Ready"))
+	end
+
 	print("|cffff69b4DOKI|r === END DEBUG ===")
 end
 
