@@ -1,17 +1,20 @@
--- DOKI Utils - Clean Enhanced Surgical Update System
+-- DOKI Utils - War Within Complete Fix
 local addonName, DOKI = ...
 -- Initialize storage
 DOKI.currentItems = DOKI.currentItems or {}
 DOKI.textureCache = DOKI.textureCache or {}
 DOKI.foundFramesThisScan = {}
+-- Cache for collection status to avoid redundant API calls
+DOKI.collectionCache = DOKI.collectionCache or {}
+DOKI.lastCacheUpdate = 0
 -- ===== SURGICAL UPDATE THROTTLING =====
 DOKI.lastSurgicalUpdate = 0
-DOKI.surgicalUpdateThrottleTime = 0.05 -- 50ms minimum between updates (reduced from 150ms)
+DOKI.surgicalUpdateThrottleTime = 0.05 -- 50ms minimum between updates
 DOKI.pendingSurgicalUpdate = false
 -- ===== PERFORMANCE MONITORING =====
 function DOKI:GetPerformanceStats()
 	local stats = {
-		updateInterval = 0.2, -- Updated to reflect new faster interval
+		updateInterval = 0.2,
 		lastUpdateDuration = self.lastUpdateDuration or 0,
 		avgUpdateDuration = self.avgUpdateDuration or 0,
 		totalUpdates = self.totalUpdates or 0,
@@ -77,6 +80,35 @@ function DOKI:TrackUpdatePerformance(duration, isImmediate)
 	self.avgUpdateDuration = total / #self.updateDurations
 end
 
+-- ===== CACHE MANAGEMENT =====
+function DOKI:ClearCollectionCache()
+	self.collectionCache = {}
+	self.lastCacheUpdate = GetTime()
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Collection cache cleared")
+	end
+end
+
+function DOKI:GetCachedCollectionStatus(itemID, itemLink)
+	local cacheKey = itemLink or tostring(itemID)
+	local cached = self.collectionCache[cacheKey]
+	-- Cache expires after 30 seconds or if collections were updated
+	if cached and (GetTime() - cached.timestamp < 30) then
+		return cached.isCollected, cached.showYellowD
+	end
+
+	return nil, nil
+end
+
+function DOKI:SetCachedCollectionStatus(itemID, itemLink, isCollected, showYellowD)
+	local cacheKey = itemLink or tostring(itemID)
+	self.collectionCache[cacheKey] = {
+		isCollected = isCollected,
+		showYellowD = showYellowD,
+		timestamp = GetTime(),
+	}
+end
+
 -- ===== SURGICAL UPDATE SYSTEM =====
 function DOKI:SurgicalUpdate(isImmediate)
 	if not self.db or not self.db.enabled then return 0 end
@@ -103,7 +135,6 @@ function DOKI:SurgicalUpdate(isImmediate)
 	self.pendingSurgicalUpdate = false
 	if self.db.debugMode then
 		local updateType = isImmediate and "IMMEDIATE" or "SCHEDULED"
-		-- Only show debug for immediate updates or when changes are expected
 		if isImmediate then
 			print(string.format("|cffff69b4DOKI|r === %s SURGICAL UPDATE START ===", updateType))
 		end
@@ -120,7 +151,6 @@ function DOKI:SurgicalUpdate(isImmediate)
 	self:TrackUpdatePerformance(updateDuration, isImmediate)
 	if self.db.debugMode then
 		local updateType = isImmediate and "immediate" or "scheduled"
-		-- Only show debug for immediate updates or when there are actual changes
 		if isImmediate or changeCount > 0 then
 			print(string.format("|cffff69b4DOKI|r %s surgical update: %d changes in %.3fs",
 				updateType, changeCount, updateDuration))
@@ -175,9 +205,19 @@ function DOKI:TriggerImmediateSurgicalUpdate()
 	end
 end
 
--- Full scan for initial setup
-function DOKI:FullItemScan()
+-- Full scan for initial setup with delay for battlepets
+function DOKI:FullItemScan(withDelay)
 	if not self.db or not self.db.enabled then return 0 end
+
+	-- FIXED: Add slight delay for battlepet caging timing issues
+	if withDelay then
+		C_Timer.After(0.15, function()
+			if self.db and self.db.enabled then
+				self:FullItemScan(false) -- Run without delay on retry
+			end
+		end)
+		return 0
+	end
 
 	if self.db.debugMode then
 		print("|cffff69b4DOKI|r === FULL SCAN START ===")
@@ -211,29 +251,12 @@ function DOKI:ScanMerchantFrames()
 		return 0
 	end
 
-	if self.db.debugMode then
-		print("|cffff69b4DOKI|r Scanning merchant frames...")
+	-- TODO: Merchant detection needs fixing - skip for now
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Merchant scanning temporarily disabled (needs fixing)")
 	end
 
-	for i = 1, 10 do
-		local buttonName = "MerchantItem" .. i .. "ItemButton"
-		local button = _G[buttonName]
-		if button and button:IsVisible() then
-			local itemData = self:ExtractItemFromAnyFrameOptimized(button, buttonName)
-			if itemData then
-				indicatorCount = indicatorCount + self:CreateUniversalIndicator(button, itemData)
-				if self.db.debugMode then
-					table.insert(self.foundFramesThisScan, {
-						frame = button,
-						frameName = buttonName,
-						itemData = itemData,
-					})
-				end
-			end
-		end
-	end
-
-	return indicatorCount
+	return 0
 end
 
 function DOKI:ScanBagFrames()
@@ -254,7 +277,7 @@ function DOKI:ScanBagFrames()
 						for slotID = 1, numSlots do
 							local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
 							if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
-								if self:IsCollectibleItem(itemInfo.itemID) then
+								if self:IsCollectibleItem(itemInfo.itemID, itemInfo.hyperlink) then
 									local possibleNames = {
 										string.format("ElvUI_ContainerFrameBag%dSlot%dHash", bagID, slotID),
 										string.format("ElvUI_ContainerFrameBag%dSlot%d", bagID, slotID),
@@ -274,9 +297,15 @@ function DOKI:ScanBagFrames()
 											indicatorCount = indicatorCount + self:CreateUniversalIndicator(elvUIButton, itemData)
 											if self.db.debugMode then
 												local itemName = C_Item.GetItemInfo(itemInfo.itemID) or "Unknown"
-												print(string.format("|cffff69b4DOKI|r Found %s (ID: %d) in ElvUI bag %d slot %d - %s",
+												local extraInfo = ""
+												if string.find(itemInfo.hyperlink, "battlepet:") then
+													local speciesID = self:GetPetSpeciesFromBattlePetLink(itemInfo.hyperlink)
+													extraInfo = string.format(" [Battlepet Species: %d]", speciesID or 0)
+												end
+
+												print(string.format("|cffff69b4DOKI|r Found %s (ID: %d) in ElvUI bag %d slot %d - %s%s",
 													itemName, itemInfo.itemID, bagID, slotID,
-													isCollected and "COLLECTED" or "NOT collected"))
+													isCollected and "COLLECTED" or "NOT collected", extraInfo))
 												table.insert(self.foundFramesThisScan, {
 													frame = elvUIButton,
 													frameName = elvUIButtonName,
@@ -310,7 +339,7 @@ function DOKI:ScanBagFrames()
 				for slotID = 1, numSlots do
 					local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
 					if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
-						if self:IsCollectibleItem(itemInfo.itemID) then
+						if self:IsCollectibleItem(itemInfo.itemID, itemInfo.hyperlink) then
 							-- Find the corresponding button
 							local button = nil
 							if ContainerFrameCombinedBags.EnumerateValidItems then
@@ -378,7 +407,7 @@ function DOKI:ScanBagFrames()
 					for slotID = 1, numSlots do
 						local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
 						if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
-							if self:IsCollectibleItem(itemInfo.itemID) then
+							if self:IsCollectibleItem(itemInfo.itemID, itemInfo.hyperlink) then
 								local possibleNames = {
 									string.format("ContainerFrame%dItem%d", bagID + 1, slotID),
 									string.format("ContainerFrame%dItem%dButton", bagID + 1, slotID),
@@ -455,7 +484,7 @@ function DOKI:CreateUniversalIndicator(frame, itemData)
 	return 0
 end
 
--- ===== EVENT SYSTEM =====
+-- ===== WAR WITHIN EVENT SYSTEM (CLEANED) =====
 function DOKI:SetupMinimalEventSystem()
 	if self.eventFrame then
 		self.eventFrame:UnregisterAllEvents()
@@ -463,17 +492,23 @@ function DOKI:SetupMinimalEventSystem()
 		self.eventFrame = CreateFrame("Frame")
 	end
 
+	-- FIXED: Removed noisy events that fire constantly
 	local events = {
 		"MERCHANT_SHOW",
 		"MERCHANT_CLOSED",
 		"BANKFRAME_OPENED",
 		"BANKFRAME_CLOSED",
-		"ITEM_UNLOCKED",     -- When item is dropped
-		"BAG_UPDATE",        -- When bag contents change
-		"BAG_UPDATE_DELAYED", -- Delayed bag update
-		"ITEM_LOCK_CHANGED", -- When item lock status changes (pickup/drop)
-		"BAG_UPDATE_COOLDOWN", -- Another bag update event
-		"CURSOR_CHANGED",    -- When cursor state changes (item pickup/drop)
+		"ITEM_UNLOCKED",
+		"BAG_UPDATE",
+		"BAG_UPDATE_DELAYED",
+		"ITEM_LOCK_CHANGED",
+		"CURSOR_CHANGED",
+		-- WAR WITHIN COLLECTION EVENTS (removed noisy ones)
+		"PET_JOURNAL_LIST_UPDATE",   -- Main pet event (confirmed working)
+		"COMPANION_LEARNED",         -- Mount/pet learning (confirmed in Blizzard code)
+		"COMPANION_UNLEARNED",       -- Mount/pet unlearning (confirmed in Blizzard code)
+		"TRANSMOG_COLLECTION_UPDATED", -- When transmog is collected
+		"TOYS_UPDATED",              -- When toys are learned
 	}
 	for _, event in ipairs(events) do
 		self.eventFrame:RegisterEvent(event)
@@ -500,19 +535,46 @@ function DOKI:SetupMinimalEventSystem()
 			end
 		elseif event == "ITEM_UNLOCKED" then
 			-- Item movement detected - immediate response
-			C_Timer.After(0.02, function() -- Reduced from 0.05s to 0.02s
+			C_Timer.After(0.02, function()
 				if DOKI.db and DOKI.db.enabled then
 					DOKI:TriggerImmediateSurgicalUpdate()
 				end
 			end)
 		elseif event == "ITEM_LOCK_CHANGED" or event == "CURSOR_CHANGED" then
 			-- Item pickup/drop detected - very immediate response
-			C_Timer.After(0.01, function() -- Even faster for these events
+			C_Timer.After(0.01, function()
 				if DOKI.db and DOKI.db.enabled then
 					DOKI:TriggerImmediateSurgicalUpdate()
 				end
 			end)
-		elseif event == "BAG_UPDATE" or event == "BAG_UPDATE_DELAYED" or event == "BAG_UPDATE_COOLDOWN" then
+		elseif event == "PET_JOURNAL_LIST_UPDATE" or
+				event == "COMPANION_LEARNED" or event == "COMPANION_UNLEARNED" then
+			-- Collection changed - clear cache and FORCE FULL SCAN WITH DELAY for battlepets
+			DOKI:ClearCollectionCache()
+			C_Timer.After(0.05, function()
+				if DOKI.db and DOKI.db.enabled then
+					if DOKI.db.debugMode then
+						print("|cffff69b4DOKI|r Pet collection changed - forcing full rescan with delay")
+					end
+
+					-- Use withDelay=true for potential battlepet timing issues
+					DOKI:FullItemScan(true)
+				end
+			end)
+		elseif event == "TRANSMOG_COLLECTION_UPDATED" or event == "TOYS_UPDATED" then
+			-- Transmog/toy collection changed - clear cache and FORCE FULL SCAN
+			DOKI:ClearCollectionCache()
+			C_Timer.After(0.05, function()
+				if DOKI.db and DOKI.db.enabled then
+					if DOKI.db.debugMode then
+						print("|cffff69b4DOKI|r Transmog/toy collection changed - forcing full rescan")
+					end
+
+					-- Force full scan to re-evaluate all visible items
+					DOKI:FullItemScan()
+				end
+			end)
+		elseif event == "BAG_UPDATE" or event == "BAG_UPDATE_DELAYED" then
 			-- Check if should update based on UI visibility
 			local shouldUpdate = false
 			if ElvUI and DOKI:IsElvUIBagVisible() then
@@ -540,7 +602,7 @@ function DOKI:SetupMinimalEventSystem()
 		end
 	end)
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Event system initialized")
+		print("|cffff69b4DOKI|r War Within event system initialized (noisy events removed)")
 	end
 end
 
@@ -553,7 +615,7 @@ function DOKI:InitializeUniversalScanning()
 	self.lastSurgicalUpdate = 0
 	self.pendingSurgicalUpdate = false
 	-- Enhanced surgical update timer (0.2s intervals for more responsive fallback)
-	self.surgicalTimer = C_Timer.NewTicker(0.2, function() -- Reduced from 0.5s to 0.2s
+	self.surgicalTimer = C_Timer.NewTicker(0.2, function()
 		if self.db and self.db.enabled then
 			local anyUIVisible = false
 			if ElvUI and self:IsElvUIBagVisible() then
@@ -580,9 +642,11 @@ function DOKI:InitializeUniversalScanning()
 	self:SetupMinimalEventSystem()
 	self:FullItemScan()
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Enhanced surgical system initialized")
-		print("  |cff00ff00•|r Regular updates: 0.2s interval (enhanced responsiveness)")
-		print("  |cff00ff00•|r Immediate updates: Multiple events + cursor detection")
+		print("|cffff69b4DOKI|r War Within surgical system initialized")
+		print("  |cff00ff00•|r Regular updates: 0.2s interval")
+		print("  |cff00ff00•|r Clean events: Removed noisy COMPANION_UPDATE, etc.")
+		print("  |cff00ff00•|r Battlepet support: Caged pet detection added")
+		print("  |cff00ff00•|r Timing fix: Delays for battlepet caging")
 		print(string.format("  |cff00ff00•|r Throttling: %.0fms minimum between updates",
 			self.surgicalUpdateThrottleTime * 1000))
 	end
@@ -609,7 +673,7 @@ function DOKI:IsElvUIBagVisible()
 	return (B.BagFrame and B.BagFrame:IsShown()) or (B.BankFrame and B.BankFrame:IsShown())
 end
 
--- Include the core collection checking functions from your working code
+-- ===== WAR WITHIN COLLECTION DETECTION =====
 function DOKI:GetItemID(itemLink)
 	if not itemLink then return nil end
 
@@ -623,7 +687,13 @@ function DOKI:GetItemID(itemLink)
 	return nil
 end
 
-function DOKI:IsCollectibleItem(itemID)
+-- FIXED: Enhanced collectible item detection with caged pets and offhand support
+function DOKI:IsCollectibleItem(itemID, itemLink)
+	-- ADDED: Check for caged pets (battlepet items) first
+	if itemLink and string.find(itemLink, "battlepet:") then
+		return true
+	end
+
 	if not itemID then return false end
 
 	local _, itemType, itemSubType, itemEquipLoc, icon, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
@@ -641,9 +711,17 @@ function DOKI:IsCollectibleItem(itemID)
 	-- Transmog items (weapons class 2, armor class 4)
 	if classID == 2 or classID == 4 then
 		if itemEquipLoc then
+			-- FIXED: Properly handle offhands - check if they're actually transmoggable
+			if itemEquipLoc == "INVTYPE_HOLDABLE" then
+				-- Use the transmog API to check if this offhand is actually transmoggable
+				local itemAppearanceID, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(itemID)
+				return itemAppearanceID ~= nil and itemModifiedAppearanceID ~= nil
+			end
+
+			-- Other non-transmog slots (kept as before)
 			local nonTransmogSlots = {
 				"INVTYPE_NECK", "INVTYPE_FINGER", "INVTYPE_TRINKET",
-				"INVTYPE_HOLDABLE", "INVTYPE_BAG", "INVTYPE_QUIVER",
+				"INVTYPE_BAG", "INVTYPE_QUIVER",
 			}
 			for _, slot in ipairs(nonTransmogSlots) do
 				if itemEquipLoc == slot then return false end
@@ -656,57 +734,145 @@ function DOKI:IsCollectibleItem(itemID)
 	return false
 end
 
+-- ADDED: Extract species ID from caged pet (battlepet) links
+function DOKI:GetPetSpeciesFromBattlePetLink(itemLink)
+	if not itemLink or not string.find(itemLink, "battlepet:") then
+		return nil
+	end
+
+	-- Extract species ID from battlepet:speciesID:level:breedQuality:maxHealth:power:speed:battlePetGUID
+	local speciesID = tonumber(string.match(itemLink, "battlepet:(%d+)"))
+	return speciesID
+end
+
+-- ADDED: Check if a pet species is collected (for caged pets)
+function DOKI:IsPetSpeciesCollected(speciesID)
+	if not speciesID or not C_PetJournal then return false end
+
+	-- Check if we have any of this pet species
+	local numCollected, limit = C_PetJournal.GetNumCollectedInfo(speciesID)
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r Pet Species %d: %d/%d collected",
+			speciesID, numCollected or 0, limit or 3))
+	end
+
+	return numCollected and numCollected > 0
+end
+
+-- WAR WITHIN FIXED: Enhanced collection detection with caged pets and corrected APIs
 function DOKI:IsItemCollected(itemID, itemLink)
+	if not itemID and not itemLink then return false, false end
+
+	-- ADDED: Handle caged pets (battlepet links) first
+	local petSpeciesID = self:GetPetSpeciesFromBattlePetLink(itemLink)
+	if petSpeciesID then
+		local isCollected = self:IsPetSpeciesCollected(petSpeciesID)
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r Caged Pet (Species: %d): %s",
+				petSpeciesID, isCollected and "COLLECTED" or "NOT COLLECTED"))
+		end
+
+		-- Cache the result using itemLink as key since no itemID
+		self:SetCachedCollectionStatus(petSpeciesID, itemLink, isCollected, false)
+		return isCollected, false
+	end
+
 	if not itemID then return false, false end
 
+	-- Check cache first
+	local cachedCollected, cachedYellowD = self:GetCachedCollectionStatus(itemID, itemLink)
+	if cachedCollected ~= nil then
+		return cachedCollected, cachedYellowD
+	end
+
 	local _, itemType, itemSubType, itemEquipLoc, icon, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
-	if not classID or not subClassID then return false, false end
+	if not classID or not subClassID then
+		-- Cache negative result briefly
+		self:SetCachedCollectionStatus(itemID, itemLink, false, false)
+		return false, false
+	end
 
-	-- Check mounts
+	local isCollected, showYellowD = false, false
+	-- Check mounts - FIXED FOR WAR WITHIN
 	if classID == 15 and subClassID == 5 then
-		return self:IsMountCollected(itemID), false
-	end
-
-	-- Check pets
-	if classID == 15 and subClassID == 2 then
-		return self:IsPetCollected(itemID), false
-	end
-
-	-- Check toys
-	if C_ToyBox and C_ToyBox.GetToyInfo(itemID) then
-		return PlayerHasToy(itemID), false
-	end
-
-	-- Check transmog
-	if classID == 2 or classID == 4 then
+		isCollected = self:IsMountCollectedWarWithin(itemID)
+		showYellowD = false
+		-- Check pets - FIXED FOR WAR WITHIN
+	elseif classID == 15 and subClassID == 2 then
+		isCollected = self:IsPetCollectedWarWithin(itemID)
+		showYellowD = false
+		-- Check toys
+	elseif C_ToyBox and C_ToyBox.GetToyInfo(itemID) then
+		isCollected = PlayerHasToy(itemID)
+		showYellowD = false
+		-- Check transmog
+	elseif classID == 2 or classID == 4 then
 		if self.db and self.db.smartMode then
-			return self:IsTransmogCollectedSmart(itemID, itemLink)
+			isCollected, showYellowD = self:IsTransmogCollectedSmart(itemID, itemLink)
 		else
-			return self:IsTransmogCollected(itemID, itemLink)
+			isCollected, showYellowD = self:IsTransmogCollected(itemID, itemLink)
 		end
 	end
 
-	return false, false
+	-- Cache the result
+	self:SetCachedCollectionStatus(itemID, itemLink, isCollected, showYellowD)
+	return isCollected, showYellowD
 end
 
-function DOKI:IsMountCollected(itemID)
+-- WAR WITHIN FIXED: Use the correct GetMountFromItem API
+function DOKI:IsMountCollectedWarWithin(itemID)
 	if not itemID or not C_MountJournal then return false end
 
-	local spellID = C_Item.GetItemSpell(itemID)
-	if not spellID then return false end
+	-- FIXED: Use the proper War Within API - GetMountFromItem
+	local mountID = C_MountJournal.GetMountFromItem(itemID)
+	if not mountID then
+		-- Item might not be loaded yet, or not a mount item
+		C_Item.RequestLoadItemDataByID(itemID)
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r Mount item %d: No mount ID from GetMountFromItem", itemID))
+		end
 
-	local spellIDNum = tonumber(spellID)
-	return spellIDNum and IsSpellKnown(spellIDNum) or false
+		return false
+	end
+
+	-- Get mount info using the mount ID
+	local name, spellID, icon, isActive, isUsable, sourceType, isFavorite,
+	isFactionSpecific, faction, shouldHideOnChar, isCollected, mountIDReturn, isSteadyFlight = C_MountJournal
+			.GetMountInfoByID(mountID)
+	if self.db and self.db.debugMode then
+		local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+		print(string.format("|cffff69b4DOKI|r Mount %s (Item: %d, Mount: %d): %s",
+			itemName, itemID, mountID, isCollected and "COLLECTED" or "NOT COLLECTED"))
+	end
+
+	return isCollected or false
 end
 
-function DOKI:IsPetCollected(itemID)
+-- WAR WITHIN FIXED: Proper pet detection using current journal API
+function DOKI:IsPetCollectedWarWithin(itemID)
 	if not itemID or not C_PetJournal then return false end
 
-	local name, icon, petType, creatureID, sourceText, description, isWild, canBattle, isTradeable, isUnique, obtainable, displayID, speciesID =
-			C_PetJournal.GetPetInfoByItemID(itemID)
-	if not speciesID then return false end
+	-- Get pet info from the item - this API is confirmed to work in War Within
+	local name, icon, petType, creatureID, sourceText, description, isWild, canBattle,
+	isTradeable, isUnique, obtainable, displayID, speciesID = C_PetJournal.GetPetInfoByItemID(itemID)
+	if not speciesID then
+		-- Pet data not loaded yet
+		C_Item.RequestLoadItemDataByID(itemID)
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r Pet item %d: No species ID yet, requesting data", itemID))
+		end
 
+		return false
+	end
+
+	-- Check if we have any of this pet species
 	local numCollected, limit = C_PetJournal.GetNumCollectedInfo(speciesID)
+	if self.db and self.db.debugMode then
+		local petName = name or "Unknown Pet"
+		print(string.format("|cffff69b4DOKI|r Pet %s (ID: %d, Species: %d): %d/%d collected",
+			petName, itemID, speciesID, numCollected or 0, limit or 3))
+	end
+
 	return numCollected and numCollected > 0
 end
 
@@ -1028,7 +1194,8 @@ function DOKI:HasEqualOrLessRestrictiveSources(itemAppearanceID, excludeModified
 						if self.db and self.db.debugMode then
 							local currentFactionText = currentItemRestrictions.hasFactionRestriction and
 									currentItemRestrictions.faction or "none"
-							local sourceFactionText = sourceRestrictions.hasFactionRestriction and sourceRestrictions.faction or "none"
+							local sourceFactionText = sourceRestrictions.hasFactionRestriction and
+									sourceRestrictions.faction or "none"
 							print(string.format(
 								"|cffff69b4DOKI|r Source %d has different faction restrictions (%s vs %s) - not equivalent",
 								sourceID, sourceFactionText, currentFactionText))
@@ -1070,13 +1237,50 @@ function DOKI:DebugFoundFrames()
 	print(string.format("|cffff69b4DOKI|r === FOUND FRAMES DEBUG (%d frames) ===", #self.foundFramesThisScan))
 	for i, frameInfo in ipairs(self.foundFramesThisScan) do
 		local itemName = C_Item.GetItemInfo(frameInfo.itemData.itemID) or "Unknown"
-		print(string.format("%d. %s (ID: %d) in %s [%s] - %s",
+		local extraInfo = ""
+		if frameInfo.itemData.petSpeciesID then
+			extraInfo = string.format(" [Pet Species: %d]", frameInfo.itemData.petSpeciesID)
+		end
+
+		print(string.format("%d. %s (ID: %d) in %s [%s] - %s%s",
 			i, itemName, frameInfo.itemData.itemID, frameInfo.frameName,
 			frameInfo.itemData.frameType,
-			frameInfo.itemData.isCollected and "COLLECTED" or "NOT collected"))
+			frameInfo.itemData.isCollected and "COLLECTED" or "NOT collected",
+			extraInfo))
 	end
 
 	print("|cffff69b4DOKI|r === END FOUND FRAMES DEBUG ===")
+end
+
+-- ADDED: Debug function to help identify battlepet surgical update issues
+function DOKI:DebugBattlepetSnapshot()
+	if not self.CreateButtonSnapshot then
+		print("|cffff69b4DOKI|r ButtonTextures system not available")
+		return
+	end
+
+	local snapshot = self:CreateButtonSnapshot()
+	local battlepetCount = 0
+	local regularItemCount = 0
+	print("|cffff69b4DOKI|r === BATTLEPET SNAPSHOT DEBUG ===")
+	for button, itemData in pairs(snapshot) do
+		if type(itemData) == "table" and itemData.itemLink then
+			if string.find(itemData.itemLink, "battlepet:") then
+				battlepetCount = battlepetCount + 1
+				local speciesID = self:GetPetSpeciesFromBattlePetLink(itemData.itemLink)
+				print(string.format("  Battlepet: %s -> Species %d",
+					button:GetName() or "unnamed", speciesID or "unknown"))
+			else
+				regularItemCount = regularItemCount + 1
+			end
+		else
+			regularItemCount = regularItemCount + 1
+		end
+	end
+
+	print(string.format("Total snapshot items: %d (%d regular, %d battlepets)",
+		regularItemCount + battlepetCount, regularItemCount, battlepetCount))
+	print("|cffff69b4DOKI|r === END BATTLEPET SNAPSHOT DEBUG ===")
 end
 
 -- Legacy compatibility

@@ -1,10 +1,10 @@
--- DOKI Button Texture System - Clean Implementation
+-- DOKI Button Texture System - Complete War Within Fix with Battlepet Support
 local addonName, DOKI = ...
 -- Storage
 DOKI.buttonTextures = {}
 DOKI.texturePool = {}
 DOKI.indicatorTexturePath = "Interface\\AddOns\\DOKI\\Media\\uncollected"
--- Surgical update tracking
+-- FIXED: Enhanced surgical update tracking for battlepets
 DOKI.lastButtonSnapshot = {}
 DOKI.buttonItemMap = {}
 -- ===== TEXTURE CREATION =====
@@ -83,6 +83,7 @@ function DOKI:CreateButtonTexture()
 		button = nil,
 		isActive = false,
 		itemID = nil,
+		itemLink = nil, -- ADDED: Track itemLink for battlepets
 	}
 	textureData.SetColor = function(self, r, g, b)
 		self.texture:SetVertexColor(r, g, b, 1.0)
@@ -95,6 +96,7 @@ function DOKI:CreateButtonTexture()
 		self.texture:Hide()
 		self.isActive = false
 		self.itemID = nil
+		self.itemLink = nil -- ADDED: Clear itemLink too
 	end
 	return textureData
 end
@@ -135,14 +137,25 @@ function DOKI:ReleaseButtonTexture(button)
 	textureData.texture:SetVertexColor(1, 1, 1, 1)
 	textureData.button = nil
 	textureData.itemID = nil
+	textureData.itemLink = nil -- ADDED: Clear itemLink
 	self.buttonTextures[button] = nil
 	self.buttonItemMap[button] = nil
 	table.insert(self.texturePool, textureData)
 end
 
--- ===== SNAPSHOT SYSTEM =====
+-- ===== ENHANCED SNAPSHOT SYSTEM FOR BATTLEPETS =====
 function DOKI:CreateButtonSnapshot()
 	local snapshot = {}
+	-- FIXED: Store both itemID and itemLink for battlepet support
+	local function addToSnapshot(button, itemID, itemLink)
+		if button and itemID then
+			snapshot[button] = {
+				itemID = itemID,
+				itemLink = itemLink,
+			}
+		end
+	end
+
 	-- ElvUI buttons
 	if ElvUI and self:IsElvUIBagVisible() then
 		for bagID = 0, NUM_BAG_SLOTS do
@@ -159,7 +172,7 @@ function DOKI:CreateButtonSnapshot()
 						for _, buttonName in ipairs(possibleNames) do
 							local button = _G[buttonName]
 							if button and button:IsVisible() then
-								snapshot[button] = itemInfo.itemID
+								addToSnapshot(button, itemInfo.itemID, itemInfo.hyperlink)
 								break
 							end
 						end
@@ -200,7 +213,7 @@ function DOKI:CreateButtonSnapshot()
 						end
 
 						if button then
-							snapshot[button] = itemInfo.itemID
+							addToSnapshot(button, itemInfo.itemID, itemInfo.hyperlink)
 						end
 					end
 				end
@@ -224,7 +237,7 @@ function DOKI:CreateButtonSnapshot()
 						for _, buttonName in ipairs(possibleNames) do
 							local button = _G[buttonName]
 							if button and button:IsVisible() then
-								snapshot[button] = itemInfo.itemID
+								addToSnapshot(button, itemInfo.itemID, itemInfo.hyperlink)
 								break
 							end
 						end
@@ -234,7 +247,7 @@ function DOKI:CreateButtonSnapshot()
 		end
 	end
 
-	-- Merchant buttons
+	-- Merchant buttons (when implemented)
 	if MerchantFrame and MerchantFrame:IsVisible() then
 		for i = 1, 10 do
 			local buttonName = "MerchantItem" .. i .. "ItemButton"
@@ -244,7 +257,7 @@ function DOKI:CreateButtonSnapshot()
 				if itemLink then
 					local itemID = self:GetItemID(itemLink)
 					if itemID then
-						snapshot[button] = itemID
+						addToSnapshot(button, itemID, itemLink)
 					end
 				end
 			end
@@ -254,7 +267,7 @@ function DOKI:CreateButtonSnapshot()
 	return snapshot
 end
 
--- ===== SURGICAL UPDATE PROCESSING =====
+-- ===== ENHANCED SURGICAL UPDATE PROCESSING FOR BATTLEPETS =====
 function DOKI:ProcessSurgicalUpdate()
 	local currentSnapshot = self:CreateButtonSnapshot()
 	local changes = {
@@ -262,21 +275,40 @@ function DOKI:ProcessSurgicalUpdate()
 		added = {},
 		changed = {},
 	}
+	-- FIXED: Enhanced comparison that handles both itemID and itemLink (for battlepets)
+	local function itemsEqual(oldItem, newItem)
+		if not oldItem and not newItem then return true end
+
+		if not oldItem or not newItem then return false end
+
+		-- Compare itemIDs
+		if oldItem.itemID ~= newItem.itemID then return false end
+
+		-- For battlepets, also compare itemLinks (since same itemID can have different species)
+		if oldItem.itemLink and newItem.itemLink then
+			if string.find(oldItem.itemLink, "battlepet:") or string.find(newItem.itemLink, "battlepet:") then
+				return oldItem.itemLink == newItem.itemLink
+			end
+		end
+
+		return true
+	end
+
 	-- Find buttons that lost items or changed items
-	for button, oldItemID in pairs(self.lastButtonSnapshot or {}) do
-		local newItemID = currentSnapshot[button]
-		if not newItemID then
-			table.insert(changes.removed, { button = button, oldItemID = oldItemID })
-		elseif newItemID ~= oldItemID then
-			table.insert(changes.changed, { button = button, oldItemID = oldItemID, newItemID = newItemID })
+	for button, oldItemData in pairs(self.lastButtonSnapshot or {}) do
+		local newItemData = currentSnapshot[button]
+		if not newItemData then
+			table.insert(changes.removed, { button = button, oldItemData = oldItemData })
+		elseif not itemsEqual(oldItemData, newItemData) then
+			table.insert(changes.changed, { button = button, oldItemData = oldItemData, newItemData = newItemData })
 		end
 	end
 
 	-- Find buttons that gained items
-	for button, newItemID in pairs(currentSnapshot) do
-		local oldItemID = self.lastButtonSnapshot and self.lastButtonSnapshot[button]
-		if not oldItemID then
-			table.insert(changes.added, { button = button, newItemID = newItemID })
+	for button, newItemData in pairs(currentSnapshot) do
+		local oldItemData = self.lastButtonSnapshot and self.lastButtonSnapshot[button]
+		if not oldItemData then
+			table.insert(changes.added, { button = button, newItemData = newItemData })
 		end
 	end
 
@@ -287,32 +319,55 @@ function DOKI:ProcessSurgicalUpdate()
 		self:RemoveButtonIndicator(change.button)
 		updateCount = updateCount + 1
 		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Removed indicator: button lost item %d", change.oldItemID))
+			local extraInfo = ""
+			if change.oldItemData.itemLink and string.find(change.oldItemData.itemLink, "battlepet:") then
+				extraInfo = " (battlepet)"
+			end
+
+			print(string.format("|cffff69b4DOKI|r Removed indicator: button lost item %d%s",
+				change.oldItemData.itemID, extraInfo))
 		end
 	end
 
 	-- Update buttons that changed items
 	for _, change in ipairs(changes.changed) do
 		self:RemoveButtonIndicator(change.button)
-		local itemData = self:GetItemDataForID(change.newItemID)
+		local itemData = self:GetItemDataForSurgicalUpdate(change.newItemData.itemID, change.newItemData.itemLink)
 		if itemData and not itemData.isCollected then
 			self:AddButtonIndicator(change.button, itemData)
 		end
 
 		updateCount = updateCount + 1
 		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Changed indicator: %d → %d", change.oldItemID, change.newItemID))
+			local oldExtra = ""
+			local newExtra = ""
+			if change.oldItemData.itemLink and string.find(change.oldItemData.itemLink, "battlepet:") then
+				oldExtra = " (battlepet)"
+			end
+
+			if change.newItemData.itemLink and string.find(change.newItemData.itemLink, "battlepet:") then
+				newExtra = " (battlepet)"
+			end
+
+			print(string.format("|cffff69b4DOKI|r Changed indicator: %d%s → %d%s",
+				change.oldItemData.itemID, oldExtra, change.newItemData.itemID, newExtra))
 		end
 	end
 
 	-- Add indicators to buttons that gained items
 	for _, change in ipairs(changes.added) do
-		local itemData = self:GetItemDataForID(change.newItemID)
+		local itemData = self:GetItemDataForSurgicalUpdate(change.newItemData.itemID, change.newItemData.itemLink)
 		if itemData and not itemData.isCollected then
 			self:AddButtonIndicator(change.button, itemData)
 			updateCount = updateCount + 1
 			if self.db and self.db.debugMode then
-				print(string.format("|cffff69b4DOKI|r Added indicator: button gained item %d", change.newItemID))
+				local extraInfo = ""
+				if change.newItemData.itemLink and string.find(change.newItemData.itemLink, "battlepet:") then
+					extraInfo = " (battlepet)"
+				end
+
+				print(string.format("|cffff69b4DOKI|r Added indicator: button gained item %d%s",
+					change.newItemData.itemID, extraInfo))
 			end
 		end
 	end
@@ -327,13 +382,30 @@ function DOKI:ProcessSurgicalUpdate()
 	return updateCount
 end
 
-function DOKI:GetItemDataForID(itemID)
-	if not itemID or not self:IsCollectibleItem(itemID) then return nil end
+-- ADDED: Enhanced item data retrieval for surgical updates (supports battlepets)
+function DOKI:GetItemDataForSurgicalUpdate(itemID, itemLink)
+	-- ADDED: Handle caged pets first
+	if itemLink then
+		local petSpeciesID = self:GetPetSpeciesFromBattlePetLink(itemLink)
+		if petSpeciesID then
+			local isCollected = self:IsPetSpeciesCollected(petSpeciesID)
+			return {
+				itemID = itemID,
+				itemLink = itemLink,
+				isCollected = isCollected,
+				showYellowD = false,
+				frameType = "surgical",
+				petSpeciesID = petSpeciesID,
+			}
+		end
+	end
 
-	local isCollected, showYellowD = self:IsItemCollected(itemID, nil)
+	if not itemID or not self:IsCollectibleItem(itemID, itemLink) then return nil end
+
+	local isCollected, showYellowD = self:IsItemCollected(itemID, itemLink)
 	return {
 		itemID = itemID,
-		itemLink = nil,
+		itemLink = itemLink,
 		isCollected = isCollected,
 		showYellowD = showYellowD,
 		frameType = "surgical",
@@ -359,7 +431,17 @@ function DOKI:AddButtonIndicator(button, itemData)
 
 	textureData:Show()
 	textureData.itemID = itemData.itemID
-	self.buttonItemMap[button] = itemData.itemID
+	textureData.itemLink = itemData.itemLink -- ADDED: Store itemLink for battlepets
+	-- FIXED: Store complete item info for battlepets
+	if itemData.itemLink then
+		self.buttonItemMap[button] = {
+			itemID = itemData.itemID,
+			itemLink = itemData.itemLink,
+		}
+	else
+		self.buttonItemMap[button] = itemData.itemID
+	end
+
 	if self.db and self.db.debugMode then
 		local itemName = C_Item.GetItemInfo(itemData.itemID) or "Unknown"
 		local buttonName = ""
@@ -370,8 +452,13 @@ function DOKI:AddButtonIndicator(button, itemData)
 			buttonName = "unnamed"
 		end
 
-		print(string.format("|cffff69b4DOKI|r Added indicator for %s (ID: %d) on %s",
-			itemName, itemData.itemID, buttonName))
+		local extraInfo = ""
+		if itemData.petSpeciesID then
+			extraInfo = string.format(" [Battlepet Species: %d]", itemData.petSpeciesID)
+		end
+
+		print(string.format("|cffff69b4DOKI|r Added indicator for %s (ID: %d) on %s%s",
+			itemName, itemData.itemID, buttonName, extraInfo))
 	end
 
 	return true
@@ -447,7 +534,7 @@ function DOKI:InitializeButtonTextureSystem()
 	self.buttonItemMap = {}
 	self:ValidateTexture()
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Clean button texture system initialized")
+		print("|cffff69b4DOKI|r Enhanced button texture system initialized with battlepet support")
 	end
 end
 
@@ -487,14 +574,18 @@ function DOKI:DebugButtonTextures()
 	print(string.format("Texture file validated: %s", tostring(self.textureValidated)))
 	local activeCount = 0
 	local totalCount = 0
+	local battlepetCount = 0
 	for button, textureData in pairs(self.buttonTextures) do
 		totalCount = totalCount + 1
 		if textureData.isActive then
 			activeCount = activeCount + 1
+			if textureData.itemLink and string.find(textureData.itemLink, "battlepet:") then
+				battlepetCount = battlepetCount + 1
+			end
 		end
 	end
 
-	print(string.format("Button textures: %d total, %d active", totalCount, activeCount))
+	print(string.format("Button textures: %d total, %d active (%d battlepets)", totalCount, activeCount, battlepetCount))
 	print(string.format("Texture pool size: %d", #self.texturePool))
 	print(string.format("Button tracking: %d buttons in snapshot",
 		self.lastButtonSnapshot and self:TableCount(self.lastButtonSnapshot) or 0))
@@ -538,6 +629,7 @@ function DOKI:TestButtonTextureCreation()
 	if testButton then
 		local testData = {
 			itemID = 12345,
+			itemLink = nil,
 			isCollected = false,
 			showYellowD = false,
 			frameType = "test",

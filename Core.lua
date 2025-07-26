@@ -1,4 +1,4 @@
--- DOKI Core - Clean Enhanced Surgical System
+-- DOKI Core - Complete War Within Fix
 local addonName, DOKI = ...
 -- Initialize addon namespace
 DOKI.currentItems = {}
@@ -34,9 +34,9 @@ local function OnEvent(self, event, ...)
 			DOKI:InitializeButtonTextureSystem()
 			DOKI:InitializeUniversalScanning()
 			if ElvUI then
-				print("|cffff69b4DOKI|r loaded with clean surgical system + ElvUI support. Type /doki for commands.")
+				print("|cffff69b4DOKI|r loaded with War Within surgical system + ElvUI support. Type /doki for commands.")
 			else
-				print("|cffff69b4DOKI|r loaded with clean surgical system. Type /doki for commands.")
+				print("|cffff69b4DOKI|r loaded with War Within surgical system. Type /doki for commands.")
 			end
 
 			frame:UnregisterEvent("ADDON_LOADED")
@@ -47,7 +47,7 @@ end
 -- Register events
 frame:RegisterEvent("ADDON_LOADED")
 frame:SetScript("OnEvent", OnEvent)
--- Slash commands
+-- Enhanced slash commands with battlepet support
 SLASH_DOKI1 = "/doki"
 SlashCmdList["DOKI"] = function(msg)
 	local command = string.lower(strtrim(msg or ""))
@@ -114,10 +114,14 @@ SlashCmdList["DOKI"] = function(msg)
 		end
 	elseif command == "status" then
 		local indicatorCount = 0
+		local battlepetCount = 0
 		if DOKI.buttonTextures then
 			for _, textureData in pairs(DOKI.buttonTextures) do
 				if textureData.isActive then
 					indicatorCount = indicatorCount + 1
+					if textureData.itemLink and string.find(textureData.itemLink, "battlepet:") then
+						battlepetCount = battlepetCount + 1
+					end
 				end
 			end
 		end
@@ -133,11 +137,14 @@ SlashCmdList["DOKI"] = function(msg)
 			DOKI.db.enabled and "Enabled" or "Disabled",
 			DOKI.db.smartMode and "On" or "Off",
 			DOKI.db.debugMode and "On" or "Off"))
-		print(string.format("|cffff69b4DOKI|r Active indicators: %d", indicatorCount))
+		print(string.format("|cffff69b4DOKI|r Active indicators: %d (%d battlepets)", indicatorCount, battlepetCount))
 		print(string.format("|cffff69b4DOKI|r Tracked buttons: %d", snapshotCount))
-		print("|cffff69b4DOKI|r System: Enhanced Responsive Surgical Updates")
-		print("  |cff00ff00•|r Regular updates: 0.2s interval (enhanced responsiveness)")
-		print("  |cff00ff00•|r Immediate updates: ITEM_UNLOCKED + BAG_UPDATE + CURSOR events")
+		print("|cffff69b4DOKI|r System: War Within Enhanced Surgical System")
+		print("  |cff00ff00•|r Regular updates: 0.2s interval")
+		print("  |cff00ff00•|r Clean events: Noisy events removed")
+		print("  |cff00ff00•|r Battlepet support: Caged pet detection")
+		print("  |cff00ff00•|r Mount fix: GetMountFromItem API")
+		print("  |cff00ff00•|r Pet timing: Collection event delays")
 		print(string.format("  |cff00ff00•|r Throttling: %.0fms minimum between updates",
 			(DOKI.surgicalUpdateThrottleTime or 0.05) * 1000))
 		if DOKI.totalUpdates and DOKI.totalUpdates > 0 then
@@ -180,6 +187,7 @@ SlashCmdList["DOKI"] = function(msg)
 			print("  Items detected in bags via Container API:")
 			local totalItems = 0
 			local collectibleItems = 0
+			local battlepetItems = 0
 			for bagID = 0, NUM_BAG_SLOTS do
 				local numSlots = C_Container.GetContainerNumSlots(bagID)
 				if numSlots and numSlots > 0 then
@@ -187,20 +195,29 @@ SlashCmdList["DOKI"] = function(msg)
 						local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
 						if itemInfo and itemInfo.itemID then
 							totalItems = totalItems + 1
-							if DOKI:IsCollectibleItem(itemInfo.itemID) then
+							if DOKI:IsCollectibleItem(itemInfo.itemID, itemInfo.hyperlink) then
 								collectibleItems = collectibleItems + 1
 								local itemName = C_Item.GetItemInfo(itemInfo.itemID) or "Unknown"
 								local isCollected = DOKI:IsItemCollected(itemInfo.itemID, itemInfo.hyperlink)
-								print(string.format("    Bag %d Slot %d: %s (ID: %d) - %s",
+								local extraInfo = ""
+								-- Check if it's a battlepet
+								if itemInfo.hyperlink and string.find(itemInfo.hyperlink, "battlepet:") then
+									battlepetItems = battlepetItems + 1
+									local speciesID = DOKI:GetPetSpeciesFromBattlePetLink(itemInfo.hyperlink)
+									extraInfo = string.format(" [Battlepet Species: %d]", speciesID or 0)
+								end
+
+								print(string.format("    Bag %d Slot %d: %s (ID: %d) - %s%s",
 									bagID, slotID, itemName, itemInfo.itemID,
-									isCollected and "COLLECTED" or "NEEDS INDICATOR"))
+									isCollected and "COLLECTED" or "NEEDS INDICATOR", extraInfo))
 							end
 						end
 					end
 				end
 			end
 
-			print(string.format("  Total items: %d, Collectible items: %d", totalItems, collectibleItems))
+			print(string.format("  Total items: %d, Collectible items: %d (%d battlepets)",
+				totalItems, collectibleItems, battlepetItems))
 			local count = DOKI:ScanBagFrames()
 			print(string.format("  Scan result: %d indicators would be created", count))
 		else
@@ -214,15 +231,19 @@ SlashCmdList["DOKI"] = function(msg)
 			local changes = DOKI:ProcessSurgicalUpdate()
 			print(string.format("  ✅ Surgical update completed: %d changes detected", changes))
 			local activeCount = 0
+			local battlepetCount = 0
 			if DOKI.buttonTextures then
 				for _, textureData in pairs(DOKI.buttonTextures) do
 					if textureData.isActive then
 						activeCount = activeCount + 1
+						if textureData.itemLink and string.find(textureData.itemLink, "battlepet:") then
+							battlepetCount = battlepetCount + 1
+						end
 					end
 				end
 			end
 
-			print(string.format("  ✅ Active button textures: %d", activeCount))
+			print(string.format("  ✅ Active button textures: %d (%d battlepets)", activeCount, battlepetCount))
 		else
 			print("  ❌ ProcessSurgicalUpdate function missing!")
 		end
@@ -230,7 +251,8 @@ SlashCmdList["DOKI"] = function(msg)
 		print("|cffff69b4DOKI|r Event system status:")
 		if DOKI.eventFrame then
 			print("  ✅ Event frame exists")
-			print("  ✅ Listening for: ITEM_UNLOCKED, BAG_UPDATE, BAG_UPDATE_DELAYED")
+			print("  ✅ Listening for: PET_JOURNAL_LIST_UPDATE, COMPANION_LEARNED/UNLEARNED")
+			print("  ✅ Removed noisy events: COMPANION_UPDATE, MOUNT_JOURNAL_USABILITY_CHANGED")
 		else
 			print("  ❌ Event frame missing!")
 		end
@@ -252,7 +274,8 @@ SlashCmdList["DOKI"] = function(msg)
 		if DOKI.CreateButtonSnapshot then
 			local snapshot = DOKI:CreateButtonSnapshot()
 			local count = 0
-			for button, itemID in pairs(snapshot) do
+			local battlepetCount = 0
+			for button, itemData in pairs(snapshot) do
 				count = count + 1
 				if count <= 5 then
 					local buttonName = ""
@@ -263,8 +286,18 @@ SlashCmdList["DOKI"] = function(msg)
 						buttonName = "unnamed"
 					end
 
-					local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
-					print(string.format("|cffff69b4DOKI|r %s: %s (ID: %d)", buttonName, itemName, itemID))
+					local itemName = C_Item.GetItemInfo(itemData.itemID) or "Unknown"
+					local extraInfo = ""
+					if itemData.itemLink and string.find(itemData.itemLink, "battlepet:") then
+						battlepetCount = battlepetCount + 1
+						local speciesID = DOKI:GetPetSpeciesFromBattlePetLink(itemData.itemLink)
+						extraInfo = string.format(" [Battlepet Species: %d]", speciesID or 0)
+					end
+
+					print(string.format("|cffff69b4DOKI|r %s: %s (ID: %d)%s",
+						buttonName, itemName, itemData.itemID, extraInfo))
+				elseif itemData.itemLink and string.find(itemData.itemLink, "battlepet:") then
+					battlepetCount = battlepetCount + 1
 				end
 			end
 
@@ -272,9 +305,17 @@ SlashCmdList["DOKI"] = function(msg)
 				print(string.format("|cffff69b4DOKI|r ... and %d more buttons", count - 5))
 			end
 
-			print(string.format("|cffff69b4DOKI|r Total: %d buttons with items", count))
+			print(string.format("|cffff69b4DOKI|r Total: %d buttons with items (%d battlepets)", count, battlepetCount))
 		else
 			print("|cffff69b4DOKI|r Snapshot function not available")
+		end
+
+		-- ADDED: New battlepet-specific debug command
+	elseif command == "battlepet" or command == "bp" then
+		if DOKI.DebugBattlepetSnapshot then
+			DOKI:DebugBattlepetSnapshot()
+		else
+			print("|cffff69b4DOKI|r Battlepet debug function not available")
 		end
 	elseif command == "performance" or command == "perf" then
 		if DOKI.ShowPerformanceStats then
@@ -289,7 +330,7 @@ SlashCmdList["DOKI"] = function(msg)
 			print("|cffff69b4DOKI|r Frame debug function not available")
 		end
 	else
-		print("|cffff69b4DOKI|r Clean Surgical Update System Commands:")
+		print("|cffff69b4DOKI|r War Within Enhanced Surgical System Commands:")
 		print("")
 		print("Basic controls:")
 		print("  /doki toggle - Enable/disable addon")
@@ -311,22 +352,20 @@ SlashCmdList["DOKI"] = function(msg)
 		print("  /doki testbags - Test bag frame detection")
 		print("  /doki testconnection - Test surgical→texture connection")
 		print("  /doki snapshot - Show current button-to-item mapping")
+		print("  /doki battlepet - Debug battlepet snapshot tracking")
 		print("  /doki frames - Debug found item frames")
 		print("")
-		print("|cff00ff00Enhanced Responsive System Features:|r")
-		print("  |cff00ff00•|r No flickering (no mass clearing)")
-		print("  |cff00ff00•|r Only updates buttons that actually changed")
-		print("  |cff00ff00•|r 0.2-second regular update interval (enhanced responsiveness)")
-		print("  |cff00ff00•|r |cffff8000IMMEDIATE|r response to item drops (multiple events)")
-		print("  |cff00ff00•|r |cffff8000CURSOR|r detection during item movement")
-		print("  |cff00ff00•|r |cffff8000AUTOMATIC|r bag update detection")
+		print("|cff00ff00War Within Enhanced Features:|r")
+		print("  |cff00ff00•|r Fixed mount detection (GetMountFromItem API)")
+		print("  |cff00ff00•|r Enhanced pet detection with collection events")
+		print("  |cff00ff00•|r |cffff8000NEW:|r Battlepet (caged pet) support")
+		print("  |cff00ff00•|r |cffff8000FIXED:|r Removed noisy events (COMPANION_UPDATE, etc.)")
+		print("  |cff00ff00•|r |cffff8000IMPROVED:|r Timing delays for pet caging")
+		print("  |cff00ff00•|r Enhanced surgical updates with battlepet tracking")
 		print("  |cff00ff00•|r Indicators follow items automatically")
 		print("  |cff00ff00•|r Ultra-fast throttling (50ms) prevents spam")
-		print("  |cff00ff00•|r Button texture system (integrated with game)")
 		print("  |cff00ff00•|r Indicators appear in TOP-RIGHT corner")
-		print("  |cff00ff00•|r Enhanced Blizzard bag detection")
-		print("  |cff00ff00•|r Optimized for responsiveness")
 		print("")
-		print("|cffff8000Try moving items - indicators should follow almost instantly!|r")
+		print("|cffff8000Try caging/learning pets - indicators should update immediately!|r")
 	end
 end
