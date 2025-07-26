@@ -739,8 +739,307 @@ function DOKI:IsTransmogCollected(itemID, itemLink)
 end
 
 function DOKI:IsTransmogCollectedSmart(itemID, itemLink)
-	-- Simplified smart mode for clean implementation
-	return self:IsTransmogCollected(itemID, itemLink)
+	if not itemID or not C_TransmogCollection then return false, false end
+
+	local itemAppearanceID, itemModifiedAppearanceID
+	-- Try hyperlink first (critical for difficulty variants)
+	if itemLink then
+		itemAppearanceID, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(itemLink)
+	end
+
+	-- Fallback to itemID
+	if not itemModifiedAppearanceID then
+		itemAppearanceID, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(itemID)
+	end
+
+	if not itemModifiedAppearanceID then
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r No appearance ID for item %d", itemID))
+		end
+
+		return false, false
+	end
+
+	-- Check if we have this specific variant
+	local hasThisVariant = C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance(itemModifiedAppearanceID)
+	if hasThisVariant then
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r Item %d - have this specific variant", itemID))
+		end
+
+		return true, false -- Have this variant, no indicator needed
+	end
+
+	-- We don't have this variant - check if we have equal or better sources
+	if itemAppearanceID then
+		local hasEqualOrBetterSources = self:HasEqualOrLessRestrictiveSources(itemAppearanceID, itemModifiedAppearanceID)
+		if hasEqualOrBetterSources then
+			-- We have identical or less restrictive sources, so we don't need this item
+			if self.db and self.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r Item %d - have equal or better sources, no D needed", itemID))
+			end
+
+			return true, false -- Treat as collected (no D shown)
+		else
+			-- We either have no sources, or only more restrictive sources - show orange D
+			local hasAnySources = self:HasOtherTransmogSources(itemAppearanceID, itemModifiedAppearanceID)
+			if self.db and self.db.debugMode then
+				if hasAnySources then
+					print(string.format(
+						"|cffff69b4DOKI|r Item %d - have other sources but they're more restrictive, show orange D", itemID))
+				else
+					print(string.format("|cffff69b4DOKI|r Item %d - no sources at all, show orange D", itemID))
+				end
+			end
+
+			return false, false -- Show orange D (we need this item)
+		end
+	end
+
+	return false, false -- Default to orange D
+end
+
+-- Get class and faction restrictions for a specific source
+function DOKI:GetClassRestrictionsForSource(sourceID, appearanceID)
+	local restrictions = {
+		validClasses = {},
+		armorType = nil,
+		hasClassRestriction = false,
+		faction = nil, -- "Alliance", "Horde", or nil (both factions)
+		hasFactionRestriction = false,
+	}
+	-- Get the item from the source
+	local linkedItemID = nil
+	local success, sourceInfo = pcall(C_TransmogCollection.GetAppearanceSourceInfo, sourceID)
+	if success and sourceInfo and type(sourceInfo) == "table" then
+		local itemLinkField = sourceInfo["itemLink"]
+		if itemLinkField then
+			linkedItemID = self:GetItemID(itemLinkField)
+		end
+	end
+
+	-- Fallback to GetSourceInfo
+	if not linkedItemID then
+		local success2, sourceInfo2 = pcall(C_TransmogCollection.GetSourceInfo, sourceID)
+		if success2 and sourceInfo2 and sourceInfo2.itemID then
+			linkedItemID = sourceInfo2.itemID
+		end
+	end
+
+	if not linkedItemID then
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r Could not get item ID for source %d", sourceID))
+		end
+
+		return restrictions
+	end
+
+	-- Get item properties for armor type
+	local success3, _, _, _, _, _, classID, subClassID = pcall(C_Item.GetItemInfoInstant, linkedItemID)
+	if success3 and classID == 4 then -- Armor
+		restrictions.armorType = subClassID
+	end
+
+	-- Parse tooltip for class and faction restrictions
+	local tooltip = CreateFrame("GameTooltip", "DOKIClassTooltip" .. sourceID, nil, "GameTooltipTemplate")
+	tooltip:SetOwner(UIParent, "ANCHOR_NONE")
+	tooltip:SetItemByID(linkedItemID)
+	tooltip:Show()
+	local foundClassRestriction = false
+	local foundFactionRestriction = false
+	local restrictedClasses = {}
+	for i = 1, tooltip:NumLines() do
+		local line = _G["DOKIClassTooltip" .. sourceID .. "TextLeft" .. i]
+		if line then
+			local text = line:GetText()
+			if text then
+				-- Check for class restrictions
+				if string.find(text, "Classes:") then
+					foundClassRestriction = true
+					-- Parse "Classes: Rogue" or "Classes: Warrior, Paladin, Death Knight"
+					local classText = string.match(text, "Classes:%s*(.+)")
+					if classText then
+						-- Map class names to IDs
+						local classNameToID = {
+							["Warrior"] = 1,
+							["Paladin"] = 2,
+							["Hunter"] = 3,
+							["Rogue"] = 4,
+							["Priest"] = 5,
+							["Death Knight"] = 6,
+							["Shaman"] = 7,
+							["Mage"] = 8,
+							["Warlock"] = 9,
+							["Monk"] = 10,
+							["Druid"] = 11,
+							["Demon Hunter"] = 12,
+							["Evoker"] = 13,
+						}
+						-- Split by comma and convert to class IDs
+						for className in string.gmatch(classText, "([^,]+)") do
+							className = strtrim(className)
+							local classID = classNameToID[className]
+							if classID then
+								table.insert(restrictedClasses, classID)
+							end
+						end
+					end
+				end
+
+				-- Check for faction restrictions
+				local lowerText = string.lower(text)
+				if string.find(lowerText, "alliance") then
+					if string.find(lowerText, "require") or string.find(lowerText, "only") or
+							string.find(lowerText, "exclusive") or string.find(lowerText, "specific") or
+							string.find(lowerText, "reputation") or string.find(text, "Alliance") then
+						foundFactionRestriction = true
+						restrictions.faction = "Alliance"
+						restrictions.hasFactionRestriction = true
+						if self.db and self.db.debugMode then
+							print(string.format("|cffff69b4DOKI|r Found Alliance restriction for item %d: %s", linkedItemID, text))
+						end
+					end
+				elseif string.find(lowerText, "horde") then
+					if string.find(lowerText, "require") or string.find(lowerText, "only") or
+							string.find(lowerText, "exclusive") or string.find(lowerText, "specific") or
+							string.find(lowerText, "reputation") or string.find(text, "Horde") then
+						foundFactionRestriction = true
+						restrictions.faction = "Horde"
+						restrictions.hasFactionRestriction = true
+						if self.db and self.db.debugMode then
+							print(string.format("|cffff69b4DOKI|r Found Horde restriction for item %d: %s", linkedItemID, text))
+						end
+					end
+				end
+			end
+		end
+	end
+
+	tooltip:Hide()
+	if foundClassRestriction then
+		-- Item has explicit class restrictions
+		restrictions.validClasses = restrictedClasses
+		restrictions.hasClassRestriction = true
+	else
+		-- No class restrictions found - use armor type defaults
+		if restrictions.armorType == 1 then                                      -- Cloth
+			restrictions.validClasses = { 5, 8, 9 }                                -- Priest, Mage, Warlock
+		elseif restrictions.armorType == 2 then                                  -- Leather
+			restrictions.validClasses = { 4, 10, 11, 12 }                          -- Rogue, Monk, Druid, Demon Hunter
+		elseif restrictions.armorType == 3 then                                  -- Mail
+			restrictions.validClasses = { 3, 7, 13 }                               -- Hunter, Shaman, Evoker
+		elseif restrictions.armorType == 4 then                                  -- Plate
+			restrictions.validClasses = { 1, 2, 6 }                                -- Warrior, Paladin, Death Knight
+		elseif classID == 2 then                                                 -- Weapon
+			restrictions.validClasses = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 } -- All classes
+		else
+			restrictions.validClasses = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 } -- Unknown, assume all
+		end
+	end
+
+	return restrictions
+end
+
+-- Check if we have sources with identical or less restrictive class AND faction sets
+function DOKI:HasEqualOrLessRestrictiveSources(itemAppearanceID, excludeModifiedAppearanceID)
+	if not itemAppearanceID then return false end
+
+	-- Get all sources for this appearance
+	local success, allSources = pcall(C_TransmogCollection.GetAllAppearanceSources, itemAppearanceID)
+	if not success or not allSources then return false end
+
+	-- Get class and faction restrictions for the current item
+	local currentItemRestrictions = self:GetClassRestrictionsForSource(excludeModifiedAppearanceID, itemAppearanceID)
+	if not currentItemRestrictions then return false end
+
+	-- Check each source we have collected
+	for _, sourceID in ipairs(allSources) do
+		if sourceID ~= excludeModifiedAppearanceID then
+			local success2, hasSource = pcall(C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance, sourceID)
+			if success2 and hasSource then
+				-- Get restrictions for this known source
+				local sourceRestrictions = self:GetClassRestrictionsForSource(sourceID, itemAppearanceID)
+				if sourceRestrictions then
+					local sourceClassCount = #sourceRestrictions.validClasses
+					local currentClassCount = #currentItemRestrictions.validClasses
+					-- Compare faction restrictions (faction-agnostic logic)
+					local factionEquivalent = false
+					-- For factions to be equivalent, they must be exactly the same
+					if sourceRestrictions.hasFactionRestriction == currentItemRestrictions.hasFactionRestriction then
+						if not sourceRestrictions.hasFactionRestriction then
+							-- Both have no faction restriction = equivalent
+							factionEquivalent = true
+						elseif sourceRestrictions.faction == currentItemRestrictions.faction then
+							-- Both have same faction restriction = equivalent
+							factionEquivalent = true
+						end
+					end
+
+					-- Only compare class restrictions if faction restrictions are equivalent
+					if factionEquivalent then
+						-- Check if source is less restrictive in terms of classes
+						if sourceClassCount > currentClassCount then
+							if self.db and self.db.debugMode then
+								print(string.format(
+									"|cffff69b4DOKI|r Found less restrictive source %d (usable by %d classes vs %d, same faction restrictions)",
+									sourceID, sourceClassCount, currentClassCount))
+							end
+
+							return true
+						end
+
+						-- Check if source has identical class restrictions
+						if sourceClassCount == currentClassCount then
+							-- Create sorted lists to compare classes
+							local sourceCopy = {}
+							local currentCopy = {}
+							for _, classID in ipairs(sourceRestrictions.validClasses) do
+								table.insert(sourceCopy, classID)
+							end
+
+							for _, classID in ipairs(currentItemRestrictions.validClasses) do
+								table.insert(currentCopy, classID)
+							end
+
+							table.sort(sourceCopy)
+							table.sort(currentCopy)
+							-- Check if they're identical
+							local identical = true
+							for i = 1, #sourceCopy do
+								if sourceCopy[i] ~= currentCopy[i] then
+									identical = false
+									break
+								end
+							end
+
+							if identical then
+								if self.db and self.db.debugMode then
+									local factionText = sourceRestrictions.hasFactionRestriction and
+											(" (same " .. sourceRestrictions.faction .. " restriction)") or " (no faction restriction)"
+									print(string.format("|cffff69b4DOKI|r Found identical restriction source %d (same classes: %s)%s",
+										sourceID, table.concat(sourceCopy, ", "), factionText))
+								end
+
+								return true
+							end
+						end
+					else
+						-- Different faction restrictions - sources are not equivalent
+						if self.db and self.db.debugMode then
+							local currentFactionText = currentItemRestrictions.hasFactionRestriction and
+									currentItemRestrictions.faction or "none"
+							local sourceFactionText = sourceRestrictions.hasFactionRestriction and sourceRestrictions.faction or "none"
+							print(string.format(
+								"|cffff69b4DOKI|r Source %d has different faction restrictions (%s vs %s) - not equivalent",
+								sourceID, sourceFactionText, currentFactionText))
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return false
 end
 
 function DOKI:HasOtherTransmogSources(itemAppearanceID, excludeModifiedAppearanceID)
