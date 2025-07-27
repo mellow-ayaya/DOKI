@@ -1,4 +1,4 @@
--- DOKI Core - Complete War Within Fix with Enhanced Merchant Support
+-- DOKI Core - Complete War Within Fix with Enhanced Merchant Support + Ensemble Support
 local addonName, DOKI = ...
 -- Initialize addon namespace
 DOKI.currentItems = {}
@@ -38,10 +38,10 @@ local function OnEvent(self, event, ...)
 			DOKI:InitializeUniversalScanning()
 			if ElvUI then
 				print(
-					"|cffff69b4DOKI|r loaded with War Within surgical system + ElvUI support + Merchant scroll detection. Type /doki for commands.")
+					"|cffff69b4DOKI|r loaded with War Within surgical system + ElvUI support + Merchant scroll detection + Ensemble support. Type /doki for commands.")
 			else
 				print(
-					"|cffff69b4DOKI|r loaded with War Within surgical system + Merchant scroll detection. Type /doki for commands.")
+					"|cffff69b4DOKI|r loaded with War Within surgical system + Merchant scroll detection + Ensemble support. Type /doki for commands.")
 			end
 
 			frame:UnregisterEvent("ADDON_LOADED")
@@ -52,7 +52,7 @@ end
 -- Register events
 frame:RegisterEvent("ADDON_LOADED")
 frame:SetScript("OnEvent", OnEvent)
--- Enhanced slash commands with merchant and battlepet support
+-- Enhanced slash commands with merchant, battlepet, and ensemble support
 SLASH_DOKI1 = "/doki"
 SlashCmdList["DOKI"] = function(msg)
 	local command = string.lower(strtrim(msg or ""))
@@ -164,12 +164,17 @@ SlashCmdList["DOKI"] = function(msg)
 			DOKI.db.debugMode and "On" or "Off"))
 		print(string.format("|cffff69b4DOKI|r Active indicators: %d (%d battlepets)", indicatorCount, battlepetCount))
 		print(string.format("|cffff69b4DOKI|r Tracked buttons: %d", snapshotCount))
-		print("|cffff69b4DOKI|r System: War Within Enhanced Surgical System with Merchant Support")
+		-- ADDED: Ensemble status
+		local ensembleWord = DOKI.ensembleWordCache
+		print(string.format("|cffff69b4DOKI|r Ensemble detection: %s",
+			ensembleWord and ("Ready (" .. ensembleWord .. ")") or "Not initialized"))
+		print("|cffff69b4DOKI|r System: War Within Enhanced Surgical System with Ensemble + Merchant Support")
 		print("  |cff00ff00•|r Regular updates: 0.2s interval")
 		print("  |cff00ff00•|r Clean events: Noisy events removed")
 		print("  |cff00ff00•|r Battlepet support: Caged pet detection")
 		print("  |cff00ff00•|r Mount fix: GetMountFromItem API")
 		print("  |cff00ff00•|r Pet timing: Collection event delays")
+		print("  |cff00ff00•|r |cffff8000NEW:|r Ensemble support: Locale-aware detection + color-based collection status")
 		print("  |cff00ff00•|r |cffff8000NEW:|r Merchant scroll detection")
 		print("  |cff00ff00•|r |cffff8000NEW:|r OnMouseWheel + MERCHANT_UPDATE events")
 		print("  |cff00ff00•|r |cffff8000NEW:|r Smart mode auto-rescan on toggle")
@@ -280,16 +285,16 @@ SlashCmdList["DOKI"] = function(msg)
 		-- Test scroll detection setup
 		print("  Merchant scroll detection status:")
 		if MerchantFrame.ScrollBox then
-			print("    ✅ ScrollBox exists")
+			print("     ScrollBox exists")
 			local hasMouseWheel = MerchantFrame.ScrollBox:IsMouseWheelEnabled()
 			print(string.format("    Mouse wheel enabled: %s", tostring(hasMouseWheel)))
 			if MerchantFrame.ScrollBox.RegisterCallback then
-				print("    ✅ RegisterCallback available")
+				print("     RegisterCallback available")
 			else
-				print("    ❌ RegisterCallback not available")
+				print("     RegisterCallback not available")
 			end
 		else
-			print("    ❌ ScrollBox not found")
+			print("     ScrollBox not found")
 		end
 
 		-- Test merchant items
@@ -397,6 +402,100 @@ SlashCmdList["DOKI"] = function(msg)
 				print(string.format("  Slot %d: Button not visible", i))
 			end
 		end
+	elseif command == "ensemble" or command == "ens" then
+		print("|cffff69b4DOKI|r === ENSEMBLE SYSTEM STATUS ===")
+		local ensembleWord = DOKI.ensembleWordCache
+		print(string.format("  Ensemble word: %s", ensembleWord or "not cached"))
+		if not ensembleWord then
+			print("  Status:  Ensemble detection unavailable")
+			print("  Try: /doki initensemble")
+		else
+			print("  Status:  Ensemble detection ready")
+		end
+
+		-- Test with a known ensemble if available
+		local testItemID = 234522
+		local testName = C_Item.GetItemInfo(testItemID)
+		if testName then
+			print(string.format("  Test item: %s", testName))
+			local isEnsemble = DOKI:IsEnsembleItem(testItemID, testName)
+			print(string.format("  Detected as ensemble: %s", tostring(isEnsemble)))
+			if isEnsemble then
+				local isCollected = DOKI:IsEnsembleCollected(testItemID, nil)
+				print(string.format("  Collection status: %s", isCollected and "COLLECTED" or "NOT COLLECTED"))
+			end
+		end
+
+		-- Show cache status
+		local cacheCount = 0
+		if DOKI.collectionCache then
+			for _ in pairs(DOKI.collectionCache) do
+				cacheCount = cacheCount + 1
+			end
+		end
+
+		print(string.format("  Collection cache entries: %d", cacheCount))
+	elseif command == "initensemble" then
+		DOKI:InitializeEnsembleDetection()
+		print("|cffff69b4DOKI|r Ensemble detection re-initialized")
+		-- Show result
+		local ensembleWord = DOKI.ensembleWordCache
+		if ensembleWord then
+			print(string.format("|cffff69b4DOKI|r Successfully extracted ensemble word: '%s'", ensembleWord))
+		else
+			print("|cffff69b4DOKI|r Failed to extract ensemble word - check if item 234522 is available")
+		end
+	elseif string.find(command, "testensemble") then
+		-- Extract item ID from command like "testensemble 12345"
+		local itemID = tonumber(string.match(command, "testensemble (%d+)"))
+		if not itemID then
+			itemID = 234522 -- Default to known ensemble
+		end
+
+		print(string.format("|cffff69b4DOKI|r Testing ensemble detection for item %d", itemID))
+		if DOKI.TraceEnsembleDetection then
+			DOKI:TraceEnsembleDetection(itemID, nil)
+		else
+			print("|cffff69b4DOKI|r TraceEnsembleDetection function not available")
+		end
+	elseif command == "testbagensembles" then
+		print("|cffff69b4DOKI|r === SCANNING BAGS FOR ENSEMBLES ===")
+		local totalItems = 0
+		local ensembleItems = 0
+		local collectedEnsembles = 0
+		local needIndicatorEnsembles = 0
+		for bagID = 0, NUM_BAG_SLOTS do
+			local numSlots = C_Container.GetContainerNumSlots(bagID)
+			if numSlots and numSlots > 0 then
+				for slotID = 1, numSlots do
+					local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+					if itemInfo and itemInfo.itemID then
+						totalItems = totalItems + 1
+						if DOKI:IsEnsembleItem(itemInfo.itemID) then
+							ensembleItems = ensembleItems + 1
+							local itemName = C_Item.GetItemInfo(itemInfo.itemID) or "Unknown"
+							local isCollected = DOKI:IsEnsembleCollected(itemInfo.itemID, itemInfo.hyperlink)
+							if isCollected then
+								collectedEnsembles = collectedEnsembles + 1
+								print(string.format("   %s (ID: %d) - COLLECTED", itemName, itemInfo.itemID))
+							else
+								needIndicatorEnsembles = needIndicatorEnsembles + 1
+								print(string.format("   %s (ID: %d) - NEEDS INDICATOR", itemName, itemInfo.itemID))
+							end
+						end
+					end
+				end
+			end
+		end
+
+		print(string.format("|cffff69b4DOKI|r Bag scan complete:"))
+		print(string.format("  Total items: %d", totalItems))
+		print(string.format("  Ensemble items: %d", ensembleItems))
+		print(string.format("  Collected ensembles: %d", collectedEnsembles))
+		print(string.format("  Need indicators: %d", needIndicatorEnsembles))
+		if ensembleItems == 0 then
+			print("|cffff69b4DOKI|r No ensembles found in bags. Try with known ensemble items.")
+		end
 	elseif string.find(command, "why ") or string.find(command, "trace ") then
 		-- Extract item ID from command like "why 12345" or "trace 12345"
 		local itemID = tonumber(string.match(command, "%d+"))
@@ -410,9 +509,9 @@ SlashCmdList["DOKI"] = function(msg)
 		print("|cffff69b4DOKI|r === TESTING SURGICAL→TEXTURE CONNECTION ===")
 		print("|cffff69b4DOKI|r Testing the bridge between surgical detection and button textures...")
 		if DOKI.ProcessSurgicalUpdate then
-			print("  ✅ ProcessSurgicalUpdate function exists")
+			print("   ProcessSurgicalUpdate function exists")
 			local changes = DOKI:ProcessSurgicalUpdate()
-			print(string.format("  ✅ Surgical update completed: %d changes detected", changes))
+			print(string.format("   Surgical update completed: %d changes detected", changes))
 			local activeCount = 0
 			local battlepetCount = 0
 			if DOKI.buttonTextures then
@@ -426,38 +525,38 @@ SlashCmdList["DOKI"] = function(msg)
 				end
 			end
 
-			print(string.format("  ✅ Active button textures: %d (%d battlepets)", activeCount, battlepetCount))
+			print(string.format("   Active button textures: %d (%d battlepets)", activeCount, battlepetCount))
 		else
-			print("  ❌ ProcessSurgicalUpdate function missing!")
+			print("   ProcessSurgicalUpdate function missing!")
 		end
 
 		print("|cffff69b4DOKI|r Event system status:")
 		if DOKI.eventFrame then
-			print("  ✅ Event frame exists")
-			print("  ✅ Listening for: PET_JOURNAL_LIST_UPDATE, COMPANION_LEARNED/UNLEARNED")
-			print("  ✅ |cffff8000NEW:|r Listening for: MERCHANT_SHOW, MERCHANT_UPDATE, MERCHANT_CLOSED")
-			print("  ✅ Removed noisy events: COMPANION_UPDATE, MOUNT_JOURNAL_USABILITY_CHANGED")
+			print("   Event frame exists")
+			print("   Listening for: PET_JOURNAL_LIST_UPDATE, COMPANION_LEARNED/UNLEARNED")
+			print("   |cffff8000NEW:|r Listening for: MERCHANT_SHOW, MERCHANT_UPDATE, MERCHANT_CLOSED")
+			print("   Removed noisy events: COMPANION_UPDATE, MOUNT_JOURNAL_USABILITY_CHANGED")
 		else
-			print("  ❌ Event frame missing!")
+			print("   Event frame missing!")
 		end
 
 		print("|cffff69b4DOKI|r Merchant system status:")
 		if DOKI.InitializeMerchantScrollDetection then
-			print("  ✅ Merchant scroll detection available")
+			print("   Merchant scroll detection available")
 			if MerchantFrame and MerchantFrame:IsVisible() then
-				print("  ✅ Merchant is open - testing scroll hooks")
+				print("   Merchant is open - testing scroll hooks")
 				local scrollBox = MerchantFrame.ScrollBox
 				if scrollBox then
-					print("    ✅ ScrollBox found")
+					print("     ScrollBox found")
 					print(string.format("    Mouse wheel enabled: %s", tostring(scrollBox:IsMouseWheelEnabled())))
 				else
-					print("    ❌ ScrollBox not found")
+					print("     ScrollBox not found")
 				end
 			else
-				print("  ⚠️ Merchant is closed - open a merchant to test")
+				print("   Merchant is closed - open a merchant to test")
 			end
 		else
-			print("  ❌ Merchant scroll detection missing!")
+			print("   Merchant scroll detection missing!")
 		end
 
 		print("|cffff69b4DOKI|r Connection test complete!")
@@ -533,7 +632,7 @@ SlashCmdList["DOKI"] = function(msg)
 			print("|cffff69b4DOKI|r Frame debug function not available")
 		end
 	else
-		print("|cffff69b4DOKI|r War Within Enhanced Surgical System with Merchant Support Commands:")
+		print("|cffff69b4DOKI|r War Within Enhanced Surgical System with Ensemble + Merchant Support Commands:")
 		print("")
 		print("Basic controls:")
 		print("  /doki toggle - Enable/disable addon")
@@ -565,21 +664,30 @@ SlashCmdList["DOKI"] = function(msg)
 		print("  /doki merchantstate - Debug current merchant state")
 		print("  /doki merchantbuttons - Check what's visible in merchant buttons")
 		print("")
+		print("|cffff8000NEW - Ensemble testing:|r")
+		print("  /doki ensemble - Check ensemble system status and test detection")
+		print("  /doki initensemble - Re-initialize ensemble word extraction")
+		print("  /doki testensemble [itemID] - Trace ensemble detection (default: 234522)")
+		print("  /doki testbagensembles - Scan bags for ensemble items")
+		print("")
 		print("|cff00ff00War Within Enhanced Features:|r")
 		print("  |cff00ff00•|r Fixed mount detection (GetMountFromItem API)")
 		print("  |cff00ff00•|r Enhanced pet detection with collection events")
 		print("  |cff00ff00•|r |cffff8000NEW:|r Battlepet (caged pet) support")
+		print("  |cff00ff00•|r |cffff8000NEW:|r Ensemble detection: Class 0/Subclass 8 + spell effect + name pattern")
+		print("  |cff00ff00•|r |cffff8000NEW:|r Ensemble collection: 100% locale-agnostic color-based detection")
 		print("  |cff00ff00•|r |cffff8000FIXED:|r Removed noisy events (COMPANION_UPDATE, etc.)")
 		print("  |cff00ff00•|r |cffff8000IMPROVED:|r Timing delays for pet caging")
 		print("  |cff00ff00•|r |cffff8000NEW:|r Merchant scroll detection")
 		print("  |cff00ff00•|r |cffff8000NEW:|r OnMouseWheel + MERCHANT_UPDATE events")
 		print("  |cff00ff00•|r |cffff8000NEW:|r Smart mode auto-rescan on toggle")
 		print("  |cff00ff00•|r |cffff8000NEW:|r Delayed cleanup scan (0.2s) with auto-cancellation")
-		print("  |cff00ff00•|r Enhanced surgical updates with battlepet tracking")
+		print("  |cff00ff00•|r Enhanced surgical updates with battlepet + ensemble tracking")
 		print("  |cff00ff00•|r Indicators follow items automatically")
 		print("  |cff00ff00•|r Ultra-fast throttling (50ms) prevents spam")
 		print("  |cff00ff00•|r Indicators appear in TOP-RIGHT corner")
 		print("")
-		print("|cffff8000Try scrolling in merchant frames - indicators should update immediately!|r")
+		print(
+			"|cffff8000Try scrolling in merchant frames or moving ensemble items - indicators should update immediately!|r")
 	end
 end

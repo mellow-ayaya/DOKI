@@ -1,10 +1,10 @@
--- DOKI Button Texture System - Complete War Within Fix with Battlepet Support + Enhanced Delayed Cleanup
+-- DOKI Button Texture System - Complete War Within Fix with Battlepet Support + Enhanced Delayed Cleanup + Ensemble Support
 local addonName, DOKI = ...
 -- Storage
 DOKI.buttonTextures = {}
 DOKI.texturePool = {}
 DOKI.indicatorTexturePath = "Interface\\AddOns\\DOKI\\Media\\uncollected"
--- FIXED: Enhanced surgical update tracking for battlepets and merchant
+-- FIXED: Enhanced surgical update tracking for battlepets, ensembles, and merchant
 DOKI.lastButtonSnapshot = {}
 DOKI.buttonItemMap = {}
 -- ===== TEXTURE CREATION =====
@@ -147,10 +147,10 @@ function DOKI:ReleaseButtonTexture(button)
 	table.insert(self.texturePool, textureData)
 end
 
--- ===== ENHANCED SNAPSHOT SYSTEM FOR BATTLEPETS + MERCHANT =====
+-- ===== ENHANCED SNAPSHOT SYSTEM FOR BATTLEPETS + ENSEMBLES + MERCHANT =====
 function DOKI:CreateButtonSnapshot()
 	local snapshot = {}
-	-- FIXED: Store both itemID and itemLink for battlepet support
+	-- FIXED: Store both itemID and itemLink for battlepet + ensemble support
 	local function addToSnapshot(button, itemID, itemLink)
 		if button and itemID then
 			snapshot[button] = {
@@ -286,7 +286,7 @@ function DOKI:CreateButtonSnapshot()
 	return snapshot
 end
 
--- ===== ENHANCED SURGICAL UPDATE PROCESSING FOR BATTLEPETS + MERCHANT + DELAYED CLEANUP =====
+-- ===== ENHANCED SURGICAL UPDATE PROCESSING FOR BATTLEPETS + ENSEMBLES + MERCHANT + DELAYED CLEANUP =====
 function DOKI:ProcessSurgicalUpdate()
 	local currentSnapshot = self:CreateButtonSnapshot()
 	local changes = {
@@ -294,7 +294,7 @@ function DOKI:ProcessSurgicalUpdate()
 		added = {},
 		changed = {},
 	}
-	-- FIXED: Enhanced comparison that handles both itemID and itemLink (for battlepets) and empty slots
+	-- FIXED: Enhanced comparison that handles both itemID and itemLink (for battlepets + ensembles) and empty slots
 	local function itemsEqual(oldItem, newItem)
 		if not oldItem and not newItem then return true end
 
@@ -346,6 +346,8 @@ function DOKI:ProcessSurgicalUpdate()
 			local extraInfo = ""
 			if change.oldItemData.itemLink and string.find(change.oldItemData.itemLink, "battlepet:") then
 				extraInfo = " (battlepet)"
+			elseif change.oldItemData.itemID and self:IsEnsembleItem(change.oldItemData.itemID) then
+				extraInfo = " (ensemble)"
 			end
 
 			-- Check if this was a merchant button
@@ -378,10 +380,14 @@ function DOKI:ProcessSurgicalUpdate()
 			local newExtra = ""
 			if change.oldItemData.itemLink and string.find(change.oldItemData.itemLink, "battlepet:") then
 				oldExtra = " (battlepet)"
+			elseif change.oldItemData.itemID and self:IsEnsembleItem(change.oldItemData.itemID) then
+				oldExtra = " (ensemble)"
 			end
 
 			if change.newItemData.itemLink and string.find(change.newItemData.itemLink, "battlepet:") then
 				newExtra = " (battlepet)"
+			elseif change.newItemData.itemID and self:IsEnsembleItem(change.newItemData.itemID) then
+				newExtra = " (ensemble)"
 			end
 
 			-- Check if this is a merchant button
@@ -394,7 +400,7 @@ function DOKI:ProcessSurgicalUpdate()
 
 			local oldItemID = change.oldItemData.itemID or "empty"
 			local newItemID = change.newItemData.isEmpty and "empty" or (change.newItemData.itemID or "unknown")
-			print(string.format("|cffff69b4DOKI|r Changed indicator: %s%s → %s%s",
+			print(string.format("|cffff69b4DOKI|r Changed indicator: %s%s -> %s%s",
 				tostring(oldItemID), oldExtra, tostring(newItemID), newExtra))
 		end
 	end
@@ -411,6 +417,8 @@ function DOKI:ProcessSurgicalUpdate()
 					local extraInfo = ""
 					if change.newItemData.itemLink and string.find(change.newItemData.itemLink, "battlepet:") then
 						extraInfo = " (battlepet)"
+					elseif change.newItemData.itemID and self:IsEnsembleItem(change.newItemData.itemID) then
+						extraInfo = " (ensemble)"
 					end
 
 					-- Check if this is a merchant button
@@ -437,7 +445,7 @@ function DOKI:ProcessSurgicalUpdate()
 	return updateCount
 end
 
--- ADDED: Enhanced item data retrieval for surgical updates (supports battlepets)
+-- ADDED: Enhanced item data retrieval for surgical updates (supports battlepets + ensembles)
 function DOKI:GetItemDataForSurgicalUpdate(itemID, itemLink)
 	-- FIXED: Handle empty slots - return nil so no indicator is created
 	if itemID == "EMPTY_SLOT" or not itemID then return nil end
@@ -456,6 +464,19 @@ function DOKI:GetItemDataForSurgicalUpdate(itemID, itemLink)
 				petSpeciesID = petSpeciesID,
 			}
 		end
+	end
+
+	-- ADDED: Handle ensembles next
+	if self:IsEnsembleItem(itemID) then
+		local isCollected = self:IsEnsembleCollected(itemID, itemLink)
+		return {
+			itemID = itemID,
+			itemLink = itemLink,
+			isCollected = isCollected,
+			showYellowD = false,
+			frameType = "surgical",
+			isEnsemble = true,
+		}
 	end
 
 	if not self:IsCollectibleItem(itemID, itemLink) then return nil end
@@ -490,7 +511,7 @@ function DOKI:AddButtonIndicator(button, itemData)
 	textureData:Show()
 	textureData.itemID = itemData.itemID
 	textureData.itemLink = itemData.itemLink -- ADDED: Store itemLink for battlepets
-	-- FIXED: Store complete item info for battlepets
+	-- FIXED: Store complete item info for battlepets + ensembles
 	if itemData.itemLink then
 		self.buttonItemMap[button] = {
 			itemID = itemData.itemID,
@@ -513,6 +534,8 @@ function DOKI:AddButtonIndicator(button, itemData)
 		local extraInfo = ""
 		if itemData.petSpeciesID then
 			extraInfo = string.format(" [Battlepet Species: %d]", itemData.petSpeciesID)
+		elseif itemData.isEnsemble then
+			extraInfo = " [Ensemble]"
 		end
 
 		-- Check if this is a merchant button
@@ -634,7 +657,7 @@ function DOKI:InitializeButtonTextureSystem()
 	self:ValidateTexture()
 	if self.db and self.db.debugMode then
 		print(
-			"|cffff69b4DOKI|r Enhanced button texture system initialized with battlepet + merchant + delayed cleanup support")
+			"|cffff69b4DOKI|r Enhanced button texture system initialized with battlepet + ensemble + merchant + delayed cleanup support")
 	end
 end
 
@@ -674,13 +697,14 @@ function DOKI:ClearAllOverlays()
 	return self:ClearAllButtonIndicators()
 end
 
--- ===== ENHANCED DEBUG FUNCTIONS =====
+-- ===== ENHANCED DEBUG FUNCTIONS WITH ENSEMBLE SUPPORT =====
 function DOKI:DebugButtonTextures()
 	print("|cffff69b4DOKI|r === BUTTON TEXTURE DEBUG ===")
 	print(string.format("Texture file validated: %s", tostring(self.textureValidated)))
 	local activeCount = 0
 	local totalCount = 0
 	local battlepetCount = 0
+	local ensembleCount = 0
 	local merchantCount = 0
 	for button, textureData in pairs(self.buttonTextures) do
 		totalCount = totalCount + 1
@@ -688,6 +712,8 @@ function DOKI:DebugButtonTextures()
 			activeCount = activeCount + 1
 			if textureData.itemLink and string.find(textureData.itemLink, "battlepet:") then
 				battlepetCount = battlepetCount + 1
+			elseif textureData.itemID and self:IsEnsembleItem(textureData.itemID) then
+				ensembleCount = ensembleCount + 1
 			end
 
 			-- Check if this is a merchant button
@@ -699,8 +725,8 @@ function DOKI:DebugButtonTextures()
 		end
 	end
 
-	print(string.format("Button textures: %d total, %d active (%d battlepets, %d merchant)",
-		totalCount, activeCount, battlepetCount, merchantCount))
+	print(string.format("Button textures: %d total, %d active (%d battlepets, %d ensembles, %d merchant)",
+		totalCount, activeCount, battlepetCount, ensembleCount, merchantCount))
 	print(string.format("Texture pool size: %d", #self.texturePool))
 	print(string.format("Button tracking: %d buttons in snapshot",
 		self.lastButtonSnapshot and self:TableCount(self.lastButtonSnapshot) or 0))
@@ -712,6 +738,63 @@ function DOKI:DebugButtonTextures()
 	end
 
 	print("|cffff69b4DOKI|r === END DEBUG ===")
+end
+
+function DOKI:DebugEnsembleTracking()
+	print("|cffff69b4DOKI|r === ENSEMBLE TRACKING DEBUG ===")
+	if not self.CreateButtonSnapshot then
+		print("|cffff69b4DOKI|r ButtonTextures system not available")
+		return
+	end
+
+	local snapshot = self:CreateButtonSnapshot()
+	local ensembleCount = 0
+	local regularItemCount = 0
+	local battlepetCount = 0
+	print("|cffff69b4DOKI|r Current button snapshot analysis:")
+	for button, itemData in pairs(snapshot) do
+		if type(itemData) == "table" and itemData.itemID then
+			-- Check if it's a battlepet
+			if itemData.itemLink and string.find(itemData.itemLink, "battlepet:") then
+				battlepetCount = battlepetCount + 1
+				-- Check if it's an ensemble
+			elseif self:IsEnsembleItem(itemData.itemID) then
+				ensembleCount = ensembleCount + 1
+				local itemName = C_Item.GetItemInfo(itemData.itemID) or "Unknown"
+				local buttonName = ""
+				local success, name = pcall(button.GetName, button)
+				if success and name then
+					buttonName = name
+				else
+					buttonName = "unnamed"
+				end
+
+				print(string.format("  Ensemble: %s -> %s (ID: %d)",
+					buttonName, itemName, itemData.itemID))
+			else
+				regularItemCount = regularItemCount + 1
+			end
+		else
+			regularItemCount = regularItemCount + 1
+		end
+	end
+
+	print(string.format("Total snapshot items: %d (%d regular, %d battlepets, %d ensembles)",
+		regularItemCount + battlepetCount + ensembleCount, regularItemCount, battlepetCount, ensembleCount))
+	-- Check active indicators for ensembles
+	local activeEnsembleIndicators = 0
+	if self.buttonTextures then
+		for button, textureData in pairs(self.buttonTextures) do
+			if textureData.isActive and textureData.itemID then
+				if self:IsEnsembleItem(textureData.itemID) then
+					activeEnsembleIndicators = activeEnsembleIndicators + 1
+				end
+			end
+		end
+	end
+
+	print(string.format("Active ensemble indicators: %d", activeEnsembleIndicators))
+	print("|cffff69b4DOKI|r === END ENSEMBLE TRACKING DEBUG ===")
 end
 
 function DOKI:TableCount(tbl)
@@ -789,7 +872,7 @@ function DOKI:TestDelayedCleanupScan()
 	print("|cffff69b4DOKI|r === TESTING DELAYED CLEANUP SCAN ===")
 	-- Check if system is available
 	if not self.ScheduleDelayedCleanupScan then
-		print("|cffff69b4DOKI|r ❌ Delayed cleanup scan system not available")
+		print("|cffff69b4DOKI|r Delayed cleanup scan system not available")
 		return
 	end
 
@@ -799,9 +882,9 @@ function DOKI:TestDelayedCleanupScan()
 		print("|cffff69b4DOKI|r Testing cancellation...")
 		self:CancelDelayedScan()
 		if not self.delayedScanTimer then
-			print("|cffff69b4DOKI|r ✅ Cancellation works correctly")
+			print("|cffff69b4DOKI|r Cancellation works correctly")
 		else
-			print("|cffff69b4DOKI|r ❌ Cancellation failed")
+			print("|cffff69b4DOKI|r Cancellation failed")
 		end
 	else
 		print("|cffff69b4DOKI|r Current status: Ready")
@@ -811,18 +894,18 @@ function DOKI:TestDelayedCleanupScan()
 	print("|cffff69b4DOKI|r Testing delayed scan scheduling...")
 	self:ScheduleDelayedCleanupScan()
 	if self.delayedScanTimer then
-		print("|cffff69b4DOKI|r ✅ Delayed scan scheduled successfully")
+		print("|cffff69b4DOKI|r Delayed scan scheduled successfully")
 		print("|cffff69b4DOKI|r Will trigger in 0.2 seconds unless cancelled")
 		-- Test auto-cancellation after 0.5 seconds
 		C_Timer.After(0.5, function()
 			if DOKI.delayedScanTimer then
-				print("|cffff69b4DOKI|r ❌ Delayed scan did not auto-complete")
+				print("|cffff69b4DOKI|r Delayed scan did not auto-complete")
 			else
-				print("|cffff69b4DOKI|r ✅ Delayed scan completed or was cancelled correctly")
+				print("|cffff69b4DOKI|r Delayed scan completed or was cancelled correctly")
 			end
 		end)
 	else
-		print("|cffff69b4DOKI|r ❌ Failed to schedule delayed scan")
+		print("|cffff69b4DOKI|r Failed to schedule delayed scan")
 	end
 
 	print("|cffff69b4DOKI|r === END DELAYED CLEANUP TEST ===")

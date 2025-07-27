@@ -1,4 +1,4 @@
--- DOKI Utils - War Within Complete Fix with Merchant Scroll Detection + Enhanced Delayed Cleanup
+-- DOKI Utils - War Within Complete Fix with Merchant Scroll Detection + Enhanced Delayed Cleanup + Ensemble Support
 local addonName, DOKI = ...
 -- Initialize storage
 DOKI.currentItems = DOKI.currentItems or {}
@@ -7,6 +7,9 @@ DOKI.foundFramesThisScan = {}
 -- Cache for collection status to avoid redundant API calls
 DOKI.collectionCache = DOKI.collectionCache or {}
 DOKI.lastCacheUpdate = 0
+-- ADDED: Ensemble detection variables
+DOKI.ensembleWordCache = nil
+DOKI.ensembleKnownItemID = 234522 -- Known ensemble item for word extraction
 -- ===== MERCHANT SCROLL DETECTION SYSTEM =====
 DOKI.merchantScrollDetector = {
 	isScrolling = false,
@@ -266,6 +269,161 @@ function DOKI:SetCachedCollectionStatus(itemID, itemLink, isCollected, showYello
 		showYellowD = showYellowD,
 		timestamp = GetTime(),
 	}
+end
+
+-- ===== ENSEMBLE DETECTION SYSTEM =====
+function DOKI:InitializeEnsembleDetection()
+	if not self.ensembleWordCache then
+		self:ExtractEnsembleWord()
+	end
+
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r Ensemble detection initialized with word: '%s'",
+			self.ensembleWordCache or "unknown"))
+	end
+end
+
+function DOKI:ExtractEnsembleWord()
+	local itemName = C_Item.GetItemInfo(self.ensembleKnownItemID)
+	if itemName then
+		-- Extract the word before the colon (e.g., "Ensemble" from "Ensemble: Southsea Cruise Loungewear")
+		local ensembleWord = string.match(itemName, "^([^:]+):")
+		if ensembleWord then
+			self.ensembleWordCache = strtrim(ensembleWord)
+			if self.db and self.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r Extracted ensemble word: '%s' from item '%s'",
+					self.ensembleWordCache, itemName))
+			end
+		else
+			if self.db and self.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r Could not extract ensemble word from: '%s'", itemName))
+			end
+		end
+	else
+		-- Request item data and try again later
+		C_Item.RequestLoadItemDataByID(self.ensembleKnownItemID)
+		if self.db and self.db.debugMode then
+			print("|cffff69b4DOKI|r Requesting ensemble reference item data...")
+		end
+	end
+end
+
+function DOKI:IsEnsembleItem(itemID, itemName)
+	if not itemID then return false end
+
+	-- Initialize ensemble word if not cached
+	if not self.ensembleWordCache then
+		self:ExtractEnsembleWord()
+		if not self.ensembleWordCache then
+			return false -- Can't detect without ensemble word
+		end
+	end
+
+	-- Check item class/subclass criteria
+	local _, _, _, _, _, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
+	if not classID or not subClassID then
+		return false
+	end
+
+	-- Must be Class 0 (Consumable) + Subclass 8 (Other)
+	if classID ~= 0 or subClassID ~= 8 then
+		return false
+	end
+
+	-- Must have a spell effect
+	local spellID = C_Item.GetItemSpell(itemID)
+	if not spellID then
+		return false
+	end
+
+	-- Check if name starts with ensemble word
+	if not itemName then
+		itemName = C_Item.GetItemInfo(itemID)
+	end
+
+	if itemName then
+		local startsWithEnsemble = string.find(itemName, "^" .. self.ensembleWordCache .. ":")
+		if self.db and self.db.debugMode and startsWithEnsemble then
+			print(string.format("|cffff69b4DOKI|r Detected ensemble: %s (ID: %d)", itemName, itemID))
+		end
+
+		return startsWithEnsemble ~= nil
+	end
+
+	return false
+end
+
+function DOKI:IsEnsembleCollected(itemID, itemLink)
+	if not itemID then return false, false end
+
+	-- Check cache first (following your existing pattern)
+	local cachedCollected, cachedYellowD = self:GetCachedCollectionStatus(itemID, itemLink)
+	if cachedCollected ~= nil then
+		return cachedCollected, cachedYellowD
+	end
+
+	local isCollected = self:CheckEnsembleByTooltip(itemID, itemLink)
+	-- Cache the result (ensembles don't use yellow D logic)
+	self:SetCachedCollectionStatus(itemID, itemLink, isCollected, false)
+	return isCollected, false
+end
+
+function DOKI:CheckEnsembleByTooltip(itemID, itemLink)
+	if not itemID then return false end
+
+	-- Create unique tooltip name to avoid conflicts (following your existing pattern)
+	local tooltipName = "DOKIEnsembleTooltip" .. itemID
+	local tooltip = CreateFrame("GameTooltip", tooltipName, nil, "GameTooltipTemplate")
+	tooltip:SetOwner(UIParent, "ANCHOR_NONE")
+	-- Set the item (prefer itemLink for accuracy)
+	if itemLink then
+		tooltip:SetHyperlink(itemLink)
+	else
+		tooltip:SetItemByID(itemID)
+	end
+
+	tooltip:Show()
+	local isCollected = false
+	-- Pure color-based detection (100% locale agnostic)
+	for i = 1, tooltip:NumLines() do
+		local line = _G[tooltipName .. "TextLeft" .. i]
+		if line then
+			local text = line:GetText()
+			if text and string.len(text) > 0 then
+				local r, g, b = line:GetTextColor()
+				if r and g and b then
+					-- Red text indicates "already known" across all locales
+					if r > 0.8 and g < 0.4 and b < 0.4 then
+						-- Additional validation: Red text should be reasonably short
+						if string.len(text) < 50 then
+							isCollected = true
+							if self.db and self.db.debugMode then
+								print(string.format("|cffff69b4DOKI|r Ensemble %d already collected (red text): '%s'",
+									itemID, text))
+							end
+
+							break
+						end
+					end
+
+					if self.db and self.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r Ensemble tooltip line %d: '%s' (r=%.2f, g=%.2f, b=%.2f)",
+							i, text, r or 0, g or 0, b or 0))
+					end
+				end
+			end
+		end
+
+		if isCollected then break end
+	end
+
+	tooltip:Hide()
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r Ensemble %d collection status: %s",
+			itemID, isCollected and "COLLECTED" or "NOT COLLECTED"))
+	end
+
+	return isCollected
 end
 
 -- ===== ENHANCED DELAYED CLEANUP SCAN SYSTEM =====
@@ -983,6 +1141,8 @@ function DOKI:InitializeUniversalScanning()
 
 	self.lastSurgicalUpdate = 0
 	self.pendingSurgicalUpdate = false
+	-- ADDED: Initialize ensemble detection
+	self:InitializeEnsembleDetection()
 	-- Enhanced surgical update timer (0.2s intervals for more responsive fallback)
 	self.surgicalTimer = C_Timer.NewTicker(0.2, function()
 		if self.db and self.db.enabled then
@@ -1011,11 +1171,13 @@ function DOKI:InitializeUniversalScanning()
 	self:SetupMinimalEventSystem()
 	self:FullItemScan()
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Enhanced surgical system initialized with delayed cleanup scanning")
+		print("|cffff69b4DOKI|r Enhanced surgical system initialized with ensemble + delayed cleanup scanning")
 		print("  |cff00ff00•|r Regular updates: 0.2s interval")
 		print("  |cff00ff00•|r Clean events: Removed noisy COMPANION_UPDATE, etc.")
 		print("  |cff00ff00•|r Battlepet support: Caged pet detection")
 		print("  |cff00ff00•|r Timing fix: Delays for battlepet caging")
+		print("  |cff00ff00•|r |cffff8000NEW:|r Ensemble support: Locale-aware detection + color-based collection status")
+		print("  |cff00ff00•|r |cffff8000NEW:|r Ensemble tooltips: Collection status parsing")
 		print("  |cff00ff00•|r |cffff8000NEW:|r Merchant scroll detection")
 		print("  |cff00ff00•|r |cffff8000NEW:|r OnMouseWheel + MERCHANT_UPDATE events")
 		print("  |cff00ff00•|r |cffff8000NEW:|r Delayed cleanup scan (0.2s) with auto-cancellation")
@@ -1024,10 +1186,17 @@ function DOKI:InitializeUniversalScanning()
 	end
 end
 
--- ===== ENHANCED ITEM DETECTION TRACING WITH TRANSMOG VALIDATION =====
+-- ===== ENHANCED ITEM DETECTION TRACING WITH TRANSMOG VALIDATION + ENSEMBLE SUPPORT =====
 function DOKI:TraceItemDetection(itemID, itemLink)
 	if not itemID then
 		print("|cffff69b4DOKI|r No item ID provided")
+		return
+	end
+
+	-- ADDED: Check if this might be an ensemble first
+	local itemName = C_Item.GetItemInfo(itemID)
+	if self:IsEnsembleItem(itemID, itemName) then
+		self:TraceEnsembleDetection(itemID, itemLink)
 		return
 	end
 
@@ -1043,7 +1212,7 @@ function DOKI:TraceItemDetection(itemID, itemLink)
 	print("|cffff69b4DOKI|r 1. COLLECTIBLE CHECK:")
 	-- Check for battlepets first
 	if itemLink and string.find(itemLink, "battlepet:") then
-		print("  ✅ BATTLEPET detected")
+		print("   BATTLEPET detected")
 		local speciesID = self:GetPetSpeciesFromBattlePetLink(itemLink)
 		print(string.format("  Species ID: %d", speciesID or 0))
 		local isCollected = self:IsPetSpeciesCollected(speciesID)
@@ -1055,7 +1224,7 @@ function DOKI:TraceItemDetection(itemID, itemLink)
 	-- Get item info
 	local _, itemType, itemSubType, itemEquipLoc, icon, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
 	if not classID or not subClassID then
-		print("  ❌ Could not get item info - item not loaded")
+		print("   Could not get item info - item not loaded")
 		print("  Triggering item data request...")
 		C_Item.RequestLoadItemDataByID(itemID)
 		return
@@ -1117,7 +1286,7 @@ function DOKI:TraceItemDetection(itemID, itemLink)
 	print(string.format("  Result: %s", isCollectible and "COLLECTIBLE" or "NOT COLLECTIBLE"))
 	print(string.format("  Reason: %s", collectibleReason))
 	if not isCollectible then
-		print("  🔴 Item is not collectible - NO INDICATOR")
+		print("   Item is not collectible - NO INDICATOR")
 		return
 	end
 
@@ -1127,17 +1296,17 @@ function DOKI:TraceItemDetection(itemID, itemLink)
 	-- Check cache first
 	local cachedCollected, cachedYellowD = self:GetCachedCollectionStatus(itemID, itemLink)
 	if cachedCollected ~= nil then
-		print("  📋 Found in cache:")
+		print("   Found in cache:")
 		print(string.format("    Collected: %s", cachedCollected and "YES" or "NO"))
 		print(string.format("    Show Yellow D: %s", cachedYellowD and "YES" or "NO"))
 	else
-		print("  📋 Not in cache - checking APIs...")
+		print("   Not in cache - checking APIs...")
 	end
 
 	local isCollected, showYellowD = false, false
 	if classID == 15 and subClassID == 5 then
 		-- Mount check
-		print("  🐎 Checking mount status...")
+		print("   Checking mount status...")
 		local mountID = C_MountJournal.GetMountFromItem(itemID)
 		if mountID then
 			local name, spellID, icon, isActive, isUsable, sourceType, isFavorite,
@@ -1147,11 +1316,11 @@ function DOKI:TraceItemDetection(itemID, itemLink)
 			print(string.format("    Mount Name: %s", name or "Unknown"))
 			print(string.format("    Collected: %s", isCollected and "YES" or "NO"))
 		else
-			print("    ❌ No mount ID found for this item")
+			print("     No mount ID found for this item")
 		end
 	elseif classID == 15 and subClassID == 2 then
 		-- Pet check
-		print("  🐱 Checking pet status...")
+		print("   Checking pet status...")
 		local name, icon, petType, creatureID, sourceText, description, isWild, canBattle,
 		isTradeable, isUnique, obtainable, displayID, speciesID = C_PetJournal.GetPetInfoByItemID(itemID)
 		if speciesID then
@@ -1162,16 +1331,16 @@ function DOKI:TraceItemDetection(itemID, itemLink)
 			print(string.format("    Collected: %d/%d", numCollected or 0, limit or 3))
 			print(string.format("    Has Pet: %s", isCollected and "YES" or "NO"))
 		else
-			print("    ❌ No species ID found for this item")
+			print("     No species ID found for this item")
 		end
 	elseif C_ToyBox and C_ToyBox.GetToyInfo(itemID) then
 		-- Toy check
-		print("  🧸 Checking toy status...")
+		print("   Checking toy status...")
 		isCollected = PlayerHasToy(itemID)
 		print(string.format("    Collected: %s", isCollected and "YES" or "NO"))
 	elseif classID == 2 or classID == 4 then
 		-- Transmog check
-		print("  👕 Checking transmog status...")
+		print("   Checking transmog status...")
 		local smartMode = self.db and self.db.smartMode
 		print(string.format("    Smart Mode: %s", smartMode and "ON" or "OFF"))
 		-- ADDED: Check if item can actually be transmogged
@@ -1180,7 +1349,7 @@ function DOKI:TraceItemDetection(itemID, itemLink)
 			print(string.format("    Can be transmog source: %s", canBeSource and "YES" or "NO"))
 			if not canBeSource then
 				print(string.format("    Cannot be source because: %s", noSourceReason or "unknown"))
-				print("  🔴 Item cannot be transmogged - treating as COLLECTED (no indicator)")
+				print("   Item cannot be transmogged - treating as COLLECTED (no indicator)")
 				return
 			end
 		end
@@ -1216,15 +1385,15 @@ function DOKI:TraceItemDetection(itemID, itemLink)
 				end
 			end
 		else
-			print("    ❌ No transmog appearance data found")
-			print("    🔄 Requesting transmog data load...")
+			print("     No transmog appearance data found")
+			print("     Requesting transmog data load...")
 			-- Trigger data loading
 			C_TransmogCollection.GetItemInfo(itemID)
 			if itemLink then
 				C_TransmogCollection.GetItemInfo(itemLink)
 			end
 
-			print("    ⏳ Data loading requested - try trace again in a few seconds")
+			print("     Data loading requested - try trace again in a few seconds")
 			return
 		end
 
@@ -1239,13 +1408,80 @@ function DOKI:TraceItemDetection(itemID, itemLink)
 	print(string.format("  Collected: %s", isCollected and "YES" or "NO"))
 	print(string.format("  Show Yellow D: %s", showYellowD and "YES" or "NO"))
 	local needsIndicator = isCollectible and not isCollected
-	print(string.format("  🎯 NEEDS INDICATOR: %s", needsIndicator and "YES" or "NO"))
+	print(string.format("   NEEDS INDICATOR: %s", needsIndicator and "YES" or "NO"))
 	if needsIndicator then
 		local color = showYellowD and "BLUE (has other sources)" or "ORANGE (no other sources)"
-		print(string.format("  🎨 Indicator Color: %s", color))
+		print(string.format("   Indicator Color: %s", color))
 	end
 
 	print("|cffff69b4DOKI|r === END TRACE ===")
+end
+
+-- ===== ENHANCED TRACE FUNCTION FOR ENSEMBLES =====
+function DOKI:TraceEnsembleDetection(itemID, itemLink)
+	if not itemID then
+		print("|cffff69b4DOKI|r No item ID provided")
+		return
+	end
+
+	print("|cffff69b4DOKI|r === ENSEMBLE DETECTION TRACE ===")
+	local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+	print(string.format("Item: %s (ID: %d)", itemName, itemID))
+	-- Check if ensemble word is cached
+	if not self.ensembleWordCache then
+		print("   Ensemble word not cached - attempting extraction...")
+		self:ExtractEnsembleWord()
+		if not self.ensembleWordCache then
+			print("   Could not extract ensemble word - ensemble detection unavailable")
+			return
+		end
+	end
+
+	print(string.format("   Ensemble word: '%s'", self.ensembleWordCache))
+	-- Check class/subclass
+	local _, _, _, _, _, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
+	print(string.format("  Class: %d, Subclass: %d", classID or -1, subClassID or -1))
+	if classID ~= 0 or subClassID ~= 8 then
+		print("   Not Class 0/Subclass 8 - not an ensemble")
+		return
+	end
+
+	print("   Correct class/subclass for ensemble")
+	-- Check spell effect
+	local spellID = C_Item.GetItemSpell(itemID)
+	print(string.format("  Spell ID: %s", spellID and tostring(spellID) or "none"))
+	if not spellID then
+		print("   No spell effect - not an ensemble")
+		return
+	end
+
+	print("   Has spell effect")
+	-- Check name pattern
+	if itemName then
+		local startsWithEnsemble = string.find(itemName, "^" .. self.ensembleWordCache .. ":")
+		print(string.format("  Name starts with '%s:': %s", self.ensembleWordCache,
+			startsWithEnsemble and "YES" or "NO"))
+		if not startsWithEnsemble then
+			print("   Name doesn't match ensemble pattern")
+			return
+		end
+
+		print("   Name matches ensemble pattern")
+	else
+		print("   Item name not available")
+		return
+	end
+
+	-- Check collection status
+	print("")
+	print("|cffff69b4DOKI|r 2. COLLECTION STATUS CHECK:")
+	local isCollected = self:CheckEnsembleByTooltip(itemID, itemLink)
+	print("")
+	print("|cffff69b4DOKI|r 3. FINAL DECISION:")
+	print(string.format("  Ensemble: YES"))
+	print(string.format("  Collected: %s", isCollected and "YES" or "NO"))
+	print(string.format("   NEEDS INDICATOR: %s", isCollected and "NO" or "YES"))
+	print("|cffff69b4DOKI|r === END ENSEMBLE TRACE ===")
 end
 
 -- ===== UTILITY FUNCTIONS =====
@@ -1283,9 +1519,14 @@ function DOKI:GetItemID(itemLink)
 	return nil
 end
 
--- FIXED: Enhanced collectible item detection with caged pets and offhand support
+-- FIXED: Enhanced collectible item detection with caged pets, ensembles, and offhand support
 function DOKI:IsCollectibleItem(itemID, itemLink)
-	-- ADDED: Check for caged pets (battlepet items) first
+	-- ADDED: Check for ensembles first
+	if self:IsEnsembleItem(itemID) then
+		return true
+	end
+
+	-- ADDED: Check for caged pets (battlepet items) next
 	if itemLink and string.find(itemLink, "battlepet:") then
 		return true
 	end
@@ -1350,11 +1591,18 @@ function DOKI:IsPetSpeciesCollected(speciesID)
 	return numCollected and numCollected > 0
 end
 
--- WAR WITHIN FIXED: Enhanced collection detection with caged pets and corrected APIs
+-- WAR WITHIN FIXED: Enhanced collection detection with caged pets, ensembles, and corrected APIs
 function DOKI:IsItemCollected(itemID, itemLink)
 	if not itemID and not itemLink then return false, false end
 
-	-- ADDED: Handle caged pets (battlepet links) first
+	-- ADDED: Handle ensembles first
+	local itemName = C_Item.GetItemInfo(itemID)
+	if self:IsEnsembleItem(itemID, itemName) then
+		local isCollected = self:IsEnsembleCollected(itemID, itemLink)
+		return isCollected, false
+	end
+
+	-- ADDED: Handle caged pets (battlepet links) next
 	local petSpeciesID = self:GetPetSpeciesFromBattlePetLink(itemLink)
 	if petSpeciesID then
 		local isCollected = self:IsPetSpeciesCollected(petSpeciesID)
@@ -1892,14 +2140,20 @@ function DOKI:DebugBattlepetSnapshot()
 	local snapshot = self:CreateButtonSnapshot()
 	local battlepetCount = 0
 	local regularItemCount = 0
-	print("|cffff69b4DOKI|r === BATTLEPET SNAPSHOT DEBUG ===")
+	local ensembleCount = 0
+	print("|cffff69b4DOKI|r === BATTLEPET + ENSEMBLE SNAPSHOT DEBUG ===")
 	for button, itemData in pairs(snapshot) do
-		if type(itemData) == "table" and itemData.itemLink then
-			if string.find(itemData.itemLink, "battlepet:") then
+		if type(itemData) == "table" and itemData.itemID then
+			if itemData.itemLink and string.find(itemData.itemLink, "battlepet:") then
 				battlepetCount = battlepetCount + 1
 				local speciesID = self:GetPetSpeciesFromBattlePetLink(itemData.itemLink)
 				print(string.format("  Battlepet: %s -> Species %d",
 					button:GetName() or "unnamed", speciesID or "unknown"))
+			elseif self:IsEnsembleItem(itemData.itemID) then
+				ensembleCount = ensembleCount + 1
+				local itemName = C_Item.GetItemInfo(itemData.itemID) or "Unknown"
+				print(string.format("  Ensemble: %s -> %s (ID: %d)",
+					button:GetName() or "unnamed", itemName, itemData.itemID))
 			else
 				regularItemCount = regularItemCount + 1
 			end
@@ -1908,9 +2162,9 @@ function DOKI:DebugBattlepetSnapshot()
 		end
 	end
 
-	print(string.format("Total snapshot items: %d (%d regular, %d battlepets)",
-		regularItemCount + battlepetCount, regularItemCount, battlepetCount))
-	print("|cffff69b4DOKI|r === END BATTLEPET SNAPSHOT DEBUG ===")
+	print(string.format("Total snapshot items: %d (%d regular, %d battlepets, %d ensembles)",
+		regularItemCount + battlepetCount + ensembleCount, regularItemCount, battlepetCount, ensembleCount))
+	print("|cffff69b4DOKI|r === END SNAPSHOT DEBUG ===")
 end
 
 -- Legacy compatibility
