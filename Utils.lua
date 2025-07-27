@@ -1,4 +1,4 @@
--- DOKI Utils - War Within Complete Fix with Merchant Scroll Detection + Enhanced Smart Mode + Delayed Cleanup (All Old API Removed)
+-- DOKI Utils - War Within Complete Fix with Merchant Scroll Detection + Enhanced Delayed Cleanup
 local addonName, DOKI = ...
 -- Initialize storage
 DOKI.currentItems = DOKI.currentItems or {}
@@ -7,9 +7,6 @@ DOKI.foundFramesThisScan = {}
 -- Cache for collection status to avoid redundant API calls
 DOKI.collectionCache = DOKI.collectionCache or {}
 DOKI.lastCacheUpdate = 0
--- ADDED: Delayed cleanup scan system
-DOKI.delayedScanTimer = nil       -- Timer for delayed secondary scan
-DOKI.delayedScanCancelled = false -- Flag to track if delayed scan should be cancelled
 -- ===== MERCHANT SCROLL DETECTION SYSTEM =====
 DOKI.merchantScrollDetector = {
 	isScrolling = false,
@@ -169,113 +166,10 @@ function DOKI:CompareMerchantState(state1, state2)
 	return true
 end
 
--- ===== SURGICAL UPDATE THROTTLING =====
+-- ===== ENHANCED SURGICAL UPDATE THROTTLING WITH DELAYED CLEANUP =====
 DOKI.lastSurgicalUpdate = 0
 DOKI.surgicalUpdateThrottleTime = 0.05 -- 50ms minimum between updates
 DOKI.pendingSurgicalUpdate = false
--- ===== ENHANCED SMART MODE TOGGLE WITH AUTO-RESCAN =====
-function DOKI:ToggleSmartMode()
-	self.db.smartMode = not self.db.smartMode
-	local status = self.db.smartMode and "|cff00ff00enabled|r" or "|cffff0000disabled|r"
-	print("|cffff69b4DOKI|r smart mode is now " .. status)
-	print("|cffff69b4DOKI|r Smart mode considers class restrictions when determining if items are needed")
-	-- ADDED: Automatic cache invalidation and rescan after smart mode toggle
-	if self.db.debugMode then
-		print("|cffff69b4DOKI|r Smart mode changed - invalidating collection cache and rescanning...")
-	end
-
-	-- Clear collection cache since smart mode changes how collection status is calculated
-	self:ClearCollectionCache()
-	-- Force full rescan if addon is enabled and UI is visible
-	if self.db.enabled then
-		C_Timer.After(0.1, function()
-			if self.db and self.db.enabled then
-				local count = self:ForceUniversalScan()
-				if self.db.debugMode then
-					print(string.format("|cffff69b4DOKI|r Smart mode toggle rescan: %d indicators created", count))
-				end
-			end
-		end)
-	end
-end
-
--- ===== DELAYED CLEANUP SCAN SYSTEM =====
--- ADDED: Schedule a delayed cleanup scan with auto-cancellation
-function DOKI:ScheduleDelayedCleanupScan()
-	-- Cancel any existing delayed scan
-	self:CancelDelayedScan()
-	-- Reset cancellation flag
-	self.delayedScanCancelled = false
-	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Scheduling delayed cleanup scan in 0.2s...")
-	end
-
-	-- Schedule new delayed scan
-	self.delayedScanTimer = C_Timer.NewTimer(0.2, function()
-		-- Check if scan was cancelled
-		if DOKI.delayedScanCancelled or not (DOKI.db and DOKI.db.enabled) then
-			if DOKI.db and DOKI.db.debugMode then
-				print("|cffff69b4DOKI|r Delayed cleanup scan cancelled")
-			end
-
-			return
-		end
-
-		-- Only run if relevant UI is still visible
-		local anyUIVisible = false
-		if ElvUI and DOKI:IsElvUIBagVisible() then
-			anyUIVisible = true
-		elseif ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
-			anyUIVisible = true
-		else
-			for bagID = 0, NUM_BAG_SLOTS do
-				local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
-				if containerFrame and containerFrame:IsVisible() then
-					anyUIVisible = true
-					break
-				end
-			end
-		end
-
-		if not anyUIVisible and not (MerchantFrame and MerchantFrame:IsVisible()) then
-			if DOKI.db and DOKI.db.debugMode then
-				print("|cffff69b4DOKI|r Delayed cleanup scan skipped - no UI visible")
-			end
-
-			return
-		end
-
-		if DOKI.db and DOKI.db.debugMode then
-			print("|cffff69b4DOKI|r Running delayed cleanup scan...")
-		end
-
-		-- Run a focused surgical update to catch any missed changes
-		local cleanupChanges = 0
-		if DOKI.ProcessSurgicalUpdate then
-			cleanupChanges = DOKI:ProcessSurgicalUpdate()
-		end
-
-		if DOKI.db and DOKI.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Delayed cleanup scan: %d changes found", cleanupChanges))
-		end
-
-		-- Clear the timer reference
-		DOKI.delayedScanTimer = nil
-	end)
-end
-
--- ADDED: Cancel any pending delayed cleanup scan
-function DOKI:CancelDelayedScan()
-	if self.delayedScanTimer then
-		self.delayedScanTimer:Cancel()
-		self.delayedScanTimer = nil
-		self.delayedScanCancelled = true
-		if self.db and self.db.debugMode then
-			print("|cffff69b4DOKI|r Cancelled pending delayed cleanup scan")
-		end
-	end
-end
-
 -- ===== PERFORMANCE MONITORING =====
 function DOKI:GetPerformanceStats()
 	local stats = {
@@ -374,12 +268,89 @@ function DOKI:SetCachedCollectionStatus(itemID, itemLink, isCollected, showYello
 	}
 end
 
+-- ===== ENHANCED DELAYED CLEANUP SCAN SYSTEM =====
+-- ADDED: Schedule a delayed cleanup scan with auto-cancellation
+function DOKI:ScheduleDelayedCleanupScan()
+	-- Cancel any existing delayed scan
+	self:CancelDelayedScan()
+	-- Reset cancellation flag
+	self.delayedScanCancelled = false
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Scheduling delayed cleanup scan in 0.2s...")
+	end
+
+	-- Schedule new delayed scan
+	self.delayedScanTimer = C_Timer.NewTimer(0.2, function()
+		-- Check if scan was cancelled
+		if DOKI.delayedScanCancelled or not (DOKI.db and DOKI.db.enabled) then
+			if DOKI.db and DOKI.db.debugMode then
+				print("|cffff69b4DOKI|r Delayed cleanup scan cancelled")
+			end
+
+			return
+		end
+
+		-- Only run if relevant UI is still visible
+		local anyUIVisible = false
+		if ElvUI and DOKI:IsElvUIBagVisible() then
+			anyUIVisible = true
+		elseif ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
+			anyUIVisible = true
+		else
+			for bagID = 0, NUM_BAG_SLOTS do
+				local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
+				if containerFrame and containerFrame:IsVisible() then
+					anyUIVisible = true
+					break
+				end
+			end
+		end
+
+		if not anyUIVisible and not (MerchantFrame and MerchantFrame:IsVisible()) then
+			if DOKI.db and DOKI.db.debugMode then
+				print("|cffff69b4DOKI|r Delayed cleanup scan skipped - no UI visible")
+			end
+
+			return
+		end
+
+		if DOKI.db and DOKI.db.debugMode then
+			print("|cffff69b4DOKI|r Running delayed cleanup scan...")
+		end
+
+		-- Run a focused surgical update to catch any missed changes
+		local cleanupChanges = 0
+		if DOKI.ProcessSurgicalUpdate then
+			cleanupChanges = DOKI:ProcessSurgicalUpdate()
+		end
+
+		if DOKI.db and DOKI.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r Delayed cleanup scan: %d changes found", cleanupChanges))
+		end
+
+		-- Clear the timer reference
+		DOKI.delayedScanTimer = nil
+	end)
+end
+
+-- ADDED: Cancel any pending delayed cleanup scan
+function DOKI:CancelDelayedScan()
+	if self.delayedScanTimer then
+		self.delayedScanTimer:Cancel()
+		self.delayedScanTimer = nil
+		self.delayedScanCancelled = true
+		if self.db and self.db.debugMode then
+			print("|cffff69b4DOKI|r Cancelled pending delayed cleanup scan")
+		end
+	end
+end
+
 -- ===== ENHANCED SURGICAL UPDATE SYSTEM =====
 function DOKI:SurgicalUpdate(isImmediate)
 	if not self.db or not self.db.enabled then return 0 end
 
 	local currentTime = GetTime()
-	-- Cancel any pending delayed scan since we're doing a real update now
+	-- ADDED: Cancel any pending delayed scan since we're doing a real update now
 	self:CancelDelayedScan()
 	-- Throttling check
 	if currentTime - self.lastSurgicalUpdate < self.surgicalUpdateThrottleTime then
@@ -436,11 +407,11 @@ function DOKI:SurgicalUpdate(isImmediate)
 	return changeCount
 end
 
--- Enhanced immediate surgical update trigger
+-- ENHANCED: Immediate surgical update trigger with delayed scan cancellation
 function DOKI:TriggerImmediateSurgicalUpdate()
 	if not self.db or not self.db.enabled then return end
 
-	-- Cancel any pending delayed scan since we're doing an immediate update
+	-- ADDED: Cancel any pending delayed scan since we're doing an immediate update
 	self:CancelDelayedScan()
 	-- Only trigger if relevant UI is visible
 	local anyUIVisible = false
@@ -862,7 +833,7 @@ function DOKI:CreateUniversalIndicator(frame, itemData)
 	return 0
 end
 
--- ===== ENHANCED EVENT SYSTEM WITH DELAYED SCAN CANCELLATION =====
+-- ===== ENHANCED WAR WITHIN EVENT SYSTEM WITH DELAYED SCAN CANCELLATION =====
 function DOKI:SetupMinimalEventSystem()
 	if self.eventFrame then
 		self.eventFrame:UnregisterAllEvents()
@@ -896,7 +867,7 @@ function DOKI:SetupMinimalEventSystem()
 	self.eventFrame:SetScript("OnEvent", function(self, event, ...)
 		if not (DOKI.db and DOKI.db.enabled) then return end
 
-		-- Cancel delayed scans for most events since they trigger normal scanning
+		-- ENHANCED: Cancel delayed scans for most events since they trigger normal scanning
 		local cancelDelayedScan = true
 		if event == "MERCHANT_SHOW" then
 			DOKI.merchantScrollDetector.merchantOpen = true
@@ -933,7 +904,7 @@ function DOKI:SetupMinimalEventSystem()
 			end
 		elseif event == "ITEM_UNLOCKED" then
 			-- Item movement detected - immediate response
-			cancelDelayedScan = false -- Let immediate update handle delayed scan scheduling
+			cancelDelayedScan = false -- ENHANCED: Let immediate update handle delayed scan scheduling
 			C_Timer.After(0.02, function()
 				if DOKI.db and DOKI.db.enabled then
 					DOKI:TriggerImmediateSurgicalUpdate()
@@ -941,7 +912,7 @@ function DOKI:SetupMinimalEventSystem()
 			end)
 		elseif event == "ITEM_LOCK_CHANGED" or event == "CURSOR_CHANGED" then
 			-- Item pickup/drop detected - very immediate response
-			cancelDelayedScan = false -- Let immediate update handle delayed scan scheduling
+			cancelDelayedScan = false -- ENHANCED: Let immediate update handle delayed scan scheduling
 			C_Timer.After(0.01, function()
 				if DOKI.db and DOKI.db.enabled then
 					DOKI:TriggerImmediateSurgicalUpdate()
@@ -984,6 +955,7 @@ function DOKI:SetupMinimalEventSystem()
 			end
 
 			if shouldUpdate then
+				cancelDelayedScan = false -- ENHANCED: Let immediate update handle delayed scan scheduling
 				local delay = (event == "BAG_UPDATE_DELAYED") and 0.1 or 0.05
 				C_Timer.After(delay, function()
 					if DOKI.db and DOKI.db.enabled then
@@ -993,7 +965,7 @@ function DOKI:SetupMinimalEventSystem()
 			end
 		end
 
-		-- Cancel delayed scan for events that trigger normal scanning
+		-- ENHANCED: Cancel delayed scan for events that trigger normal scanning
 		if cancelDelayedScan then
 			DOKI:CancelDelayedScan()
 		end
@@ -1003,7 +975,7 @@ function DOKI:SetupMinimalEventSystem()
 	end
 end
 
--- ===== INITIALIZATION =====
+-- ===== ENHANCED INITIALIZATION WITH DELAYED SCAN SUPPORT =====
 function DOKI:InitializeUniversalScanning()
 	if self.surgicalTimer then
 		self.surgicalTimer:Cancel()
@@ -1039,578 +1011,20 @@ function DOKI:InitializeUniversalScanning()
 	self:SetupMinimalEventSystem()
 	self:FullItemScan()
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r War Within surgical system initialized with enhanced features")
+		print("|cffff69b4DOKI|r Enhanced surgical system initialized with delayed cleanup scanning")
 		print("  |cff00ff00•|r Regular updates: 0.2s interval")
 		print("  |cff00ff00•|r Clean events: Removed noisy COMPANION_UPDATE, etc.")
 		print("  |cff00ff00•|r Battlepet support: Caged pet detection")
 		print("  |cff00ff00•|r Timing fix: Delays for battlepet caging")
 		print("  |cff00ff00•|r |cffff8000NEW:|r Merchant scroll detection")
 		print("  |cff00ff00•|r |cffff8000NEW:|r OnMouseWheel + MERCHANT_UPDATE events")
-		print("  |cff00ff00•|r |cffff8000NEW:|r Smart mode auto-rescan on toggle")
 		print("  |cff00ff00•|r |cffff8000NEW:|r Delayed cleanup scan (0.2s) with auto-cancellation")
-		print("  |cff00ff00•|r |cffff8000NEW:|r Enhanced transmog validation with data loading")
 		print(string.format("  |cff00ff00•|r Throttling: %.0fms minimum between updates",
 			self.surgicalUpdateThrottleTime * 1000))
 	end
 end
 
--- ===== ENHANCED STATUS DISPLAY =====
-function DOKI:ShowEnhancedStatus()
-	local indicatorCount = 0
-	local battlepetCount = 0
-	if self.buttonTextures then
-		for _, textureData in pairs(self.buttonTextures) do
-			if textureData.isActive then
-				indicatorCount = indicatorCount + 1
-				if textureData.itemLink and string.find(textureData.itemLink, "battlepet:") then
-					battlepetCount = battlepetCount + 1
-				end
-			end
-		end
-	end
-
-	local snapshotCount = 0
-	if self.lastButtonSnapshot then
-		for _ in pairs(self.lastButtonSnapshot) do
-			snapshotCount = snapshotCount + 1
-		end
-	end
-
-	print(string.format("|cffff69b4DOKI|r Status: %s, Smart: %s, Debug: %s",
-		self.db.enabled and "Enabled" or "Disabled",
-		self.db.smartMode and "On" or "Off",
-		self.db.debugMode and "On" or "Off"))
-	print(string.format("|cffff69b4DOKI|r Active indicators: %d (%d battlepets)", indicatorCount, battlepetCount))
-	print(string.format("|cffff69b4DOKI|r Tracked buttons: %d", snapshotCount))
-	print("|cffff69b4DOKI|r System: War Within Enhanced Surgical System with Merchant Support")
-	print("  |cff00ff00•|r Regular updates: 0.2s interval")
-	print("  |cff00ff00•|r Clean events: Noisy events removed")
-	print("  |cff00ff00•|r Battlepet support: Caged pet detection")
-	print("  |cff00ff00•|r Mount fix: GetMountFromItem API")
-	print("  |cff00ff00•|r Pet timing: Collection event delays")
-	print("  |cff00ff00•|r |cffff8000NEW:|r Merchant scroll detection")
-	print("  |cff00ff00•|r |cffff8000NEW:|r OnMouseWheel + MERCHANT_UPDATE events")
-	print("  |cff00ff00•|r |cffff8000NEW:|r Smart mode auto-rescan on toggle")
-	print("  |cff00ff00•|r |cffff8000NEW:|r Delayed cleanup scan (0.2s) with auto-cancellation")
-	print("  |cff00ff00•|r |cffff8000NEW:|r Enhanced transmog validation with data loading")
-	-- Show delayed scan status
-	if self.delayedScanTimer then
-		print("  |cffffff00•|r Delayed cleanup scan: PENDING")
-	else
-		print("  |cff00ff00•|r Delayed cleanup scan: Ready")
-	end
-
-	print(string.format("  |cff00ff00•|r Throttling: %.0fms minimum between updates",
-		(self.surgicalUpdateThrottleTime or 0.05) * 1000))
-	if self.totalUpdates and self.totalUpdates > 0 then
-		print(string.format("  |cff00ff00•|r Total updates: %d (%d immediate)",
-			self.totalUpdates, self.immediateUpdates or 0))
-		if self.throttledUpdates and self.throttledUpdates > 0 then
-			print(string.format("  |cffffff00•|r Throttled updates: %d", self.throttledUpdates))
-		end
-	end
-
-	-- Show merchant status
-	local merchantOpen = MerchantFrame and MerchantFrame:IsVisible()
-	local merchantScrolling = self.merchantScrollDetector and self.merchantScrollDetector.isScrolling
-	print(string.format("  |cff00ff00•|r Merchant: %s%s",
-		merchantOpen and "Open" or "Closed",
-		merchantScrolling and " (scrolling)" or ""))
-end
-
--- ===== UTILITY FUNCTIONS =====
-function DOKI:ForceUniversalScan()
-	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Force full scan...")
-	end
-
-	return self:FullItemScan()
-end
-
-function DOKI:IsElvUIBagVisible()
-	if not ElvUI then return false end
-
-	local E = ElvUI[1]
-	if not E then return false end
-
-	local B = E:GetModule("Bags", true)
-	if not B then return false end
-
-	return (B.BagFrame and B.BagFrame:IsShown()) or (B.BankFrame and B.BankFrame:IsShown())
-end
-
--- ===== WAR WITHIN COLLECTION DETECTION =====
-function DOKI:GetItemID(itemLink)
-	if not itemLink then return nil end
-
-	if type(itemLink) == "number" then return itemLink end
-
-	if type(itemLink) == "string" then
-		local itemID = tonumber(string.match(itemLink, "item:(%d+)"))
-		return itemID
-	end
-
-	return nil
-end
-
--- FIXED: Enhanced collectible item detection with caged pets and offhand support
-function DOKI:IsCollectibleItem(itemID, itemLink)
-	-- ADDED: Check for caged pets (battlepet items) first
-	if itemLink and string.find(itemLink, "battlepet:") then
-		return true
-	end
-
-	if not itemID then return false end
-
-	local _, itemType, itemSubType, itemEquipLoc, icon, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
-	if not classID or not subClassID then return false end
-
-	-- Mount items (class 15, subclass 5)
-	if classID == 15 and subClassID == 5 then return true end
-
-	-- Pet items (class 15, subclass 2)
-	if classID == 15 and subClassID == 2 then return true end
-
-	-- Toy items
-	if C_ToyBox and C_ToyBox.GetToyInfo(itemID) then return true end
-
-	-- Transmog items (weapons class 2, armor class 4)
-	if classID == 2 or classID == 4 then
-		if itemEquipLoc then
-			-- FIXED: Properly handle offhands - check if they're actually transmoggable
-			if itemEquipLoc == "INVTYPE_HOLDABLE" then
-				-- Use the transmog API to check if this offhand is actually transmoggable
-				local itemAppearanceID, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(itemID)
-				return itemAppearanceID ~= nil and itemModifiedAppearanceID ~= nil
-			end
-
-			-- Other non-transmog slots (kept as before)
-			local nonTransmogSlots = {
-				"INVTYPE_NECK", "INVTYPE_FINGER", "INVTYPE_TRINKET",
-				"INVTYPE_BAG", "INVTYPE_QUIVER",
-			}
-			for _, slot in ipairs(nonTransmogSlots) do
-				if itemEquipLoc == slot then return false end
-			end
-
-			return true
-		end
-	end
-
-	return false
-end
-
--- ADDED: Extract species ID from caged pet (battlepet) links
-function DOKI:GetPetSpeciesFromBattlePetLink(itemLink)
-	if not itemLink or not string.find(itemLink, "battlepet:") then
-		return nil
-	end
-
-	-- Extract species ID from battlepet:speciesID:level:breedQuality:maxHealth:power:speed:battlePetGUID
-	local speciesID = tonumber(string.match(itemLink, "battlepet:(%d+)"))
-	return speciesID
-end
-
--- ADDED: Check if a pet species is collected (for caged pets)
-function DOKI:IsPetSpeciesCollected(speciesID)
-	if not speciesID or not C_PetJournal then return false end
-
-	-- Check if we have any of this pet species
-	local numCollected, limit = C_PetJournal.GetNumCollectedInfo(speciesID)
-	return numCollected and numCollected > 0
-end
-
--- WAR WITHIN FIXED: Enhanced collection detection with caged pets and corrected APIs
-function DOKI:IsItemCollected(itemID, itemLink)
-	if not itemID and not itemLink then return false, false end
-
-	-- ADDED: Handle caged pets (battlepet links) first
-	local petSpeciesID = self:GetPetSpeciesFromBattlePetLink(itemLink)
-	if petSpeciesID then
-		local isCollected = self:IsPetSpeciesCollected(petSpeciesID)
-		-- Cache the result using itemLink as key since no itemID
-		self:SetCachedCollectionStatus(petSpeciesID, itemLink, isCollected, false)
-		return isCollected, false
-	end
-
-	if not itemID then return false, false end
-
-	-- Check cache first
-	local cachedCollected, cachedYellowD = self:GetCachedCollectionStatus(itemID, itemLink)
-	if cachedCollected ~= nil then
-		return cachedCollected, cachedYellowD
-	end
-
-	local _, itemType, itemSubType, itemEquipLoc, icon, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
-	if not classID or not subClassID then
-		-- Cache negative result briefly
-		self:SetCachedCollectionStatus(itemID, itemLink, false, false)
-		return false, false
-	end
-
-	local isCollected, showYellowD = false, false
-	-- Check mounts - FIXED FOR WAR WITHIN
-	if classID == 15 and subClassID == 5 then
-		isCollected = self:IsMountCollectedWarWithin(itemID)
-		showYellowD = false
-		-- Check pets - FIXED FOR WAR WITHIN
-	elseif classID == 15 and subClassID == 2 then
-		isCollected = self:IsPetCollectedWarWithin(itemID)
-		showYellowD = false
-		-- Check toys
-	elseif C_ToyBox and C_ToyBox.GetToyInfo(itemID) then
-		isCollected = PlayerHasToy(itemID)
-		showYellowD = false
-		-- Check transmog
-	elseif classID == 2 or classID == 4 then
-		if self.db and self.db.smartMode then
-			isCollected, showYellowD = self:IsTransmogCollectedSmart(itemID, itemLink)
-		else
-			isCollected, showYellowD = self:IsTransmogCollected(itemID, itemLink)
-		end
-	end
-
-	-- Cache the result
-	self:SetCachedCollectionStatus(itemID, itemLink, isCollected, showYellowD)
-	return isCollected, showYellowD
-end
-
--- WAR WITHIN FIXED: Use the correct GetMountFromItem API
-function DOKI:IsMountCollectedWarWithin(itemID)
-	if not itemID or not C_MountJournal then return false end
-
-	-- FIXED: Use the proper War Within API - GetMountFromItem
-	local mountID = C_MountJournal.GetMountFromItem(itemID)
-	if not mountID then
-		-- Item might not be loaded yet, or not a mount item
-		C_Item.RequestLoadItemDataByID(itemID)
-		return false
-	end
-
-	-- Get mount info using the mount ID
-	local name, spellID, icon, isActive, isUsable, sourceType, isFavorite,
-	isFactionSpecific, faction, shouldHideOnChar, isCollected, mountIDReturn, isSteadyFlight = C_MountJournal
-			.GetMountInfoByID(mountID)
-	return isCollected or false
-end
-
--- WAR WITHIN FIXED: Proper pet detection using current journal API
-function DOKI:IsPetCollectedWarWithin(itemID)
-	if not itemID or not C_PetJournal then return false end
-
-	-- Get pet info from the item - this API is confirmed to work in War Within
-	local name, icon, petType, creatureID, sourceText, description, isWild, canBattle,
-	isTradeable, isUnique, obtainable, displayID, speciesID = C_PetJournal.GetPetInfoByItemID(itemID)
-	if not speciesID then
-		-- Pet data not loaded yet
-		C_Item.RequestLoadItemDataByID(itemID)
-		return false
-	end
-
-	-- Check if we have any of this pet species
-	local numCollected, limit = C_PetJournal.GetNumCollectedInfo(speciesID)
-	return numCollected and numCollected > 0
-end
-
--- ENHANCED: Fixed transmog collection detection with proper data loading
-function DOKI:IsTransmogCollected(itemID, itemLink)
-	if not itemID or not C_TransmogCollection then return false, false end
-
-	local itemAppearanceID, itemModifiedAppearanceID
-	if itemLink then
-		itemAppearanceID, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(itemLink)
-	end
-
-	if not itemModifiedAppearanceID then
-		itemAppearanceID, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(itemID)
-	end
-
-	-- FIXED: Handle missing transmog data properly
-	if not itemModifiedAppearanceID then
-		-- Check if the item can actually be transmogged before assuming it's collectible
-		if C_Transmog and C_Transmog.GetItemInfo then
-			local canBeChanged, noChangeReason, canBeSource, noSourceReason = C_Transmog.GetItemInfo(itemID)
-			-- If the item cannot be a transmog source, it's not actually collectible
-			if not canBeSource then
-				if self.db and self.db.debugMode then
-					print(string.format("|cffff69b4DOKI|r Item %d cannot be transmog source: %s",
-						itemID, noSourceReason or "unknown reason"))
-				end
-
-				return true, false -- Treat as "collected" (no indicator needed)
-			end
-		end
-
-		-- Request transmog collection data to be loaded
-		C_TransmogCollection.GetItemInfo(itemID)  -- This triggers the cache loading
-		if itemLink then
-			C_TransmogCollection.GetItemInfo(itemLink) -- Try with link too
-		end
-
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Transmog data not loaded for item %d, requesting...", itemID))
-		end
-
-		-- Return "unknown" state - don't show indicator until we know for sure
-		-- This prevents false positives on non-transmoggable items
-		return true, false -- Treat as "collected" temporarily to avoid false indicators
-	end
-
-	local hasThisVariant = C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance(itemModifiedAppearanceID)
-	if hasThisVariant then return true, false end
-
-	local showYellowD = false
-	if itemAppearanceID then
-		local hasOtherSources = self:HasOtherTransmogSources(itemAppearanceID, itemModifiedAppearanceID)
-		if hasOtherSources then
-			showYellowD = true
-		end
-	end
-
-	return false, showYellowD
-end
-
-function DOKI:IsTransmogCollectedSmart(itemID, itemLink)
-	if not itemID or not C_TransmogCollection then return false, false end
-
-	local itemAppearanceID, itemModifiedAppearanceID
-	-- Try hyperlink first (critical for difficulty variants)
-	if itemLink then
-		itemAppearanceID, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(itemLink)
-	end
-
-	-- Fallback to itemID
-	if not itemModifiedAppearanceID then
-		itemAppearanceID, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(itemID)
-	end
-
-	-- FIXED: Handle missing transmog data properly in smart mode
-	if not itemModifiedAppearanceID then
-		-- Check if the item can actually be transmogged
-		if C_Transmog and C_Transmog.GetItemInfo then
-			local canBeChanged, noChangeReason, canBeSource, noSourceReason = C_Transmog.GetItemInfo(itemID)
-			-- If the item cannot be a transmog source, it's not actually collectible
-			if not canBeSource then
-				if self.db and self.db.debugMode then
-					print(string.format("|cffff69b4DOKI|r Smart mode: Item %d cannot be transmog source: %s",
-						itemID, noSourceReason or "unknown reason"))
-				end
-
-				return true, false -- Treat as "collected" (no indicator needed)
-			end
-		end
-
-		-- Request transmog collection data to be loaded
-		C_TransmogCollection.GetItemInfo(itemID)
-		if itemLink then
-			C_TransmogCollection.GetItemInfo(itemLink)
-		end
-
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Smart mode: Transmog data not loaded for item %d, requesting...", itemID))
-		end
-
-		-- Return "unknown" state - don't show indicator until we know for sure
-		return true, false -- Treat as "collected" temporarily
-	end
-
-	-- Check if we have this specific variant
-	local hasThisVariant = C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance(itemModifiedAppearanceID)
-	if hasThisVariant then
-		return true, false -- Have this variant, no indicator needed
-	end
-
-	-- We don't have this variant - check if we have equal or better sources
-	if itemAppearanceID then
-		local hasEqualOrBetterSources = self:HasEqualOrLessRestrictiveSources(itemAppearanceID, itemModifiedAppearanceID)
-		if hasEqualOrBetterSources then
-			-- We have identical or less restrictive sources, so we don't need this item
-			return true, false -- Treat as collected (no D shown)
-		else
-			-- We either have no sources, or only more restrictive sources - show orange D
-			return false, false -- Show orange D (we need this item)
-		end
-	end
-
-	return false, false -- Default to orange D
-end
-
--- Get class and faction restrictions for a specific source
-function DOKI:GetClassRestrictionsForSource(sourceID, appearanceID)
-	local restrictions = {
-		validClasses = {},
-		armorType = nil,
-		hasClassRestriction = false,
-		faction = nil, -- "Alliance", "Horde", or nil (both factions)
-		hasFactionRestriction = false,
-	}
-	-- Get the item from the source
-	local linkedItemID = nil
-	local success, sourceInfo = pcall(C_TransmogCollection.GetAppearanceSourceInfo, sourceID)
-	if success and sourceInfo and type(sourceInfo) == "table" then
-		local itemLinkField = sourceInfo["itemLink"]
-		if itemLinkField then
-			linkedItemID = self:GetItemID(itemLinkField)
-		end
-	end
-
-	-- Fallback to GetSourceInfo
-	if not linkedItemID then
-		local success2, sourceInfo2 = pcall(C_TransmogCollection.GetSourceInfo, sourceID)
-		if success2 and sourceInfo2 and sourceInfo2.itemID then
-			linkedItemID = sourceInfo2.itemID
-		end
-	end
-
-	if not linkedItemID then
-		return restrictions
-	end
-
-	-- Get item properties for armor type
-	local success3, _, _, _, _, _, classID, subClassID = pcall(C_Item.GetItemInfoInstant, linkedItemID)
-	if success3 and classID == 4 then -- Armor
-		restrictions.armorType = subClassID
-	end
-
-	-- Parse tooltip for class and faction restrictions
-	local tooltip = CreateFrame("GameTooltip", "DOKIClassTooltip" .. sourceID, nil, "GameTooltipTemplate")
-	tooltip:SetOwner(UIParent, "ANCHOR_NONE")
-	tooltip:SetItemByID(linkedItemID)
-	tooltip:Show()
-	local foundClassRestriction = false
-	local restrictedClasses = {}
-	for i = 1, tooltip:NumLines() do
-		local line = _G["DOKIClassTooltip" .. sourceID .. "TextLeft" .. i]
-		if line then
-			local text = line:GetText()
-			if text then
-				-- Check for class restrictions
-				if string.find(text, "Classes:") then
-					foundClassRestriction = true
-					-- Parse "Classes: Rogue" or "Classes: Warrior, Paladin, Death Knight"
-					local classText = string.match(text, "Classes:%s*(.+)")
-					if classText then
-						-- Map class names to IDs
-						local classNameToID = {
-							["Warrior"] = 1,
-							["Paladin"] = 2,
-							["Hunter"] = 3,
-							["Rogue"] = 4,
-							["Priest"] = 5,
-							["Death Knight"] = 6,
-							["Shaman"] = 7,
-							["Mage"] = 8,
-							["Warlock"] = 9,
-							["Monk"] = 10,
-							["Druid"] = 11,
-							["Demon Hunter"] = 12,
-							["Evoker"] = 13,
-						}
-						-- Split by comma and convert to class IDs
-						for className in string.gmatch(classText, "([^,]+)") do
-							className = strtrim(className)
-							local classID = classNameToID[className]
-							if classID then
-								table.insert(restrictedClasses, classID)
-							end
-						end
-					end
-				end
-
-				-- Check for faction restrictions
-				local lowerText = string.lower(text)
-				if string.find(lowerText, "alliance") and (string.find(lowerText, "require") or string.find(lowerText, "only")) then
-					restrictions.faction = "Alliance"
-					restrictions.hasFactionRestriction = true
-				elseif string.find(lowerText, "horde") and (string.find(lowerText, "require") or string.find(lowerText, "only")) then
-					restrictions.faction = "Horde"
-					restrictions.hasFactionRestriction = true
-				end
-			end
-		end
-	end
-
-	tooltip:Hide()
-	if foundClassRestriction then
-		restrictions.validClasses = restrictedClasses
-		restrictions.hasClassRestriction = true
-	else
-		-- Use armor type defaults
-		if restrictions.armorType == 1 then
-			restrictions.validClasses = { 5, 8, 9 }                                -- Cloth: Priest, Mage, Warlock
-		elseif restrictions.armorType == 2 then
-			restrictions.validClasses = { 4, 10, 11, 12 }                          -- Leather: Rogue, Monk, Druid, DH
-		elseif restrictions.armorType == 3 then
-			restrictions.validClasses = { 3, 7, 13 }                               -- Mail: Hunter, Shaman, Evoker
-		elseif restrictions.armorType == 4 then
-			restrictions.validClasses = { 1, 2, 6 }                                -- Plate: Warrior, Paladin, DK
-		else
-			restrictions.validClasses = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 } -- All classes
-		end
-	end
-
-	return restrictions
-end
-
--- Check if we have sources with identical or less restrictive class AND faction sets
-function DOKI:HasEqualOrLessRestrictiveSources(itemAppearanceID, excludeModifiedAppearanceID)
-	if not itemAppearanceID then return false end
-
-	local success, allSources = pcall(C_TransmogCollection.GetAllAppearanceSources, itemAppearanceID)
-	if not success or not allSources then return false end
-
-	local currentItemRestrictions = self:GetClassRestrictionsForSource(excludeModifiedAppearanceID, itemAppearanceID)
-	if not currentItemRestrictions then return false end
-
-	-- Check each source we have collected
-	for _, sourceID in ipairs(allSources) do
-		if sourceID ~= excludeModifiedAppearanceID then
-			local success2, hasSource = pcall(C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance, sourceID)
-			if success2 and hasSource then
-				local sourceRestrictions = self:GetClassRestrictionsForSource(sourceID, itemAppearanceID)
-				if sourceRestrictions then
-					local sourceClassCount = #sourceRestrictions.validClasses
-					local currentClassCount = #currentItemRestrictions.validClasses
-					-- Compare faction restrictions
-					local factionEquivalent = false
-					if sourceRestrictions.hasFactionRestriction == currentItemRestrictions.hasFactionRestriction then
-						if not sourceRestrictions.hasFactionRestriction then
-							factionEquivalent = true
-						elseif sourceRestrictions.faction == currentItemRestrictions.faction then
-							factionEquivalent = true
-						end
-					end
-
-					if factionEquivalent and sourceClassCount >= currentClassCount then
-						return true
-					end
-				end
-			end
-		end
-	end
-
-	return false
-end
-
-function DOKI:HasOtherTransmogSources(itemAppearanceID, excludeModifiedAppearanceID)
-	if not itemAppearanceID then return false end
-
-	local success, sourceIDs = pcall(C_TransmogCollection.GetAllAppearanceSources, itemAppearanceID)
-	if not success or not sourceIDs or type(sourceIDs) ~= "table" then return false end
-
-	for _, sourceID in ipairs(sourceIDs) do
-		if type(sourceID) == "number" and sourceID ~= excludeModifiedAppearanceID then
-			local success2, hasThisSource = pcall(C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance, sourceID)
-			if success2 and hasThisSource then
-				return true
-			end
-		end
-	end
-
-	return false
-end
-
--- ENHANCED: Item detection tracing with transmog validation
+-- ===== ENHANCED ITEM DETECTION TRACING WITH TRANSMOG VALIDATION =====
 function DOKI:TraceItemDetection(itemID, itemLink)
 	if not itemID then
 		print("|cffff69b4DOKI|r No item ID provided")
@@ -1832,6 +1246,615 @@ function DOKI:TraceItemDetection(itemID, itemLink)
 	end
 
 	print("|cffff69b4DOKI|r === END TRACE ===")
+end
+
+-- ===== UTILITY FUNCTIONS =====
+function DOKI:ForceUniversalScan()
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Force full scan...")
+	end
+
+	return self:FullItemScan()
+end
+
+function DOKI:IsElvUIBagVisible()
+	if not ElvUI then return false end
+
+	local E = ElvUI[1]
+	if not E then return false end
+
+	local B = E:GetModule("Bags", true)
+	if not B then return false end
+
+	return (B.BagFrame and B.BagFrame:IsShown()) or (B.BankFrame and B.BankFrame:IsShown())
+end
+
+-- ===== WAR WITHIN COLLECTION DETECTION =====
+function DOKI:GetItemID(itemLink)
+	if not itemLink then return nil end
+
+	if type(itemLink) == "number" then return itemLink end
+
+	if type(itemLink) == "string" then
+		local itemID = tonumber(string.match(itemLink, "item:(%d+)"))
+		return itemID
+	end
+
+	return nil
+end
+
+-- FIXED: Enhanced collectible item detection with caged pets and offhand support
+function DOKI:IsCollectibleItem(itemID, itemLink)
+	-- ADDED: Check for caged pets (battlepet items) first
+	if itemLink and string.find(itemLink, "battlepet:") then
+		return true
+	end
+
+	if not itemID then return false end
+
+	local _, itemType, itemSubType, itemEquipLoc, icon, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
+	if not classID or not subClassID then return false end
+
+	-- Mount items (class 15, subclass 5)
+	if classID == 15 and subClassID == 5 then return true end
+
+	-- Pet items (class 15, subclass 2)
+	if classID == 15 and subClassID == 2 then return true end
+
+	-- Toy items
+	if C_ToyBox and C_ToyBox.GetToyInfo(itemID) then return true end
+
+	-- Transmog items (weapons class 2, armor class 4)
+	if classID == 2 or classID == 4 then
+		if itemEquipLoc then
+			-- FIXED: Properly handle offhands - check if they're actually transmoggable
+			if itemEquipLoc == "INVTYPE_HOLDABLE" then
+				-- Use the transmog API to check if this offhand is actually transmoggable
+				local itemAppearanceID, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(itemID)
+				return itemAppearanceID ~= nil and itemModifiedAppearanceID ~= nil
+			end
+
+			-- Other non-transmog slots (kept as before)
+			local nonTransmogSlots = {
+				"INVTYPE_NECK", "INVTYPE_FINGER", "INVTYPE_TRINKET",
+				"INVTYPE_BAG", "INVTYPE_QUIVER",
+			}
+			for _, slot in ipairs(nonTransmogSlots) do
+				if itemEquipLoc == slot then return false end
+			end
+
+			return true
+		end
+	end
+
+	return false
+end
+
+-- ADDED: Extract species ID from caged pet (battlepet) links
+function DOKI:GetPetSpeciesFromBattlePetLink(itemLink)
+	if not itemLink or not string.find(itemLink, "battlepet:") then
+		return nil
+	end
+
+	-- Extract species ID from battlepet:speciesID:level:breedQuality:maxHealth:power:speed:battlePetGUID
+	local speciesID = tonumber(string.match(itemLink, "battlepet:(%d+)"))
+	return speciesID
+end
+
+-- ADDED: Check if a pet species is collected (for caged pets)
+function DOKI:IsPetSpeciesCollected(speciesID)
+	if not speciesID or not C_PetJournal then return false end
+
+	-- Check if we have any of this pet species
+	local numCollected, limit = C_PetJournal.GetNumCollectedInfo(speciesID)
+	return numCollected and numCollected > 0
+end
+
+-- WAR WITHIN FIXED: Enhanced collection detection with caged pets and corrected APIs
+function DOKI:IsItemCollected(itemID, itemLink)
+	if not itemID and not itemLink then return false, false end
+
+	-- ADDED: Handle caged pets (battlepet links) first
+	local petSpeciesID = self:GetPetSpeciesFromBattlePetLink(itemLink)
+	if petSpeciesID then
+		local isCollected = self:IsPetSpeciesCollected(petSpeciesID)
+		-- Cache the result using itemLink as key since no itemID
+		self:SetCachedCollectionStatus(petSpeciesID, itemLink, isCollected, false)
+		return isCollected, false
+	end
+
+	if not itemID then return false, false end
+
+	-- Check cache first
+	local cachedCollected, cachedYellowD = self:GetCachedCollectionStatus(itemID, itemLink)
+	if cachedCollected ~= nil then
+		return cachedCollected, cachedYellowD
+	end
+
+	local _, itemType, itemSubType, itemEquipLoc, icon, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
+	if not classID or not subClassID then
+		-- Cache negative result briefly
+		self:SetCachedCollectionStatus(itemID, itemLink, false, false)
+		return false, false
+	end
+
+	local isCollected, showYellowD = false, false
+	-- Check mounts - FIXED FOR WAR WITHIN
+	if classID == 15 and subClassID == 5 then
+		isCollected = self:IsMountCollectedWarWithin(itemID)
+		showYellowD = false
+		-- Check pets - FIXED FOR WAR WITHIN
+	elseif classID == 15 and subClassID == 2 then
+		isCollected = self:IsPetCollectedWarWithin(itemID)
+		showYellowD = false
+		-- Check toys
+	elseif C_ToyBox and C_ToyBox.GetToyInfo(itemID) then
+		isCollected = PlayerHasToy(itemID)
+		showYellowD = false
+		-- Check transmog
+	elseif classID == 2 or classID == 4 then
+		if self.db and self.db.smartMode then
+			isCollected, showYellowD = self:IsTransmogCollectedSmart(itemID, itemLink)
+		else
+			isCollected, showYellowD = self:IsTransmogCollected(itemID, itemLink)
+		end
+	end
+
+	-- Cache the result
+	self:SetCachedCollectionStatus(itemID, itemLink, isCollected, showYellowD)
+	return isCollected, showYellowD
+end
+
+-- WAR WITHIN FIXED: Use the correct GetMountFromItem API
+function DOKI:IsMountCollectedWarWithin(itemID)
+	if not itemID or not C_MountJournal then return false end
+
+	-- FIXED: Use the proper War Within API - GetMountFromItem
+	local mountID = C_MountJournal.GetMountFromItem(itemID)
+	if not mountID then
+		-- Item might not be loaded yet, or not a mount item
+		C_Item.RequestLoadItemDataByID(itemID)
+		return false
+	end
+
+	-- Get mount info using the mount ID
+	local name, spellID, icon, isActive, isUsable, sourceType, isFavorite,
+	isFactionSpecific, faction, shouldHideOnChar, isCollected, mountIDReturn, isSteadyFlight = C_MountJournal
+			.GetMountInfoByID(mountID)
+	return isCollected or false
+end
+
+-- WAR WITHIN FIXED: Proper pet detection using current journal API
+function DOKI:IsPetCollectedWarWithin(itemID)
+	if not itemID or not C_PetJournal then return false end
+
+	-- Get pet info from the item - this API is confirmed to work in War Within
+	local name, icon, petType, creatureID, sourceText, description, isWild, canBattle,
+	isTradeable, isUnique, obtainable, displayID, speciesID = C_PetJournal.GetPetInfoByItemID(itemID)
+	if not speciesID then
+		-- Pet data not loaded yet
+		C_Item.RequestLoadItemDataByID(itemID)
+		return false
+	end
+
+	-- Check if we have any of this pet species
+	local numCollected, limit = C_PetJournal.GetNumCollectedInfo(speciesID)
+	return numCollected and numCollected > 0
+end
+
+-- FIXED: Enhanced transmog collection detection with proper data loading
+function DOKI:IsTransmogCollected(itemID, itemLink)
+	if not itemID or not C_TransmogCollection then return false, false end
+
+	local itemAppearanceID, itemModifiedAppearanceID
+	if itemLink then
+		itemAppearanceID, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(itemLink)
+	end
+
+	if not itemModifiedAppearanceID then
+		itemAppearanceID, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(itemID)
+	end
+
+	-- FIXED: Handle missing transmog data properly
+	if not itemModifiedAppearanceID then
+		-- Check if the item can actually be transmogged before assuming it's collectible
+		if C_Transmog and C_Transmog.GetItemInfo then
+			local canBeChanged, noChangeReason, canBeSource, noSourceReason = C_Transmog.GetItemInfo(itemID)
+			-- If the item cannot be a transmog source, it's not actually collectible
+			if not canBeSource then
+				if self.db and self.db.debugMode then
+					print(string.format("|cffff69b4DOKI|r Item %d cannot be transmog source: %s",
+						itemID, noSourceReason or "unknown reason"))
+				end
+
+				return true, false -- Treat as "collected" (no indicator needed)
+			end
+		end
+
+		-- Request transmog collection data to be loaded
+		C_TransmogCollection.GetItemInfo(itemID)  -- This triggers the cache loading
+		if itemLink then
+			C_TransmogCollection.GetItemInfo(itemLink) -- Try with link too
+		end
+
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r Transmog data not loaded for item %d, requesting...", itemID))
+		end
+
+		-- Return "unknown" state - don't show indicator until we know for sure
+		-- This prevents false positives on non-transmoggable items
+		return true, false -- Treat as "collected" temporarily to avoid false indicators
+	end
+
+	local hasThisVariant = C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance(itemModifiedAppearanceID)
+	if hasThisVariant then return true, false end
+
+	local showYellowD = false
+	if itemAppearanceID then
+		local hasOtherSources = self:HasOtherTransmogSources(itemAppearanceID, itemModifiedAppearanceID)
+		if hasOtherSources then
+			showYellowD = true
+		end
+	end
+
+	return false, showYellowD
+end
+
+function DOKI:IsTransmogCollectedSmart(itemID, itemLink)
+	if not itemID or not C_TransmogCollection then return false, false end
+
+	local itemAppearanceID, itemModifiedAppearanceID
+	-- Try hyperlink first (critical for difficulty variants)
+	if itemLink then
+		itemAppearanceID, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(itemLink)
+	end
+
+	-- Fallback to itemID
+	if not itemModifiedAppearanceID then
+		itemAppearanceID, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(itemID)
+	end
+
+	-- FIXED: Handle missing transmog data properly in smart mode
+	if not itemModifiedAppearanceID then
+		-- Check if the item can actually be transmogged
+		if C_Transmog and C_Transmog.GetItemInfo then
+			local canBeChanged, noChangeReason, canBeSource, noSourceReason = C_Transmog.GetItemInfo(itemID)
+			-- If the item cannot be a transmog source, it's not actually collectible
+			if not canBeSource then
+				if self.db and self.db.debugMode then
+					print(string.format("|cffff69b4DOKI|r Smart mode: Item %d cannot be transmog source: %s",
+						itemID, noSourceReason or "unknown reason"))
+				end
+
+				return true, false -- Treat as "collected" (no indicator needed)
+			end
+		end
+
+		-- Request transmog collection data to be loaded
+		C_TransmogCollection.GetItemInfo(itemID)
+		if itemLink then
+			C_TransmogCollection.GetItemInfo(itemLink)
+		end
+
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r Smart mode: Transmog data not loaded for item %d, requesting...", itemID))
+		end
+
+		-- Return "unknown" state - don't show indicator until we know for sure
+		return true, false -- Treat as "collected" temporarily
+	end
+
+	-- Check if we have this specific variant
+	local hasThisVariant = C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance(itemModifiedAppearanceID)
+	if hasThisVariant then
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r Smart mode: Item %d - have this specific variant", itemID))
+		end
+
+		return true, false -- Have this variant, no indicator needed
+	end
+
+	-- FIXED: Smart mode logic flow (from old implementation)
+	-- We don't have this variant - check if we have equal or better sources
+	if itemAppearanceID then
+		local hasEqualOrBetterSources = self:HasEqualOrLessRestrictiveSources(itemAppearanceID, itemModifiedAppearanceID)
+		if hasEqualOrBetterSources then
+			-- We have identical or less restrictive sources, so we don't need this item
+			if self.db and self.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r Smart mode: Item %d - have equal or better sources, no indicator needed",
+					itemID))
+			end
+
+			return true, false -- Treat as collected (no indicator shown)
+		else
+			-- We either have no sources, or only more restrictive sources - show indicator
+			local hasAnySources = self:HasOtherTransmogSources(itemAppearanceID, itemModifiedAppearanceID)
+			if self.db and self.db.debugMode then
+				if hasAnySources then
+					print(string.format(
+						"|cffff69b4DOKI|r Smart mode: Item %d - have other sources but they're more restrictive, show indicator",
+						itemID))
+				else
+					print(string.format("|cffff69b4DOKI|r Smart mode: Item %d - no sources at all, show indicator", itemID))
+				end
+			end
+
+			return false, false -- Show indicator (we need this item)
+		end
+	end
+
+	return false, false -- Default to show indicator
+end
+
+-- Get class and faction restrictions for a specific source
+function DOKI:GetClassRestrictionsForSource(sourceID, appearanceID)
+	local restrictions = {
+		validClasses = {},
+		armorType = nil,
+		hasClassRestriction = false,
+		faction = nil, -- "Alliance", "Horde", or nil (both factions)
+		hasFactionRestriction = false,
+	}
+	-- Get the item from the source
+	local linkedItemID = nil
+	local success, sourceInfo = pcall(C_TransmogCollection.GetAppearanceSourceInfo, sourceID)
+	if success and sourceInfo and type(sourceInfo) == "table" then
+		local itemLinkField = sourceInfo["itemLink"]
+		if itemLinkField then
+			linkedItemID = self:GetItemID(itemLinkField)
+		end
+	end
+
+	-- Fallback to GetSourceInfo
+	if not linkedItemID then
+		local success2, sourceInfo2 = pcall(C_TransmogCollection.GetSourceInfo, sourceID)
+		if success2 and sourceInfo2 and sourceInfo2.itemID then
+			linkedItemID = sourceInfo2.itemID
+		end
+	end
+
+	if not linkedItemID then
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r Could not get item ID for source %d", sourceID))
+		end
+
+		return restrictions
+	end
+
+	-- Get item properties for armor type
+	local success3, _, _, _, _, _, classID, subClassID = pcall(C_Item.GetItemInfoInstant, linkedItemID)
+	if success3 and classID == 4 then -- Armor
+		restrictions.armorType = subClassID
+	end
+
+	-- FIXED: Enhanced tooltip parsing for class and faction restrictions (from old implementation)
+	local tooltip = CreateFrame("GameTooltip", "DOKIClassTooltip" .. sourceID, nil, "GameTooltipTemplate")
+	tooltip:SetOwner(UIParent, "ANCHOR_NONE")
+	tooltip:SetItemByID(linkedItemID)
+	tooltip:Show()
+	local foundClassRestriction = false
+	local foundFactionRestriction = false
+	local restrictedClasses = {}
+	for i = 1, tooltip:NumLines() do
+		local line = _G["DOKIClassTooltip" .. sourceID .. "TextLeft" .. i]
+		if line then
+			local text = line:GetText()
+			if text then
+				-- Check for class restrictions
+				if string.find(text, "Classes:") then
+					foundClassRestriction = true
+					-- Parse "Classes: Rogue" or "Classes: Warrior, Paladin, Death Knight"
+					local classText = string.match(text, "Classes:%s*(.+)")
+					if classText then
+						-- Map class names to IDs
+						local classNameToID = {
+							["Warrior"] = 1,
+							["Paladin"] = 2,
+							["Hunter"] = 3,
+							["Rogue"] = 4,
+							["Priest"] = 5,
+							["Death Knight"] = 6,
+							["Shaman"] = 7,
+							["Mage"] = 8,
+							["Warlock"] = 9,
+							["Monk"] = 10,
+							["Druid"] = 11,
+							["Demon Hunter"] = 12,
+							["Evoker"] = 13,
+						}
+						-- Split by comma and convert to class IDs
+						for className in string.gmatch(classText, "([^,]+)") do
+							className = strtrim(className)
+							local classID = classNameToID[className]
+							if classID then
+								table.insert(restrictedClasses, classID)
+							end
+						end
+					end
+				end
+
+				-- FIXED: Enhanced faction restrictions detection with expanded patterns (from old implementation)
+				local lowerText = string.lower(text)
+				if string.find(lowerText, "alliance") then
+					-- Look for various Alliance indicators
+					if string.find(lowerText, "require") or string.find(lowerText, "only") or
+							string.find(lowerText, "exclusive") or string.find(lowerText, "specific") or
+							string.find(lowerText, "reputation") or string.find(text, "Alliance") then
+						foundFactionRestriction = true
+						restrictions.faction = "Alliance"
+						restrictions.hasFactionRestriction = true
+						if self.db and self.db.debugMode then
+							print(string.format("|cffff69b4DOKI|r Found Alliance restriction for item %d: %s", linkedItemID, text))
+						end
+					end
+				elseif string.find(lowerText, "horde") then
+					-- Look for various Horde indicators
+					if string.find(lowerText, "require") or string.find(lowerText, "only") or
+							string.find(lowerText, "exclusive") or string.find(lowerText, "specific") or
+							string.find(lowerText, "reputation") or string.find(text, "Horde") then
+						foundFactionRestriction = true
+						restrictions.faction = "Horde"
+						restrictions.hasFactionRestriction = true
+						if self.db and self.db.debugMode then
+							print(string.format("|cffff69b4DOKI|r Found Horde restriction for item %d: %s", linkedItemID, text))
+						end
+					end
+				end
+
+				-- Debug: log all tooltip lines if needed
+				if self.db and self.db.debugMode then
+					print(string.format("|cffff69b4DOKI|r Tooltip line for item %d: %s", linkedItemID, text))
+				end
+			end
+		end
+	end
+
+	tooltip:Hide()
+	if foundClassRestriction then
+		-- Item has explicit class restrictions
+		restrictions.validClasses = restrictedClasses
+		restrictions.hasClassRestriction = true
+	else
+		-- No class restrictions found - use armor type defaults
+		if restrictions.armorType == 1 then                                      -- Cloth
+			restrictions.validClasses = { 5, 8, 9 }                                -- Priest, Mage, Warlock
+		elseif restrictions.armorType == 2 then                                  -- Leather
+			restrictions.validClasses = { 4, 10, 11, 12 }                          -- Rogue, Monk, Druid, Demon Hunter
+		elseif restrictions.armorType == 3 then                                  -- Mail
+			restrictions.validClasses = { 3, 7, 13 }                               -- Hunter, Shaman, Evoker
+		elseif restrictions.armorType == 4 then                                  -- Plate
+			restrictions.validClasses = { 1, 2, 6 }                                -- Warrior, Paladin, Death Knight
+		elseif classID == 2 then                                                 -- Weapon
+			restrictions.validClasses = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 } -- All classes (simplified)
+		else
+			restrictions.validClasses = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 } -- Unknown, assume all
+		end
+	end
+
+	return restrictions
+end
+
+-- Check if we have sources with identical or less restrictive class AND faction sets
+function DOKI:HasEqualOrLessRestrictiveSources(itemAppearanceID, excludeModifiedAppearanceID)
+	if not itemAppearanceID then return false end
+
+	-- Get all sources for this appearance
+	local success, allSources = pcall(C_TransmogCollection.GetAllAppearanceSources, itemAppearanceID)
+	if not success or not allSources then return false end
+
+	-- Get class and faction restrictions for the current item
+	local currentItemRestrictions = self:GetClassRestrictionsForSource(excludeModifiedAppearanceID, itemAppearanceID)
+	if not currentItemRestrictions then return false end
+
+	-- Check each source we have collected
+	for _, sourceID in ipairs(allSources) do
+		if sourceID ~= excludeModifiedAppearanceID then
+			local success2, hasSource = pcall(C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance, sourceID)
+			if success2 and hasSource then
+				-- Get restrictions for this known source
+				local sourceRestrictions = self:GetClassRestrictionsForSource(sourceID, itemAppearanceID)
+				if sourceRestrictions then
+					local sourceClassCount = #sourceRestrictions.validClasses
+					local currentClassCount = #currentItemRestrictions.validClasses
+					-- FIXED: Explicit faction comparison logic (from old implementation)
+					local factionEquivalent = false
+					-- For factions to be equivalent, they must be exactly the same
+					if sourceRestrictions.hasFactionRestriction == currentItemRestrictions.hasFactionRestriction then
+						if not sourceRestrictions.hasFactionRestriction then
+							-- Both have no faction restriction = equivalent
+							factionEquivalent = true
+						elseif sourceRestrictions.faction == currentItemRestrictions.faction then
+							-- Both have same faction restriction = equivalent
+							factionEquivalent = true
+						end
+
+						-- If both have faction restrictions but different factions = not equivalent
+					end
+
+					-- If one has faction restriction and other doesn't = not equivalent
+					-- Only compare class restrictions if faction restrictions are equivalent
+					if factionEquivalent then
+						-- Check if source is less restrictive in terms of classes
+						if sourceClassCount > currentClassCount then
+							if self.db and self.db.debugMode then
+								print(string.format(
+									"|cffff69b4DOKI|r Found less restrictive source %d (usable by %d classes vs %d, same faction restrictions)",
+									sourceID, sourceClassCount, currentClassCount))
+							end
+
+							return true
+						end
+
+						-- Check if source has identical class restrictions
+						if sourceClassCount == currentClassCount then
+							-- Create sorted lists to compare classes
+							local sourceCopy = {}
+							local currentCopy = {}
+							for _, classID in ipairs(sourceRestrictions.validClasses) do
+								table.insert(sourceCopy, classID)
+							end
+
+							for _, classID in ipairs(currentItemRestrictions.validClasses) do
+								table.insert(currentCopy, classID)
+							end
+
+							table.sort(sourceCopy)
+							table.sort(currentCopy)
+							-- Check if they're identical
+							local identical = true
+							for i = 1, #sourceCopy do
+								if sourceCopy[i] ~= currentCopy[i] then
+									identical = false
+									break
+								end
+							end
+
+							if identical then
+								if self.db and self.db.debugMode then
+									local factionText = sourceRestrictions.hasFactionRestriction and
+											(" (same " .. sourceRestrictions.faction .. " restriction)") or " (no faction restriction)"
+									print(string.format("|cffff69b4DOKI|r Found identical restriction source %d (same classes: %s)%s",
+										sourceID, table.concat(sourceCopy, ", "), factionText))
+								end
+
+								return true
+							end
+						end
+					else
+						-- Different faction restrictions - sources are not equivalent, don't replace each other
+						if self.db and self.db.debugMode then
+							local currentFactionText = currentItemRestrictions.hasFactionRestriction and
+									currentItemRestrictions.faction or "none"
+							local sourceFactionText = sourceRestrictions.hasFactionRestriction and sourceRestrictions.faction or "none"
+							print(string.format(
+								"|cffff69b4DOKI|r Source %d has different faction restrictions (%s vs %s) - not equivalent",
+								sourceID, sourceFactionText, currentFactionText))
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return false
+end
+
+function DOKI:HasOtherTransmogSources(itemAppearanceID, excludeModifiedAppearanceID)
+	if not itemAppearanceID then return false end
+
+	local success, sourceIDs = pcall(C_TransmogCollection.GetAllAppearanceSources, itemAppearanceID)
+	if not success or not sourceIDs or type(sourceIDs) ~= "table" then return false end
+
+	for _, sourceID in ipairs(sourceIDs) do
+		if type(sourceID) == "number" and sourceID ~= excludeModifiedAppearanceID then
+			local success2, hasThisSource = pcall(C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance, sourceID)
+			if success2 and hasThisSource then
+				return true
+			end
+		end
+	end
+
+	return false
 end
 
 -- Debug functions

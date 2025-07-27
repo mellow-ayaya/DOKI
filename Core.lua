@@ -1,10 +1,13 @@
--- DOKI Core - Complete War Within Fix with Enhanced Merchant Support + Smart Mode Auto-Rescan
+-- DOKI Core - Complete War Within Fix with Enhanced Merchant Support
 local addonName, DOKI = ...
 -- Initialize addon namespace
 DOKI.currentItems = {}
 DOKI.overlayPool = {}
 DOKI.activeOverlays = {}
 DOKI.textureCache = {}
+-- Enhanced scanning system variables
+DOKI.delayedScanTimer = nil       -- Timer for delayed secondary scan
+DOKI.delayedScanCancelled = false -- Flag to track if delayed scan should be cancelled
 -- Main addon frame
 local frame = CreateFrame("Frame", "DOKIFrame")
 -- Initialize saved variables
@@ -35,10 +38,10 @@ local function OnEvent(self, event, ...)
 			DOKI:InitializeUniversalScanning()
 			if ElvUI then
 				print(
-					"|cffff69b4DOKI|r loaded with War Within surgical system + ElvUI support + Merchant scroll detection + Enhanced smart mode. Type /doki for commands.")
+					"|cffff69b4DOKI|r loaded with War Within surgical system + ElvUI support + Merchant scroll detection. Type /doki for commands.")
 			else
 				print(
-					"|cffff69b4DOKI|r loaded with War Within surgical system + Merchant scroll detection + Enhanced smart mode. Type /doki for commands.")
+					"|cffff69b4DOKI|r loaded with War Within surgical system + Merchant scroll detection. Type /doki for commands.")
 			end
 
 			frame:UnregisterEvent("ADDON_LOADED")
@@ -71,18 +74,31 @@ SlashCmdList["DOKI"] = function(msg)
 		local status = DOKI.db.debugMode and "|cff00ff00enabled|r" or "|cffff0000disabled|r"
 		print("|cffff69b4DOKI|r debug mode is now " .. status)
 	elseif command == "smart" then
-		-- UPDATED: Use the enhanced smart mode toggle with auto-rescan
-		if DOKI.ToggleSmartMode then
-			DOKI:ToggleSmartMode()
-		else
-			-- Fallback to basic toggle if enhanced function not available
-			DOKI.db.smartMode = not DOKI.db.smartMode
-			local status = DOKI.db.smartMode and "|cff00ff00enabled|r" or "|cffff0000disabled|r"
-			print("|cffff69b4DOKI|r smart mode is now " .. status)
-			print("|cffff69b4DOKI|r Smart mode considers class restrictions when determining if items are needed")
-			if DOKI.db.enabled and DOKI.ForceUniversalScan then
-				DOKI:ForceUniversalScan()
-			end
+		-- ENHANCED: Smart mode toggle with automatic cache invalidation and rescan
+		DOKI.db.smartMode = not DOKI.db.smartMode
+		local status = DOKI.db.smartMode and "|cff00ff00enabled|r" or "|cffff0000disabled|r"
+		print("|cffff69b4DOKI|r smart mode is now " .. status)
+		print("|cffff69b4DOKI|r Smart mode considers class restrictions when determining if items are needed")
+		-- ADDED: Automatic cache invalidation and rescan after smart mode toggle
+		if DOKI.db.debugMode then
+			print("|cffff69b4DOKI|r Smart mode changed - invalidating collection cache and rescanning...")
+		end
+
+		-- Clear collection cache since smart mode changes how collection status is calculated
+		if DOKI.ClearCollectionCache then
+			DOKI:ClearCollectionCache()
+		end
+
+		-- Force full rescan if addon is enabled and UI is visible
+		if DOKI.db.enabled then
+			C_Timer.After(0.1, function()
+				if DOKI.db and DOKI.db.enabled and DOKI.ForceUniversalScan then
+					local count = DOKI:ForceUniversalScan()
+					if DOKI.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r Smart mode toggle rescan: %d indicators created", count))
+					end
+				end
+			end)
 		end
 	elseif command == "scan" or command == "universal" then
 		print("|cffff69b4DOKI|r force scanning...")
@@ -121,38 +137,66 @@ SlashCmdList["DOKI"] = function(msg)
 			print("|cffff69b4DOKI|r Cleanup function not available")
 		end
 	elseif command == "status" then
-		-- UPDATED: Use enhanced status display if available
-		if DOKI.ShowEnhancedStatus then
-			DOKI:ShowEnhancedStatus()
-		else
-			-- Fallback to basic status
-			local indicatorCount = 0
-			local battlepetCount = 0
-			if DOKI.buttonTextures then
-				for _, textureData in pairs(DOKI.buttonTextures) do
-					if textureData.isActive then
-						indicatorCount = indicatorCount + 1
-						if textureData.itemLink and string.find(textureData.itemLink, "battlepet:") then
-							battlepetCount = battlepetCount + 1
-						end
+		-- ENHANCED: Use enhanced status display with delayed scan information
+		local indicatorCount = 0
+		local battlepetCount = 0
+		if DOKI.buttonTextures then
+			for _, textureData in pairs(DOKI.buttonTextures) do
+				if textureData.isActive then
+					indicatorCount = indicatorCount + 1
+					if textureData.itemLink and string.find(textureData.itemLink, "battlepet:") then
+						battlepetCount = battlepetCount + 1
 					end
 				end
 			end
-
-			local snapshotCount = 0
-			if DOKI.lastButtonSnapshot then
-				for _ in pairs(DOKI.lastButtonSnapshot) do
-					snapshotCount = snapshotCount + 1
-				end
-			end
-
-			print(string.format("|cffff69b4DOKI|r Status: %s, Smart: %s, Debug: %s",
-				DOKI.db.enabled and "Enabled" or "Disabled",
-				DOKI.db.smartMode and "On" or "Off",
-				DOKI.db.debugMode and "On" or "Off"))
-			print(string.format("|cffff69b4DOKI|r Active indicators: %d (%d battlepets)", indicatorCount, battlepetCount))
-			print(string.format("|cffff69b4DOKI|r Tracked buttons: %d", snapshotCount))
 		end
+
+		local snapshotCount = 0
+		if DOKI.lastButtonSnapshot then
+			for _ in pairs(DOKI.lastButtonSnapshot) do
+				snapshotCount = snapshotCount + 1
+			end
+		end
+
+		print(string.format("|cffff69b4DOKI|r Status: %s, Smart: %s, Debug: %s",
+			DOKI.db.enabled and "Enabled" or "Disabled",
+			DOKI.db.smartMode and "On" or "Off",
+			DOKI.db.debugMode and "On" or "Off"))
+		print(string.format("|cffff69b4DOKI|r Active indicators: %d (%d battlepets)", indicatorCount, battlepetCount))
+		print(string.format("|cffff69b4DOKI|r Tracked buttons: %d", snapshotCount))
+		print("|cffff69b4DOKI|r System: War Within Enhanced Surgical System with Merchant Support")
+		print("  |cff00ff00•|r Regular updates: 0.2s interval")
+		print("  |cff00ff00•|r Clean events: Noisy events removed")
+		print("  |cff00ff00•|r Battlepet support: Caged pet detection")
+		print("  |cff00ff00•|r Mount fix: GetMountFromItem API")
+		print("  |cff00ff00•|r Pet timing: Collection event delays")
+		print("  |cff00ff00•|r |cffff8000NEW:|r Merchant scroll detection")
+		print("  |cff00ff00•|r |cffff8000NEW:|r OnMouseWheel + MERCHANT_UPDATE events")
+		print("  |cff00ff00•|r |cffff8000NEW:|r Smart mode auto-rescan on toggle")
+		print("  |cff00ff00•|r |cffff8000NEW:|r Delayed cleanup scan (0.2s) with auto-cancellation")
+		-- ADDED: Show delayed scan status
+		if DOKI.delayedScanTimer then
+			print("  |cffffff00•|r Delayed cleanup scan: PENDING")
+		else
+			print("  |cff00ff00•|r Delayed cleanup scan: Ready")
+		end
+
+		print(string.format("  |cff00ff00•|r Throttling: %.0fms minimum between updates",
+			(DOKI.surgicalUpdateThrottleTime or 0.05) * 1000))
+		if DOKI.totalUpdates and DOKI.totalUpdates > 0 then
+			print(string.format("  |cff00ff00•|r Total updates: %d (%d immediate)",
+				DOKI.totalUpdates, DOKI.immediateUpdates or 0))
+			if DOKI.throttledUpdates and DOKI.throttledUpdates > 0 then
+				print(string.format("  |cffffff00•|r Throttled updates: %d", DOKI.throttledUpdates))
+			end
+		end
+
+		-- Show merchant status
+		local merchantOpen = MerchantFrame and MerchantFrame:IsVisible()
+		local merchantScrolling = DOKI.merchantScrollDetector and DOKI.merchantScrollDetector.isScrolling
+		print(string.format("  |cff00ff00•|r Merchant: %s%s",
+			merchantOpen and "Open" or "Closed",
+			merchantScrolling and " (scrolling)" or ""))
 	elseif command == "testbags" then
 		print("|cffff69b4DOKI|r === TESTING BAG DETECTION ===")
 		print("|cffff69b4DOKI|r Checking for visible bag frames...")
@@ -488,21 +532,13 @@ SlashCmdList["DOKI"] = function(msg)
 		else
 			print("|cffff69b4DOKI|r Frame debug function not available")
 		end
-	elseif command == "canceldelay" then
-		-- ADDED: Manual delayed scan cancellation for testing
-		if DOKI.CancelDelayedScan then
-			DOKI:CancelDelayedScan()
-			print("|cffff69b4DOKI|r Manually cancelled delayed scan")
-		else
-			print("|cffff69b4DOKI|r Delayed scan cancellation not available")
-		end
 	else
-		print("|cffff69b4DOKI|r War Within Enhanced Surgical System with Merchant Support + Smart Mode Commands:")
+		print("|cffff69b4DOKI|r War Within Enhanced Surgical System with Merchant Support Commands:")
 		print("")
 		print("Basic controls:")
 		print("  /doki toggle - Enable/disable addon")
 		print("  /doki debug - Toggle debug messages")
-		print("  /doki smart - Toggle smart mode (considers class restrictions) |cffff8000[AUTO-RESCAN]|r")
+		print("  /doki smart - Toggle smart mode (considers class restrictions)")
 		print("  /doki status - Show addon status and system info")
 		print("")
 		print("Scanning and updates:")
@@ -522,7 +558,6 @@ SlashCmdList["DOKI"] = function(msg)
 		print("  /doki battlepet - Debug battlepet snapshot tracking")
 		print("  /doki frames - Debug found item frames")
 		print("  /doki why <itemID> - Trace why an item gets/doesn't get an indicator")
-		print("  /doki canceldelay - Manually cancel pending delayed scan")
 		print("")
 		print("|cffff8000NEW - Merchant testing:|r")
 		print("  /doki testmerchant - Test merchant frame detection")
@@ -540,13 +575,11 @@ SlashCmdList["DOKI"] = function(msg)
 		print("  |cff00ff00•|r |cffff8000NEW:|r OnMouseWheel + MERCHANT_UPDATE events")
 		print("  |cff00ff00•|r |cffff8000NEW:|r Smart mode auto-rescan on toggle")
 		print("  |cff00ff00•|r |cffff8000NEW:|r Delayed cleanup scan (0.2s) with auto-cancellation")
-		print("  |cff00ff00•|r |cffff8000NEW:|r Enhanced transmog validation with data loading")
 		print("  |cff00ff00•|r Enhanced surgical updates with battlepet tracking")
 		print("  |cff00ff00•|r Indicators follow items automatically")
 		print("  |cff00ff00•|r Ultra-fast throttling (50ms) prevents spam")
 		print("  |cff00ff00•|r Indicators appear in TOP-RIGHT corner")
 		print("")
 		print("|cffff8000Try scrolling in merchant frames - indicators should update immediately!|r")
-		print("|cffff8000Try toggling smart mode - full rescan happens automatically!|r")
 	end
 end

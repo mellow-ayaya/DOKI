@@ -1,4 +1,4 @@
--- DOKI Button Texture System - Complete War Within Fix with Battlepet Support + Merchant Integration + Enhanced Features
+-- DOKI Button Texture System - Complete War Within Fix with Battlepet Support + Enhanced Delayed Cleanup
 local addonName, DOKI = ...
 -- Storage
 DOKI.buttonTextures = {}
@@ -286,7 +286,7 @@ function DOKI:CreateButtonSnapshot()
 	return snapshot
 end
 
--- ===== ENHANCED SURGICAL UPDATE PROCESSING FOR BATTLEPETS + MERCHANT =====
+-- ===== ENHANCED SURGICAL UPDATE PROCESSING FOR BATTLEPETS + MERCHANT + DELAYED CLEANUP =====
 function DOKI:ProcessSurgicalUpdate()
 	local currentSnapshot = self:CreateButtonSnapshot()
 	local changes = {
@@ -625,7 +625,7 @@ function DOKI:CleanupMerchantTextures()
 	return removedCount
 end
 
--- ===== INITIALIZATION =====
+-- ===== ENHANCED INITIALIZATION WITH DELAYED CLEANUP SUPPORT =====
 function DOKI:InitializeButtonTextureSystem()
 	self.buttonTextures = self.buttonTextures or {}
 	self.texturePool = self.texturePool or {}
@@ -633,13 +633,14 @@ function DOKI:InitializeButtonTextureSystem()
 	self.buttonItemMap = {}
 	self:ValidateTexture()
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Enhanced button texture system initialized with battlepet + merchant support")
+		print(
+			"|cffff69b4DOKI|r Enhanced button texture system initialized with battlepet + merchant + delayed cleanup support")
 	end
 end
 
--- ENHANCED: Cleanup with delayed scan cancellation
+-- ENHANCED: Cleanup with delayed scan cancellation support
 function DOKI:CleanupButtonTextureSystem()
-	-- Cancel any pending delayed scans
+	-- ADDED: Cancel any pending delayed scans during cleanup
 	if self.CancelDelayedScan then
 		self:CancelDelayedScan()
 	end
@@ -660,7 +661,7 @@ function DOKI:CleanupButtonTextureSystem()
 	self.lastButtonSnapshot = {}
 	self.buttonItemMap = {}
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Button texture system cleaned up")
+		print("|cffff69b4DOKI|r Button texture system cleaned up with delayed scan cancellation")
 	end
 end
 
@@ -673,7 +674,7 @@ function DOKI:ClearAllOverlays()
 	return self:ClearAllButtonIndicators()
 end
 
--- ===== DEBUG FUNCTIONS =====
+-- ===== ENHANCED DEBUG FUNCTIONS =====
 function DOKI:DebugButtonTextures()
 	print("|cffff69b4DOKI|r === BUTTON TEXTURE DEBUG ===")
 	print(string.format("Texture file validated: %s", tostring(self.textureValidated)))
@@ -721,7 +722,7 @@ function DOKI:TableCount(tbl)
 end
 
 function DOKI:TestButtonTextureCreation()
-	print("|cffff69b4DOKI|r Testing button texture system...")
+	print("|cffff69b4DOKI|r Testing enhanced button texture system...")
 	if not self:ValidateTexture() then
 		print("|cffff69b4DOKI|r Cannot test - texture validation failed")
 		return
@@ -774,10 +775,89 @@ function DOKI:TestButtonTextureCreation()
 		if success then
 			print("|cffff69b4DOKI|r Test indicator created (orange, top-right)")
 			print("|cffff69b4DOKI|r Try moving items or scrolling merchant to test response")
+			print("|cffff69b4DOKI|r Delayed cleanup scan will trigger in 0.2s after item movement")
 		else
 			print("|cffff69b4DOKI|r Failed to create test indicator")
 		end
 	else
 		print("|cffff69b4DOKI|r No suitable button found - open bags or merchant first")
 	end
+end
+
+-- ADDED: Enhanced test function for delayed cleanup scanning
+function DOKI:TestDelayedCleanupScan()
+	print("|cffff69b4DOKI|r === TESTING DELAYED CLEANUP SCAN ===")
+	-- Check if system is available
+	if not self.ScheduleDelayedCleanupScan then
+		print("|cffff69b4DOKI|r ❌ Delayed cleanup scan system not available")
+		return
+	end
+
+	-- Show current status
+	if self.delayedScanTimer then
+		print("|cffff69b4DOKI|r Current status: Delayed scan PENDING")
+		print("|cffff69b4DOKI|r Testing cancellation...")
+		self:CancelDelayedScan()
+		if not self.delayedScanTimer then
+			print("|cffff69b4DOKI|r ✅ Cancellation works correctly")
+		else
+			print("|cffff69b4DOKI|r ❌ Cancellation failed")
+		end
+	else
+		print("|cffff69b4DOKI|r Current status: Ready")
+	end
+
+	-- Test scheduling
+	print("|cffff69b4DOKI|r Testing delayed scan scheduling...")
+	self:ScheduleDelayedCleanupScan()
+	if self.delayedScanTimer then
+		print("|cffff69b4DOKI|r ✅ Delayed scan scheduled successfully")
+		print("|cffff69b4DOKI|r Will trigger in 0.2 seconds unless cancelled")
+		-- Test auto-cancellation after 0.5 seconds
+		C_Timer.After(0.5, function()
+			if DOKI.delayedScanTimer then
+				print("|cffff69b4DOKI|r ❌ Delayed scan did not auto-complete")
+			else
+				print("|cffff69b4DOKI|r ✅ Delayed scan completed or was cancelled correctly")
+			end
+		end)
+	else
+		print("|cffff69b4DOKI|r ❌ Failed to schedule delayed scan")
+	end
+
+	print("|cffff69b4DOKI|r === END DELAYED CLEANUP TEST ===")
+end
+
+-- ADDED: Enhanced snapshot comparison test
+function DOKI:TestSnapshotComparison()
+	print("|cffff69b4DOKI|r === TESTING SNAPSHOT COMPARISON ===")
+	-- Create initial snapshot
+	local snapshot1 = self:CreateButtonSnapshot()
+	local itemCount = 0
+	for _ in pairs(snapshot1) do itemCount = itemCount + 1 end
+
+	print(string.format("|cffff69b4DOKI|r Initial snapshot: %d buttons with items", itemCount))
+	-- Store as last snapshot
+	self.lastButtonSnapshot = snapshot1
+	-- Test surgical update (should show no changes)
+	local changes = self:ProcessSurgicalUpdate()
+	print(string.format("|cffff69b4DOKI|r Surgical update result: %d changes (should be 0)", changes))
+	-- Simulate item movement by clearing a random button from snapshot
+	local testButton = nil
+	for button, _ in pairs(snapshot1) do
+		testButton = button
+		break -- Just take the first one
+	end
+
+	if testButton then
+		print("|cffff69b4DOKI|r Simulating item removal...")
+		self.lastButtonSnapshot[testButton] = nil
+		-- Test surgical update again
+		local changes2 = self:ProcessSurgicalUpdate()
+		print(string.format("|cffff69b4DOKI|r After simulated change: %d changes detected", changes2))
+	else
+		print("|cffff69b4DOKI|r No buttons in snapshot to test with")
+	end
+
+	print("|cffff69b4DOKI|r === END SNAPSHOT COMPARISON TEST ===")
 end
