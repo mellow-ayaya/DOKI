@@ -1,4 +1,4 @@
--- DOKI Utils - War Within Complete Fix with Merchant Scroll Detection + Enhanced Delayed Cleanup + Ensemble Support
+-- DOKI Utils - War Within Complete Fix with Merchant Scroll Detection + Enhanced Delayed Cleanup + Ensemble Support (FACTION DETECTION REMOVED)
 local addonName, DOKI = ...
 -- Initialize storage
 DOKI.currentItems = DOKI.currentItems or {}
@@ -1171,7 +1171,8 @@ function DOKI:InitializeUniversalScanning()
 	self:SetupMinimalEventSystem()
 	self:FullItemScan()
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Enhanced surgical system initialized with ensemble + delayed cleanup scanning")
+		print(
+			"|cffff69b4DOKI|r Enhanced surgical system initialized with ensemble + delayed cleanup scanning (FACTION DETECTION REMOVED)")
 		print("  |cff00ff00•|r Regular updates: 0.2s interval")
 		print("  |cff00ff00•|r Clean events: Removed noisy COMPANION_UPDATE, etc.")
 		print("  |cff00ff00•|r Battlepet support: Caged pet detection")
@@ -1181,12 +1182,13 @@ function DOKI:InitializeUniversalScanning()
 		print("  |cff00ff00•|r |cffff8000NEW:|r Merchant scroll detection")
 		print("  |cff00ff00•|r |cffff8000NEW:|r OnMouseWheel + MERCHANT_UPDATE events")
 		print("  |cff00ff00•|r |cffff8000NEW:|r Delayed cleanup scan (0.2s) with auto-cancellation")
+		print("  |cff00ff00•|r |cffff8000REMOVED:|r Faction detection (unreliable)")
 		print(string.format("  |cff00ff00•|r Throttling: %.0fms minimum between updates",
 			self.surgicalUpdateThrottleTime * 1000))
 	end
 end
 
--- ===== ENHANCED ITEM DETECTION TRACING WITH TRANSMOG VALIDATION + ENSEMBLE SUPPORT =====
+-- ===== ENHANCED ITEM DETECTION TRACING WITH TRANSMOG VALIDATION + ENSEMBLE SUPPORT (FACTION DETECTION REMOVED) =====
 function DOKI:TraceItemDetection(itemID, itemLink)
 	if not itemID then
 		print("|cffff69b4DOKI|r No item ID provided")
@@ -1802,7 +1804,7 @@ function DOKI:IsTransmogCollectedSmart(itemID, itemLink)
 		return true, false -- Have this variant, no indicator needed
 	end
 
-	-- FIXED: Smart mode logic flow (from old implementation)
+	-- FIXED: Smart mode logic flow (faction detection removed)
 	-- We don't have this variant - check if we have equal or better sources
 	if itemAppearanceID then
 		local hasEqualOrBetterSources = self:HasEqualOrLessRestrictiveSources(itemAppearanceID, itemModifiedAppearanceID)
@@ -1834,14 +1836,13 @@ function DOKI:IsTransmogCollectedSmart(itemID, itemLink)
 	return false, false -- Default to show indicator
 end
 
--- Get class and faction restrictions for a specific source
+-- Get class restrictions for a specific source (FACTION DETECTION REMOVED)
 function DOKI:GetClassRestrictionsForSource(sourceID, appearanceID)
 	local restrictions = {
 		validClasses = {},
 		armorType = nil,
 		hasClassRestriction = false,
-		faction = nil, -- "Alliance", "Horde", or nil (both factions)
-		hasFactionRestriction = false,
+		-- REMOVED: faction and hasFactionRestriction fields
 	}
 	-- Get the item from the source
 	local linkedItemID = nil
@@ -1875,13 +1876,12 @@ function DOKI:GetClassRestrictionsForSource(sourceID, appearanceID)
 		restrictions.armorType = subClassID
 	end
 
-	-- FIXED: Enhanced tooltip parsing for class and faction restrictions (from old implementation)
+	-- Enhanced tooltip parsing for class restrictions only (FACTION DETECTION REMOVED)
 	local tooltip = CreateFrame("GameTooltip", "DOKIClassTooltip" .. sourceID, nil, "GameTooltipTemplate")
 	tooltip:SetOwner(UIParent, "ANCHOR_NONE")
 	tooltip:SetItemByID(linkedItemID)
 	tooltip:Show()
 	local foundClassRestriction = false
-	local foundFactionRestriction = false
 	local restrictedClasses = {}
 	for i = 1, tooltip:NumLines() do
 		local line = _G["DOKIClassTooltip" .. sourceID .. "TextLeft" .. i]
@@ -1921,34 +1921,7 @@ function DOKI:GetClassRestrictionsForSource(sourceID, appearanceID)
 					end
 				end
 
-				-- FIXED: Enhanced faction restrictions detection with expanded patterns (from old implementation)
-				local lowerText = string.lower(text)
-				if string.find(lowerText, "alliance") then
-					-- Look for various Alliance indicators
-					if string.find(lowerText, "require") or string.find(lowerText, "only") or
-							string.find(lowerText, "exclusive") or string.find(lowerText, "specific") or
-							string.find(lowerText, "reputation") or string.find(text, "Alliance") then
-						foundFactionRestriction = true
-						restrictions.faction = "Alliance"
-						restrictions.hasFactionRestriction = true
-						if self.db and self.db.debugMode then
-							print(string.format("|cffff69b4DOKI|r Found Alliance restriction for item %d: %s", linkedItemID, text))
-						end
-					end
-				elseif string.find(lowerText, "horde") then
-					-- Look for various Horde indicators
-					if string.find(lowerText, "require") or string.find(lowerText, "only") or
-							string.find(lowerText, "exclusive") or string.find(lowerText, "specific") or
-							string.find(lowerText, "reputation") or string.find(text, "Horde") then
-						foundFactionRestriction = true
-						restrictions.faction = "Horde"
-						restrictions.hasFactionRestriction = true
-						if self.db and self.db.debugMode then
-							print(string.format("|cffff69b4DOKI|r Found Horde restriction for item %d: %s", linkedItemID, text))
-						end
-					end
-				end
-
+				-- REMOVED: All faction detection code
 				-- Debug: log all tooltip lines if needed
 				if self.db and self.db.debugMode then
 					print(string.format("|cffff69b4DOKI|r Tooltip line for item %d: %s", linkedItemID, text))
@@ -1982,7 +1955,7 @@ function DOKI:GetClassRestrictionsForSource(sourceID, appearanceID)
 	return restrictions
 end
 
--- Check if we have sources with identical or less restrictive class AND faction sets
+-- Check if we have sources with identical or less restrictive class sets (FACTION LOGIC REMOVED)
 function DOKI:HasEqualOrLessRestrictiveSources(itemAppearanceID, excludeModifiedAppearanceID)
 	if not itemAppearanceID then return false end
 
@@ -1990,7 +1963,7 @@ function DOKI:HasEqualOrLessRestrictiveSources(itemAppearanceID, excludeModified
 	local success, allSources = pcall(C_TransmogCollection.GetAllAppearanceSources, itemAppearanceID)
 	if not success or not allSources then return false end
 
-	-- Get class and faction restrictions for the current item
+	-- Get class restrictions for the current item
 	local currentItemRestrictions = self:GetClassRestrictionsForSource(excludeModifiedAppearanceID, itemAppearanceID)
 	if not currentItemRestrictions then return false end
 
@@ -2004,79 +1977,49 @@ function DOKI:HasEqualOrLessRestrictiveSources(itemAppearanceID, excludeModified
 				if sourceRestrictions then
 					local sourceClassCount = #sourceRestrictions.validClasses
 					local currentClassCount = #currentItemRestrictions.validClasses
-					-- FIXED: Explicit faction comparison logic (from old implementation)
-					local factionEquivalent = false
-					-- For factions to be equivalent, they must be exactly the same
-					if sourceRestrictions.hasFactionRestriction == currentItemRestrictions.hasFactionRestriction then
-						if not sourceRestrictions.hasFactionRestriction then
-							-- Both have no faction restriction = equivalent
-							factionEquivalent = true
-						elseif sourceRestrictions.faction == currentItemRestrictions.faction then
-							-- Both have same faction restriction = equivalent
-							factionEquivalent = true
+					-- REMOVED: All faction comparison logic - now only compare class restrictions
+					-- Check if source is less restrictive in terms of classes
+					if sourceClassCount > currentClassCount then
+						if self.db and self.db.debugMode then
+							print(string.format(
+								"|cffff69b4DOKI|r Found less restrictive source %d (usable by %d classes vs %d)",
+								sourceID, sourceClassCount, currentClassCount))
 						end
 
-						-- If both have faction restrictions but different factions = not equivalent
+						return true
 					end
 
-					-- If one has faction restriction and other doesn't = not equivalent
-					-- Only compare class restrictions if faction restrictions are equivalent
-					if factionEquivalent then
-						-- Check if source is less restrictive in terms of classes
-						if sourceClassCount > currentClassCount then
+					-- Check if source has identical class restrictions
+					if sourceClassCount == currentClassCount then
+						-- Create sorted lists to compare classes
+						local sourceCopy = {}
+						local currentCopy = {}
+						for _, classID in ipairs(sourceRestrictions.validClasses) do
+							table.insert(sourceCopy, classID)
+						end
+
+						for _, classID in ipairs(currentItemRestrictions.validClasses) do
+							table.insert(currentCopy, classID)
+						end
+
+						table.sort(sourceCopy)
+						table.sort(currentCopy)
+						-- Check if they're identical
+						local identical = true
+						for i = 1, #sourceCopy do
+							if sourceCopy[i] ~= currentCopy[i] then
+								identical = false
+								break
+							end
+						end
+
+						if identical then
 							if self.db and self.db.debugMode then
-								print(string.format(
-									"|cffff69b4DOKI|r Found less restrictive source %d (usable by %d classes vs %d, same faction restrictions)",
-									sourceID, sourceClassCount, currentClassCount))
+								print(string.format("|cffff69b4DOKI|r Found identical restriction source %d (same classes: %s)",
+									sourceID, table.concat(sourceCopy, ", ")))
 							end
 
 							return true
-						end
-
-						-- Check if source has identical class restrictions
-						if sourceClassCount == currentClassCount then
-							-- Create sorted lists to compare classes
-							local sourceCopy = {}
-							local currentCopy = {}
-							for _, classID in ipairs(sourceRestrictions.validClasses) do
-								table.insert(sourceCopy, classID)
-							end
-
-							for _, classID in ipairs(currentItemRestrictions.validClasses) do
-								table.insert(currentCopy, classID)
-							end
-
-							table.sort(sourceCopy)
-							table.sort(currentCopy)
-							-- Check if they're identical
-							local identical = true
-							for i = 1, #sourceCopy do
-								if sourceCopy[i] ~= currentCopy[i] then
-									identical = false
-									break
-								end
-							end
-
-							if identical then
-								if self.db and self.db.debugMode then
-									local factionText = sourceRestrictions.hasFactionRestriction and
-											(" (same " .. sourceRestrictions.faction .. " restriction)") or " (no faction restriction)"
-									print(string.format("|cffff69b4DOKI|r Found identical restriction source %d (same classes: %s)%s",
-										sourceID, table.concat(sourceCopy, ", "), factionText))
-								end
-
-								return true
-							end
-						end
-					else
-						-- Different faction restrictions - sources are not equivalent, don't replace each other
-						if self.db and self.db.debugMode then
-							local currentFactionText = currentItemRestrictions.hasFactionRestriction and
-									currentItemRestrictions.faction or "none"
-							local sourceFactionText = sourceRestrictions.hasFactionRestriction and sourceRestrictions.faction or "none"
-							print(string.format(
-								"|cffff69b4DOKI|r Source %d has different faction restrictions (%s vs %s) - not equivalent",
-								sourceID, sourceFactionText, currentFactionText))
 						end
 					end
 				end
