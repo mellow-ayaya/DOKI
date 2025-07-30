@@ -1,8 +1,111 @@
--- DOKI Utils - Core Item Detection and Basic Utilities
+-- DOKI Utils - Core Item Detection and Basic Utilities (FIXED: Data Loading & Timing)
 local addonName, DOKI = ...
 -- Initialize core storage
 DOKI.currentItems = DOKI.currentItems or {}
 DOKI.textureCache = DOKI.textureCache or {}
+-- ADDED: Data loading retry system
+DOKI.pendingDataRequests = DOKI.pendingDataRequests or {}
+DOKI.dataLoadRetryTimer = nil
+-- ===== ENHANCED DATA LOADING SYSTEM =====
+function DOKI:RequestItemDataWithRetry(itemID, itemLink, callback, attempt)
+	if not itemID then return end
+
+	attempt = attempt or 1
+	local maxAttempts = 3
+	-- Create a unique key for this request
+	local requestKey = itemLink or tostring(itemID)
+	-- Don't duplicate requests
+	if self.pendingDataRequests[requestKey] then
+		return
+	end
+
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r Requesting data for item %d (attempt %d/%d)", itemID, attempt, maxAttempts))
+	end
+
+	-- Mark as pending
+	self.pendingDataRequests[requestKey] = true
+	-- Request the data
+	C_Item.RequestLoadItemDataByID(itemID)
+	if itemLink then
+		-- Also request transmog data if it's equipment
+		local _, _, _, _, _, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
+		if classID and (classID == 2 or classID == 4) then
+			C_TransmogCollection.GetItemInfo(itemLink)
+			C_TransmogCollection.GetItemInfo(itemID)
+		end
+	end
+
+	-- Schedule retry
+	C_Timer.After(0.5, function()
+		-- Clear pending flag
+		DOKI.pendingDataRequests[requestKey] = nil
+		-- Check if data is now available
+		local itemName = C_Item.GetItemInfo(itemID)
+		local hasBasicData = itemName ~= nil
+		local hasTransmogData = true
+		if itemLink then
+			local _, _, _, _, _, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
+			if classID and (classID == 2 or classID == 4) then
+				local _, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(itemLink)
+				hasTransmogData = itemModifiedAppearanceID ~= nil
+			end
+		end
+
+		if hasBasicData and hasTransmogData then
+			-- Data is ready, execute callback
+			if callback then
+				callback(itemID, itemLink)
+			end
+
+			if DOKI.db and DOKI.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r Data loaded successfully for item %d", itemID))
+			end
+		elseif attempt < maxAttempts then
+			-- Retry
+			if DOKI.db and DOKI.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r Retrying data load for item %d", itemID))
+			end
+
+			DOKI:RequestItemDataWithRetry(itemID, itemLink, callback, attempt + 1)
+		else
+			-- Give up after max attempts
+			if DOKI.db and DOKI.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r Failed to load data for item %d after %d attempts", itemID, maxAttempts))
+			end
+		end
+	end)
+end
+
+-- ADDED: Schedule a delayed full rescan to catch items that failed to load initially
+function DOKI:ScheduleDelayedFullRescan()
+	if self.delayedRescanTimer then
+		self.delayedRescanTimer:Cancel()
+	end
+
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Scheduling delayed full rescan in 2 seconds...")
+	end
+
+	self.delayedRescanTimer = C_Timer.NewTimer(2.0, function()
+		if DOKI.db and DOKI.db.enabled then
+			if DOKI.db and DOKI.db.debugMode then
+				print("|cffff69b4DOKI|r Running delayed full rescan to catch missed items...")
+			end
+
+			-- Clear cache to force fresh checks
+			DOKI:ClearCollectionCache()
+			-- Do a full scan
+			local count = DOKI:FullItemScan()
+			if DOKI.db and DOKI.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r Delayed rescan complete: %d indicators", count))
+			end
+		end
+
+		DOKI.delayedRescanTimer = nil
+	end)
+end
+
 -- ===== UTILITY FUNCTIONS =====
 function DOKI:GetItemID(itemLink)
 	if not itemLink then return nil end
@@ -30,7 +133,7 @@ function DOKI:IsElvUIBagVisible()
 end
 
 -- ===== CORE ITEM DETECTION =====
--- FIXED: Enhanced collectible item detection with caged pets, ensembles, and offhand support
+-- FIXED: Enhanced collectible item detection with better data loading
 function DOKI:IsCollectibleItem(itemID, itemLink)
 	-- ADDED: Check for ensembles first
 	if self:IsEnsembleItem(itemID) then
@@ -45,7 +148,20 @@ function DOKI:IsCollectibleItem(itemID, itemLink)
 	if not itemID then return false end
 
 	local _, itemType, itemSubType, itemEquipLoc, icon, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
-	if not classID or not subClassID then return false end
+	if not classID or not subClassID then
+		-- Request data and return false for now (don't assume collectible without data)
+		self:RequestItemDataWithRetry(itemID, itemLink, function(loadedItemID, loadedItemLink)
+			-- When data loads, trigger a rescan if UI is visible
+			if DOKI.db and DOKI.db.enabled then
+				C_Timer.After(0.1, function()
+					if DOKI.TriggerImmediateSurgicalUpdate then
+						DOKI:TriggerImmediateSurgicalUpdate()
+					end
+				end)
+			end
+		end)
+		return false -- Not collectible until we know what it is
+	end
 
 	-- Mount items (class 15, subclass 5)
 	if classID == 15 and subClassID == 5 then return true end
@@ -63,6 +179,20 @@ function DOKI:IsCollectibleItem(itemID, itemLink)
 			if itemEquipLoc == "INVTYPE_HOLDABLE" then
 				-- Use the transmog API to check if this offhand is actually transmoggable
 				local itemAppearanceID, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(itemID)
+				if not itemModifiedAppearanceID then
+					-- Data not loaded yet - request it and assume not collectible for now
+					self:RequestItemDataWithRetry(itemID, itemLink, function(loadedItemID, loadedItemLink)
+						if DOKI.db and DOKI.db.enabled then
+							C_Timer.After(0.1, function()
+								if DOKI.TriggerImmediateSurgicalUpdate then
+									DOKI:TriggerImmediateSurgicalUpdate()
+								end
+							end)
+						end
+					end)
+					return false -- Not collectible until we know
+				end
+
 				return itemAppearanceID ~= nil and itemModifiedAppearanceID ~= nil
 			end
 
@@ -103,7 +233,7 @@ function DOKI:IsPetSpeciesCollected(speciesID)
 end
 
 -- ===== CORE COLLECTION DETECTION =====
--- WAR WITHIN FIXED: Enhanced collection detection with caged pets, ensembles, purple indicators, and corrected APIs
+-- FIXED: Enhanced collection detection with proper data loading and no premature caching
 function DOKI:IsItemCollected(itemID, itemLink)
 	if not itemID and not itemLink then return false, false, false end
 
@@ -165,9 +295,18 @@ function DOKI:IsItemCollected(itemID, itemLink)
 
 	local _, itemType, itemSubType, itemEquipLoc, icon, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
 	if not classID or not subClassID then
-		-- Cache negative result briefly
-		self:SetCachedCollectionStatus(itemID, itemLink, false, false, false)
-		return false, false, false
+		-- Request data and return "collected" temporarily to avoid false positives
+		self:RequestItemDataWithRetry(itemID, itemLink, function(loadedItemID, loadedItemLink)
+			-- When data loads, trigger a rescan
+			if DOKI.db and DOKI.db.enabled then
+				C_Timer.After(0.1, function()
+					if DOKI.TriggerImmediateSurgicalUpdate then
+						DOKI:TriggerImmediateSurgicalUpdate()
+					end
+				end)
+			end
+		end)
+		return true, false, false -- Treat as "collected" temporarily
 	end
 
 	local isCollected, showYellowD, showPurple = false, false, false
@@ -197,21 +336,32 @@ function DOKI:IsItemCollected(itemID, itemLink)
 		showPurple = false -- Transmog items don't use purple indicators (that's only for ATT fractional)
 	end
 
-	-- Cache the result
-	self:SetCachedCollectionStatus(itemID, itemLink, isCollected, showYellowD, showPurple)
+	-- FIXED: Only cache the result if we got valid data
+	if classID and subClassID then
+		self:SetCachedCollectionStatus(itemID, itemLink, isCollected, showYellowD, showPurple)
+	end
+
 	return isCollected, showYellowD, showPurple
 end
 
--- WAR WITHIN FIXED: Use the correct GetMountFromItem API
+-- FIXED: Enhanced mount collection with proper data loading fallback
 function DOKI:IsMountCollectedWarWithin(itemID)
 	if not itemID or not C_MountJournal then return false end
 
-	-- FIXED: Use the proper War Within API - GetMountFromItem
+	-- Use the proper War Within API - GetMountFromItem
 	local mountID = C_MountJournal.GetMountFromItem(itemID)
 	if not mountID then
-		-- Item might not be loaded yet, or not a mount item
-		C_Item.RequestLoadItemDataByID(itemID)
-		return false
+		-- Data not loaded yet - request it and return true temporarily to avoid false indicators
+		self:RequestItemDataWithRetry(itemID, nil, function(loadedItemID, loadedItemLink)
+			if DOKI.db and DOKI.db.enabled then
+				C_Timer.After(0.1, function()
+					if DOKI.TriggerImmediateSurgicalUpdate then
+						DOKI:TriggerImmediateSurgicalUpdate()
+					end
+				end)
+			end
+		end)
+		return true -- Treat as collected temporarily
 	end
 
 	-- Get mount info using the mount ID
@@ -221,7 +371,7 @@ function DOKI:IsMountCollectedWarWithin(itemID)
 	return isCollected or false
 end
 
--- WAR WITHIN FIXED: Proper pet detection using current journal API
+-- FIXED: Enhanced pet collection with proper data loading fallback
 function DOKI:IsPetCollectedWarWithin(itemID)
 	if not itemID or not C_PetJournal then return false end
 
@@ -229,9 +379,17 @@ function DOKI:IsPetCollectedWarWithin(itemID)
 	local name, icon, petType, creatureID, sourceText, description, isWild, canBattle,
 	isTradeable, isUnique, obtainable, displayID, speciesID = C_PetJournal.GetPetInfoByItemID(itemID)
 	if not speciesID then
-		-- Pet data not loaded yet
-		C_Item.RequestLoadItemDataByID(itemID)
-		return false
+		-- Data not loaded yet - request it and return true temporarily to avoid false indicators
+		self:RequestItemDataWithRetry(itemID, nil, function(loadedItemID, loadedItemLink)
+			if DOKI.db and DOKI.db.enabled then
+				C_Timer.After(0.1, function()
+					if DOKI.TriggerImmediateSurgicalUpdate then
+						DOKI:TriggerImmediateSurgicalUpdate()
+					end
+				end)
+			end
+		end)
+		return true -- Treat as collected temporarily
 	end
 
 	-- Check if we have any of this pet species
@@ -240,7 +398,7 @@ function DOKI:IsPetCollectedWarWithin(itemID)
 end
 
 -- ===== TRANSMOG DETECTION =====
--- FIXED: Enhanced transmog collection detection with proper data loading
+-- FIXED: Enhanced transmog collection detection with proper data loading and no premature caching
 function DOKI:IsTransmogCollected(itemID, itemLink)
 	if not itemID or not C_TransmogCollection then return false, false end
 
@@ -253,13 +411,13 @@ function DOKI:IsTransmogCollected(itemID, itemLink)
 		itemAppearanceID, itemModifiedAppearanceID = C_TransmogCollection.GetItemInfo(itemID)
 	end
 
-	-- FIXED: Handle missing transmog data properly
+	-- FIXED: Handle missing transmog data without premature caching
 	if not itemModifiedAppearanceID then
 		-- Check if the item can actually be transmogged before assuming it's collectible
 		if C_Transmog and C_Transmog.GetItemInfo then
 			local canBeChanged, noChangeReason, canBeSource, noSourceReason = C_Transmog.GetItemInfo(itemID)
 			-- If the item cannot be a transmog source, it's not actually collectible
-			if not canBeSource then
+			if canBeSource == false then -- Explicit false check
 				if self.db and self.db.debugMode then
 					print(string.format("|cffff69b4DOKI|r Item %d cannot be transmog source: %s",
 						itemID, noSourceReason or "unknown reason"))
@@ -269,19 +427,24 @@ function DOKI:IsTransmogCollected(itemID, itemLink)
 			end
 		end
 
-		-- Request transmog collection data to be loaded
-		C_TransmogCollection.GetItemInfo(itemID)  -- This triggers the cache loading
-		if itemLink then
-			C_TransmogCollection.GetItemInfo(itemLink) -- Try with link too
-		end
-
+		-- Request data with retry system
+		self:RequestItemDataWithRetry(itemID, itemLink, function(loadedItemID, loadedItemLink)
+			-- When data loads, trigger a rescan
+			if DOKI.db and DOKI.db.enabled then
+				C_Timer.After(0.1, function()
+					if DOKI.TriggerImmediateSurgicalUpdate then
+						DOKI:TriggerImmediateSurgicalUpdate()
+					end
+				end)
+			end
+		end)
 		if self.db and self.db.debugMode then
 			print(string.format("|cffff69b4DOKI|r Transmog data not loaded for item %d, requesting...", itemID))
 		end
 
-		-- Return "unknown" state - don't show indicator until we know for sure
-		-- This prevents false positives on non-transmoggable items
-		return true, false -- Treat as "collected" temporarily to avoid false indicators
+		-- REVERTED: Return "collected" temporarily to avoid false positives
+		-- This prevents showing indicators on items that might actually be collected
+		return true, false -- Treat as "collected" until we know for sure
 	end
 
 	local hasThisVariant = C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance(itemModifiedAppearanceID)
@@ -318,7 +481,7 @@ function DOKI:IsTransmogCollectedSmart(itemID, itemLink)
 		if C_Transmog and C_Transmog.GetItemInfo then
 			local canBeChanged, noChangeReason, canBeSource, noSourceReason = C_Transmog.GetItemInfo(itemID)
 			-- If the item cannot be a transmog source, it's not actually collectible
-			if not canBeSource then
+			if canBeSource == false then -- Explicit false check
 				if self.db and self.db.debugMode then
 					print(string.format("|cffff69b4DOKI|r Smart mode: Item %d cannot be transmog source: %s",
 						itemID, noSourceReason or "unknown reason"))
@@ -328,18 +491,22 @@ function DOKI:IsTransmogCollectedSmart(itemID, itemLink)
 			end
 		end
 
-		-- Request transmog collection data to be loaded
-		C_TransmogCollection.GetItemInfo(itemID)
-		if itemLink then
-			C_TransmogCollection.GetItemInfo(itemLink)
-		end
-
+		-- Request data with retry system
+		self:RequestItemDataWithRetry(itemID, itemLink, function(loadedItemID, loadedItemLink)
+			if DOKI.db and DOKI.db.enabled then
+				C_Timer.After(0.1, function()
+					if DOKI.TriggerImmediateSurgicalUpdate then
+						DOKI:TriggerImmediateSurgicalUpdate()
+					end
+				end)
+			end
+		end)
 		if self.db and self.db.debugMode then
 			print(string.format("|cffff69b4DOKI|r Smart mode: Transmog data not loaded for item %d, requesting...", itemID))
 		end
 
-		-- Return "unknown" state - don't show indicator until we know for sure
-		return true, false -- Treat as "collected" temporarily
+		-- REVERTED: Return "collected" temporarily to avoid false positives
+		return true, false -- Treat as "collected" until we know for sure
 	end
 
 	-- Check if we have this specific variant
@@ -842,6 +1009,18 @@ function DOKI:ForceUniversalScan()
 	end
 
 	return self:FullItemScan()
+end
+
+-- ADDED: Force cleanup of empty slots (for rapid selling issues)
+function DOKI:ForceCleanupEmptySlots()
+	if self.ForceCleanEmptySlots then
+		local cleaned = self:ForceCleanEmptySlots()
+		print(string.format("|cffff69b4DOKI|r Force cleaned %d indicators from empty slots", cleaned))
+		return cleaned
+	else
+		print("|cffff69b4DOKI|r Force cleanup function not available")
+		return 0
+	end
 end
 
 -- ===== LEGACY COMPATIBILITY =====

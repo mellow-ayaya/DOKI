@@ -1,4 +1,4 @@
--- DOKI Collections - Cache Management, ATT Support, Ensemble Detection, Surgical Updates
+-- DOKI Collections - FIXED: Surgical Updates, Empty Slot Detection, and Merchant Selling
 local addonName, DOKI = ...
 -- Initialize collection-specific storage
 DOKI.foundFramesThisScan = {}
@@ -16,7 +16,7 @@ DOKI.merchantScrollDetector = {
 }
 -- Enhanced surgical update throttling with delayed cleanup
 DOKI.lastSurgicalUpdate = 0
-DOKI.surgicalUpdateThrottleTime = 0.05 -- 50ms minimum between updates
+DOKI.surgicalUpdateThrottleTime = 0.1 -- INCREASED: 100ms minimum between updates for rapid selling
 DOKI.pendingSurgicalUpdate = false
 -- Enhanced scanning system variables
 DOKI.delayedScanTimer = nil       -- Timer for delayed secondary scan
@@ -899,7 +899,7 @@ function DOKI:TriggerImmediateSurgicalUpdate()
 	end
 end
 
--- Full scan for initial setup with delay for battlepets
+-- FIXED: Enhanced full scan with delayed rescan scheduling
 function DOKI:FullItemScan(withDelay)
 	if not self.db or not self.db.enabled then return 0 end
 
@@ -930,6 +930,11 @@ function DOKI:FullItemScan(withDelay)
 
 	local scanDuration = GetTime() - startTime
 	self:TrackUpdatePerformance(scanDuration, false)
+	-- ADDED: Schedule delayed rescan to catch items that may have failed to load
+	if indicatorCount > 0 or self.foundFramesThisScan and #self.foundFramesThisScan > 0 then
+		self:ScheduleDelayedFullRescan()
+	end
+
 	if self.db.debugMode then
 		print(string.format("|cffff69b4DOKI|r Full scan: %d indicators in %.3fs",
 			indicatorCount, scanDuration))
@@ -1256,7 +1261,7 @@ function DOKI:CleanupMerchantTextures()
 	return removedCount
 end
 
--- ===== ENHANCED WAR WITHIN EVENT SYSTEM WITH DELAYED SCAN CANCELLATION =====
+-- ===== ENHANCED WAR WITHIN EVENT SYSTEM WITH BETTER MERCHANT SELLING DETECTION =====
 function DOKI:SetupMinimalEventSystem()
 	if self.eventFrame then
 		self.eventFrame:UnregisterAllEvents()
@@ -1277,11 +1282,14 @@ function DOKI:SetupMinimalEventSystem()
 		"ITEM_LOCK_CHANGED",
 		"CURSOR_CHANGED",
 		-- WAR WITHIN COLLECTION EVENTS (removed noisy ones)
-		"PET_JOURNAL_LIST_UPDATE",   -- Main pet event (confirmed working)
-		"COMPANION_LEARNED",         -- Mount/pet learning (confirmed in Blizzard code)
-		"COMPANION_UNLEARNED",       -- Mount/pet unlearning (confirmed in Blizzard code)
-		"TRANSMOG_COLLECTION_UPDATED", -- When transmog is collected
-		"TOYS_UPDATED",              -- When toys are learned
+		"PET_JOURNAL_LIST_UPDATE",            -- Main pet event (confirmed working)
+		"COMPANION_LEARNED",                  -- Mount/pet learning (confirmed in Blizzard code)
+		"COMPANION_UNLEARNED",                -- Mount/pet unlearning (confirmed in Blizzard code)
+		"TRANSMOG_COLLECTION_UPDATED",        -- When transmog is collected
+		"TOYS_UPDATED",                       -- When toys are learned
+		-- ADDED: Enhanced merchant selling detection
+		"MERCHANT_CONFIRM_TRADE_TIMER_REMOVAL", -- When selling items
+		"UI_INFO_MESSAGE",                    -- For sell confirmations
 	}
 	for _, event in ipairs(events) do
 		self.eventFrame:RegisterEvent(event)
@@ -1341,6 +1349,18 @@ function DOKI:SetupMinimalEventSystem()
 					DOKI:TriggerImmediateSurgicalUpdate()
 				end
 			end)
+		elseif event == "MERCHANT_CONFIRM_TRADE_TIMER_REMOVAL" or event == "UI_INFO_MESSAGE" then
+			-- ADDED: Enhanced detection for merchant selling
+			if DOKI.db and DOKI.db.debugMode then
+				print("|cffff69b4DOKI|r Merchant sell event detected - forcing update")
+			end
+
+			cancelDelayedScan = false
+			C_Timer.After(0.05, function()
+				if DOKI.db and DOKI.db.enabled then
+					DOKI:TriggerImmediateSurgicalUpdate()
+				end
+			end)
 		elseif event == "PET_JOURNAL_LIST_UPDATE" or
 				event == "COMPANION_LEARNED" or event == "COMPANION_UNLEARNED" then
 			-- Collection changed - clear cache and FORCE FULL SCAN WITH DELAY for battlepets
@@ -1394,7 +1414,7 @@ function DOKI:SetupMinimalEventSystem()
 		end
 	end)
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Enhanced event system initialized with delayed cleanup scanning")
+		print("|cffff69b4DOKI|r Enhanced event system initialized with merchant selling detection")
 	end
 end
 
@@ -1437,18 +1457,15 @@ function DOKI:InitializeUniversalScanning()
 	self:FullItemScan()
 	if self.db and self.db.debugMode then
 		print(
-			"|cffff69b4DOKI|r Enhanced surgical system initialized with ensemble + delayed cleanup scanning + PURPLE indicators (FACTION DETECTION REMOVED)")
+			"|cffff69b4DOKI|r Enhanced surgical system initialized with ensemble + delayed cleanup scanning + merchant selling detection")
 		print("  |cff00ff00•|r Regular updates: 0.2s interval")
 		print("  |cff00ff00•|r Clean events: Removed noisy COMPANION_UPDATE, etc.")
 		print("  |cff00ff00•|r Battlepet support: Caged pet detection")
 		print("  |cff00ff00•|r Timing fix: Delays for battlepet caging")
-		print("  |cff00ff00•|r |cffff8000NEW:|r Ensemble support: Locale-aware detection + color-based collection status")
-		print("  |cff00ff00•|r |cffff8000NEW:|r Ensemble tooltips: Collection status parsing")
-		print("  |cff00ff00•|r |cffff8000NEW:|r Merchant scroll detection")
-		print("  |cff00ff00•|r |cffff8000NEW:|r OnMouseWheel + MERCHANT_UPDATE events")
-		print("  |cff00ff00•|r |cffff8000NEW:|r Delayed cleanup scan (0.2s) with auto-cancellation")
-		print("  |cff00ff00•|r |cffff8000NEW:|r PURPLE indicators for fractional items")
-		print("  |cff00ff00•|r |cffff8000REMOVED:|r Faction detection (unreliable)")
+		print("  |cff00ff00•|r |cffff8000NEW:|r Enhanced empty slot detection")
+		print("  |cff00ff00•|r |cffff8000NEW:|r Merchant selling event detection")
+		print("  |cff00ff00•|r |cffff8000NEW:|r Data loading retry system")
+		print("  |cff00ff00•|r |cffff8000NEW:|r Delayed full rescan for failed loads")
 		print(string.format("  |cff00ff00•|r Throttling: %.0fms minimum between updates",
 			self.surgicalUpdateThrottleTime * 1000))
 	end

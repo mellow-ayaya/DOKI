@@ -1,10 +1,10 @@
--- DOKI Button Texture System - Complete War Within Fix with Battlepet Support + Enhanced Delayed Cleanup + Ensemble Support
+-- DOKI Button Texture System - FIXED: Empty Slot Detection, Surgical Updates, Merchant Selling
 local addonName, DOKI = ...
 -- Storage
 DOKI.buttonTextures = {}
 DOKI.texturePool = {}
 DOKI.indicatorTexturePath = "Interface\\AddOns\\DOKI\\Media\\uncollected"
--- FIXED: Enhanced surgical update tracking for battlepets, ensembles, and merchant
+-- FIXED: Enhanced surgical update tracking for proper empty slot detection
 DOKI.lastButtonSnapshot = {}
 DOKI.buttonItemMap = {}
 -- ===== TEXTURE CREATION =====
@@ -147,16 +147,27 @@ function DOKI:ReleaseButtonTexture(button)
 	table.insert(self.texturePool, textureData)
 end
 
--- ===== ENHANCED SNAPSHOT SYSTEM FOR BATTLEPETS + ENSEMBLES + MERCHANT =====
+-- ===== ENHANCED SNAPSHOT SYSTEM WITH PROPER EMPTY SLOT DETECTION =====
 function DOKI:CreateButtonSnapshot()
 	local snapshot = {}
-	-- FIXED: Store both itemID and itemLink for battlepet + ensemble support
+	-- FIXED: Enhanced function to add items to snapshot with better empty slot tracking
 	local function addToSnapshot(button, itemID, itemLink)
-		if button and itemID then
-			snapshot[button] = {
-				itemID = itemID,
-				itemLink = itemLink,
-			}
+		if button then
+			if itemID and itemID ~= "EMPTY_SLOT" then
+				snapshot[button] = {
+					itemID = itemID,
+					itemLink = itemLink,
+					hasItem = true,
+				}
+			else
+				-- FIXED: Track empty slots explicitly
+				snapshot[button] = {
+					itemID = nil,
+					itemLink = nil,
+					hasItem = false,
+					isEmpty = true,
+				}
+			end
 		end
 	end
 
@@ -167,18 +178,22 @@ function DOKI:CreateButtonSnapshot()
 			if numSlots and numSlots > 0 then
 				for slotID = 1, numSlots do
 					local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
-					if itemInfo and itemInfo.itemID then
-						local possibleNames = {
-							string.format("ElvUI_ContainerFrameBag%dSlot%dHash", bagID, slotID),
-							string.format("ElvUI_ContainerFrameBag%dSlot%d", bagID, slotID),
-							string.format("ElvUI_ContainerFrameBag%dSlot%dCenter", bagID, slotID),
-						}
-						for _, buttonName in ipairs(possibleNames) do
-							local button = _G[buttonName]
-							if button and button:IsVisible() then
+					local possibleNames = {
+						string.format("ElvUI_ContainerFrameBag%dSlot%dHash", bagID, slotID),
+						string.format("ElvUI_ContainerFrameBag%dSlot%d", bagID, slotID),
+						string.format("ElvUI_ContainerFrameBag%dSlot%dCenter", bagID, slotID),
+					}
+					for _, buttonName in ipairs(possibleNames) do
+						local button = _G[buttonName]
+						if button and button:IsVisible() then
+							if itemInfo and itemInfo.itemID then
 								addToSnapshot(button, itemInfo.itemID, itemInfo.hyperlink)
-								break
+							else
+								-- FIXED: Track empty bag slots
+								addToSnapshot(button, nil, nil)
 							end
+
+							break
 						end
 					end
 				end
@@ -193,31 +208,34 @@ function DOKI:CreateButtonSnapshot()
 			if numSlots and numSlots > 0 then
 				for slotID = 1, numSlots do
 					local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
-					if itemInfo and itemInfo.itemID then
-						-- Find matching button
-						local button = nil
-						if ContainerFrameCombinedBags.EnumerateValidItems then
-							for _, itemButton in ContainerFrameCombinedBags:EnumerateValidItems() do
-								if itemButton and itemButton:IsVisible() then
-									local buttonBagID, buttonSlotID = nil, nil
-									if itemButton.GetBagID and itemButton.GetID then
-										local success1, bID = pcall(itemButton.GetBagID, itemButton)
-										local success2, sID = pcall(itemButton.GetID, itemButton)
-										if success1 and success2 then
-											buttonBagID, buttonSlotID = bID, sID
-										end
+					-- Find matching button
+					local button = nil
+					if ContainerFrameCombinedBags.EnumerateValidItems then
+						for _, itemButton in ContainerFrameCombinedBags:EnumerateValidItems() do
+							if itemButton and itemButton:IsVisible() then
+								local buttonBagID, buttonSlotID = nil, nil
+								if itemButton.GetBagID and itemButton.GetID then
+									local success1, bID = pcall(itemButton.GetBagID, itemButton)
+									local success2, sID = pcall(itemButton.GetID, itemButton)
+									if success1 and success2 then
+										buttonBagID, buttonSlotID = bID, sID
 									end
+								end
 
-									if buttonBagID == bagID and buttonSlotID == slotID then
-										button = itemButton
-										break
-									end
+								if buttonBagID == bagID and buttonSlotID == slotID then
+									button = itemButton
+									break
 								end
 							end
 						end
+					end
 
-						if button then
+					if button then
+						if itemInfo and itemInfo.itemID then
 							addToSnapshot(button, itemInfo.itemID, itemInfo.hyperlink)
+						else
+							-- FIXED: Track empty bag slots in combined bags
+							addToSnapshot(button, nil, nil)
 						end
 					end
 				end
@@ -233,17 +251,21 @@ function DOKI:CreateButtonSnapshot()
 			if numSlots and numSlots > 0 then
 				for slotID = 1, numSlots do
 					local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
-					if itemInfo and itemInfo.itemID then
-						local possibleNames = {
-							string.format("ContainerFrame%dItem%d", bagID + 1, slotID),
-							string.format("ContainerFrame%dItem%dButton", bagID + 1, slotID),
-						}
-						for _, buttonName in ipairs(possibleNames) do
-							local button = _G[buttonName]
-							if button and button:IsVisible() then
+					local possibleNames = {
+						string.format("ContainerFrame%dItem%d", bagID + 1, slotID),
+						string.format("ContainerFrame%dItem%dButton", bagID + 1, slotID),
+					}
+					for _, buttonName in ipairs(possibleNames) do
+						local button = _G[buttonName]
+						if button and button:IsVisible() then
+							if itemInfo and itemInfo.itemID then
 								addToSnapshot(button, itemInfo.itemID, itemInfo.hyperlink)
-								break
+							else
+								-- FIXED: Track empty bag slots in individual containers
+								addToSnapshot(button, nil, nil)
 							end
+
+							break
 						end
 					end
 				end
@@ -251,7 +273,7 @@ function DOKI:CreateButtonSnapshot()
 		end
 	end
 
-	-- ENHANCED: Merchant buttons - get items directly from visible buttons
+	-- ENHANCED: Merchant buttons with proper empty slot detection
 	if MerchantFrame and MerchantFrame:IsVisible() then
 		-- Scan only the visible merchant button slots
 		for i = 1, 12 do -- Check up to 12 merchant slots
@@ -264,17 +286,11 @@ function DOKI:CreateButtonSnapshot()
 				if button and button:IsVisible() then
 					-- Try to get item info directly from the button
 					local itemID, itemLink = self:GetItemFromMerchantButton(button, i)
-					if itemID then
-						if itemID == "EMPTY_SLOT" then
-							-- Add empty slot to snapshot so surgical update can detect when buttons lose items
-							snapshot[button] = {
-								itemID = nil,
-								itemLink = nil,
-								isEmpty = true,
-							}
-						else
-							addToSnapshot(button, itemID, itemLink)
-						end
+					if itemID == "EMPTY_SLOT" or not itemID then
+						-- FIXED: Properly track empty merchant slots
+						addToSnapshot(button, nil, nil)
+					else
+						addToSnapshot(button, itemID, itemLink)
 					end
 
 					break
@@ -286,7 +302,7 @@ function DOKI:CreateButtonSnapshot()
 	return snapshot
 end
 
--- ===== ENHANCED SURGICAL UPDATE PROCESSING FOR BATTLEPETS + ENSEMBLES + MERCHANT + DELAYED CLEANUP =====
+-- ===== ENHANCED SURGICAL UPDATE PROCESSING WITH RAPID-SALE SAFEGUARDS =====
 function DOKI:ProcessSurgicalUpdate()
 	local currentSnapshot = self:CreateButtonSnapshot()
 	local changes = {
@@ -294,111 +310,109 @@ function DOKI:ProcessSurgicalUpdate()
 		added = {},
 		changed = {},
 	}
-	-- FIXED: Enhanced comparison that handles both itemID and itemLink (for battlepets + ensembles) and empty slots
-	local function itemsEqual(oldItem, newItem)
-		if not oldItem and not newItem then return true end
-
-		if not oldItem or not newItem then return false end
-
-		-- Handle empty slots
-		if oldItem.isEmpty and newItem.isEmpty then return true end
-
-		if oldItem.isEmpty or newItem.isEmpty then return false end
-
-		-- Compare itemIDs
-		if oldItem.itemID ~= newItem.itemID then return false end
-
-		-- For battlepets, also compare itemLinks (since same itemID can have different species)
-		if oldItem.itemLink and newItem.itemLink then
-			if string.find(oldItem.itemLink, "battlepet:") or string.find(newItem.itemLink, "battlepet:") then
-				return oldItem.itemLink == newItem.itemLink
+	-- ADDED: Force cleanup of any indicators on empty slots before comparison
+	local cleanedIndicators = 0
+	for button, textureData in pairs(self.buttonTextures or {}) do
+		if textureData.isActive then
+			-- Check if this button is now empty in current snapshot
+			local currentButtonData = currentSnapshot[button]
+			if currentButtonData and currentButtonData.isEmpty then
+				if self:RemoveButtonIndicator(button) then
+					cleanedIndicators = cleanedIndicators + 1
+					if self.db and self.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r Force cleaned indicator from empty slot"))
+					end
+				end
 			end
 		end
-
-		return true
 	end
 
-	-- Find buttons that lost items or changed items
+	-- FIXED: Enhanced comparison that properly handles empty slots and item changes
+	local function itemsEqual(oldItem, newItem)
+		-- Both nil/empty
+		if not oldItem and not newItem then return true end
+
+		-- One nil, one not
+		if not oldItem or not newItem then return false end
+
+		-- Both marked as empty
+		if oldItem.isEmpty and newItem.isEmpty then return true end
+
+		-- One empty, one not
+		if oldItem.isEmpty ~= newItem.isEmpty then return false end
+
+		-- Both have items - compare them
+		if oldItem.hasItem and newItem.hasItem then
+			-- Different item IDs
+			if oldItem.itemID ~= newItem.itemID then return false end
+
+			-- For battlepets, also compare itemLinks (since same itemID can have different species)
+			if oldItem.itemLink and newItem.itemLink then
+				if string.find(oldItem.itemLink, "battlepet:") or string.find(newItem.itemLink, "battlepet:") then
+					return oldItem.itemLink == newItem.itemLink
+				end
+			end
+
+			return true
+		end
+
+		-- One has item, one doesn't
+		return oldItem.hasItem == newItem.hasItem
+	end
+
+	-- FIXED: Better detection of buttons that lost items or changed items
 	for button, oldItemData in pairs(self.lastButtonSnapshot or {}) do
 		local newItemData = currentSnapshot[button]
 		if not newItemData then
+			-- Button disappeared entirely
 			table.insert(changes.removed, { button = button, oldItemData = oldItemData })
 		elseif not itemsEqual(oldItemData, newItemData) then
+			-- Button content changed
 			table.insert(changes.changed, { button = button, oldItemData = oldItemData, newItemData = newItemData })
 		end
 	end
 
-	-- Find buttons that gained items
+	-- FIXED: Better detection of buttons that gained items
 	for button, newItemData in pairs(currentSnapshot) do
 		local oldItemData = self.lastButtonSnapshot and self.lastButtonSnapshot[button]
 		if not oldItemData then
+			-- New button appeared
 			table.insert(changes.added, { button = button, newItemData = newItemData })
 		end
 	end
 
 	-- Apply surgical updates
 	local updateCount = 0
-	-- Remove indicators from buttons that lost items
+	-- Remove indicators from buttons that lost items or became empty
 	for _, change in ipairs(changes.removed) do
-		self:RemoveButtonIndicator(change.button)
-		updateCount = updateCount + 1
-		if self.db and self.db.debugMode then
-			local extraInfo = ""
-			if change.oldItemData.itemLink and string.find(change.oldItemData.itemLink, "battlepet:") then
-				extraInfo = " (battlepet)"
-			elseif change.oldItemData.itemID and self:IsEnsembleItem(change.oldItemData.itemID) then
-				extraInfo = " (ensemble)"
+		if self:RemoveButtonIndicator(change.button) then
+			updateCount = updateCount + 1
+			if self.db and self.db.debugMode then
+				local extraInfo = self:GetItemDebugInfo(change.oldItemData)
+				print(string.format("|cffff69b4DOKI|r Removed indicator: button lost item %s%s",
+					tostring(change.oldItemData.itemID or "unknown"), extraInfo))
 			end
-
-			-- Check if this was a merchant button
-			local buttonName = ""
-			local success, name = pcall(change.button.GetName, change.button)
-			if success and name and string.find(name, "Merchant") then
-				extraInfo = extraInfo .. " (merchant)"
-			end
-
-			local itemID = change.oldItemData.itemID or "unknown"
-			print(string.format("|cffff69b4DOKI|r Removed indicator: button lost item %s%s",
-				tostring(itemID), extraInfo))
 		end
 	end
 
 	-- Update buttons that changed items
 	for _, change in ipairs(changes.changed) do
+		-- Always remove old indicator first
 		self:RemoveButtonIndicator(change.button)
-		-- Only add new indicator if the new item is not empty and not collected
-		if not change.newItemData.isEmpty then
+		-- Only add new indicator if the new item exists and needs an indicator
+		if change.newItemData.hasItem and not change.newItemData.isEmpty then
 			local itemData = self:GetItemDataForSurgicalUpdate(change.newItemData.itemID, change.newItemData.itemLink)
-			if itemData and not itemData.isCollected then
-				self:AddButtonIndicator(change.button, itemData)
+			if itemData and (not itemData.isCollected or itemData.showPurple) then
+				if self:AddButtonIndicator(change.button, itemData) then
+					updateCount = updateCount + 1
+				end
 			end
 		end
 
-		updateCount = updateCount + 1
 		if self.db and self.db.debugMode then
-			local oldExtra = ""
-			local newExtra = ""
-			if change.oldItemData.itemLink and string.find(change.oldItemData.itemLink, "battlepet:") then
-				oldExtra = " (battlepet)"
-			elseif change.oldItemData.itemID and self:IsEnsembleItem(change.oldItemData.itemID) then
-				oldExtra = " (ensemble)"
-			end
-
-			if change.newItemData.itemLink and string.find(change.newItemData.itemLink, "battlepet:") then
-				newExtra = " (battlepet)"
-			elseif change.newItemData.itemID and self:IsEnsembleItem(change.newItemData.itemID) then
-				newExtra = " (ensemble)"
-			end
-
-			-- Check if this is a merchant button
-			local buttonName = ""
-			local success, name = pcall(change.button.GetName, change.button)
-			if success and name and string.find(name, "Merchant") then
-				oldExtra = oldExtra .. " (merchant)"
-				newExtra = newExtra .. " (merchant)"
-			end
-
-			local oldItemID = change.oldItemData.itemID or "empty"
+			local oldExtra = self:GetItemDebugInfo(change.oldItemData)
+			local newExtra = self:GetItemDebugInfo(change.newItemData)
+			local oldItemID = change.oldItemData.itemID or (change.oldItemData.isEmpty and "empty" or "unknown")
 			local newItemID = change.newItemData.isEmpty and "empty" or (change.newItemData.itemID or "unknown")
 			print(string.format("|cffff69b4DOKI|r Changed indicator: %s%s -> %s%s",
 				tostring(oldItemID), oldExtra, tostring(newItemID), newExtra))
@@ -407,29 +421,17 @@ function DOKI:ProcessSurgicalUpdate()
 
 	-- Add indicators to buttons that gained items
 	for _, change in ipairs(changes.added) do
-		-- Only add indicator if the new item is not empty
-		if not change.newItemData.isEmpty then
+		-- Only add indicator if the new item exists and needs an indicator
+		if change.newItemData.hasItem and not change.newItemData.isEmpty then
 			local itemData = self:GetItemDataForSurgicalUpdate(change.newItemData.itemID, change.newItemData.itemLink)
-			if itemData and not itemData.isCollected then
-				self:AddButtonIndicator(change.button, itemData)
-				updateCount = updateCount + 1
-				if self.db and self.db.debugMode then
-					local extraInfo = ""
-					if change.newItemData.itemLink and string.find(change.newItemData.itemLink, "battlepet:") then
-						extraInfo = " (battlepet)"
-					elseif change.newItemData.itemID and self:IsEnsembleItem(change.newItemData.itemID) then
-						extraInfo = " (ensemble)"
+			if itemData and (not itemData.isCollected or itemData.showPurple) then
+				if self:AddButtonIndicator(change.button, itemData) then
+					updateCount = updateCount + 1
+					if self.db and self.db.debugMode then
+						local extraInfo = self:GetItemDebugInfo(change.newItemData)
+						print(string.format("|cffff69b4DOKI|r Added indicator: button gained item %s%s",
+							tostring(change.newItemData.itemID), extraInfo))
 					end
-
-					-- Check if this is a merchant button
-					local buttonName = ""
-					local success, name = pcall(change.button.GetName, change.button)
-					if success and name and string.find(name, "Merchant") then
-						extraInfo = extraInfo .. " (merchant)"
-					end
-
-					print(string.format("|cffff69b4DOKI|r Added indicator: button gained item %s%s",
-						tostring(change.newItemData.itemID), extraInfo))
 				end
 			end
 		end
@@ -437,12 +439,40 @@ function DOKI:ProcessSurgicalUpdate()
 
 	-- Update snapshot
 	self.lastButtonSnapshot = currentSnapshot
-	if self.db and self.db.debugMode and updateCount > 0 then
-		print(string.format("|cffff69b4DOKI|r Surgical update: %d changes (%d removed, %d added, %d changed)",
-			updateCount, #changes.removed, #changes.added, #changes.changed))
+	-- ADDED: Always return total changes including forced cleanup
+	local totalChanges = updateCount + cleanedIndicators
+	if self.db and self.db.debugMode and totalChanges > 0 then
+		print(string.format(
+			"|cffff69b4DOKI|r Surgical update: %d changes (%d removed, %d added, %d changed, %d force cleaned)",
+			totalChanges, #changes.removed, #changes.added, #changes.changed, cleanedIndicators))
 	end
 
-	return updateCount
+	return totalChanges
+end
+
+-- ADDED: Helper function to get debug info for items
+function DOKI:GetItemDebugInfo(itemData)
+	if not itemData then return "" end
+
+	local extraInfo = ""
+	if itemData.isEmpty then
+		extraInfo = " (empty slot)"
+	elseif itemData.itemLink and string.find(itemData.itemLink, "battlepet:") then
+		extraInfo = " (battlepet)"
+	elseif itemData.itemID and self:IsEnsembleItem(itemData.itemID) then
+		extraInfo = " (ensemble)"
+	end
+
+	-- Check if this is a merchant button
+	if itemData.button then
+		local buttonName = ""
+		local success, name = pcall(itemData.button.GetName, itemData.button)
+		if success and name and string.find(name, "Merchant") then
+			extraInfo = extraInfo .. " (merchant)"
+		end
+	end
+
+	return extraInfo
 end
 
 -- ADDED: Enhanced item data retrieval for surgical updates (supports battlepets + ensembles)
@@ -460,6 +490,7 @@ function DOKI:GetItemDataForSurgicalUpdate(itemID, itemLink)
 				itemLink = itemLink,
 				isCollected = isCollected,
 				showYellowD = false,
+				showPurple = false,
 				frameType = "surgical",
 				petSpeciesID = petSpeciesID,
 			}
@@ -474,6 +505,7 @@ function DOKI:GetItemDataForSurgicalUpdate(itemID, itemLink)
 			itemLink = itemLink,
 			isCollected = isCollected,
 			showYellowD = false,
+			showPurple = false,
 			frameType = "surgical",
 			isEnsemble = true,
 		}
@@ -494,7 +526,10 @@ end
 
 -- ===== INDICATOR MANAGEMENT =====
 function DOKI:AddButtonIndicator(button, itemData)
-	if not button or not itemData or itemData.isCollected then return false end
+	if not button or not itemData then return false end
+
+	-- FIXED: Don't add indicators for collected items unless they need purple indicator
+	if itemData.isCollected and not itemData.showPurple then return false end
 
 	local success, isVisible = pcall(button.IsVisible, button)
 	if not success or not isVisible then return false end
@@ -504,7 +539,7 @@ function DOKI:AddButtonIndicator(button, itemData)
 
 	-- Set color based on indicator type
 	if itemData.showPurple then
-		textureData:SetColor(1.0, 0.4, 0.7)   -- Purple for fractional items -- Adjusted to pink for better visibility
+		textureData:SetColor(1.0, 0.4, 0.7)   -- Purple for fractional items
 	elseif itemData.showYellowD then
 		textureData:SetColor(0.082, 0.671, 1.0) -- Blue for other sources
 	else
@@ -539,6 +574,8 @@ function DOKI:AddButtonIndicator(button, itemData)
 			extraInfo = string.format(" [Battlepet Species: %d]", itemData.petSpeciesID)
 		elseif itemData.isEnsemble then
 			extraInfo = " [Ensemble]"
+		elseif itemData.showPurple then
+			extraInfo = " [Purple]"
 		end
 
 		-- Check if this is a merchant button
@@ -546,8 +583,9 @@ function DOKI:AddButtonIndicator(button, itemData)
 			extraInfo = extraInfo .. " [Merchant]"
 		end
 
-		print(string.format("|cffff69b4DOKI|r Added indicator for %s (ID: %d) on %s%s",
-			itemName, itemData.itemID, buttonName, extraInfo))
+		local colorType = itemData.showPurple and "PURPLE" or (itemData.showYellowD and "BLUE" or "ORANGE")
+		print(string.format("|cffff69b4DOKI|r Added %s indicator for %s (ID: %d) on %s%s",
+			colorType, itemName, itemData.itemID, buttonName, extraInfo))
 	end
 
 	return true
@@ -615,7 +653,41 @@ function DOKI:CleanupButtonTextures()
 	return removedCount
 end
 
--- ===== MERCHANT-SPECIFIC CLEANUP =====
+-- ADDED: Force cleanup function for empty slots (useful for rapid selling issues)
+function DOKI:ForceCleanEmptySlots()
+	if not self.buttonTextures then return 0 end
+
+	local snapshot = self:CreateButtonSnapshot()
+	local cleanedCount = 0
+	for button, textureData in pairs(self.buttonTextures) do
+		if textureData.isActive then
+			local buttonData = snapshot[button]
+			if buttonData and buttonData.isEmpty then
+				if self:RemoveButtonIndicator(button) then
+					cleanedCount = cleanedCount + 1
+					if self.db and self.db.debugMode then
+						local buttonName = ""
+						local success, name = pcall(button.GetName, button)
+						if success and name then
+							buttonName = name
+						else
+							buttonName = "unnamed"
+						end
+
+						print(string.format("|cffff69b4DOKI|r Force cleaned indicator from empty slot: %s", buttonName))
+					end
+				end
+			end
+		end
+	end
+
+	if self.db and self.db.debugMode and cleanedCount > 0 then
+		print(string.format("|cffff69b4DOKI|r Force cleaned %d indicators from empty slots", cleanedCount))
+	end
+
+	return cleanedCount
+end
+
 function DOKI:CleanupMerchantTextures()
 	if not self.buttonTextures then return 0 end
 
@@ -651,7 +723,7 @@ function DOKI:CleanupMerchantTextures()
 	return removedCount
 end
 
--- ===== ENHANCED INITIALIZATION WITH DELAYED CLEANUP SUPPORT =====
+-- ===== ENHANCED INITIALIZATION WITH PROPER EMPTY SLOT SUPPORT =====
 function DOKI:InitializeButtonTextureSystem()
 	self.buttonTextures = self.buttonTextures or {}
 	self.texturePool = self.texturePool or {}
@@ -660,7 +732,7 @@ function DOKI:InitializeButtonTextureSystem()
 	self:ValidateTexture()
 	if self.db and self.db.debugMode then
 		print(
-			"|cffff69b4DOKI|r Enhanced button texture system initialized with battlepet + ensemble + merchant + delayed cleanup support")
+			"|cffff69b4DOKI|r Enhanced button texture system initialized with proper empty slot detection + merchant selling support")
 	end
 end
 
@@ -700,7 +772,7 @@ function DOKI:ClearAllOverlays()
 	return self:ClearAllButtonIndicators()
 end
 
--- ===== ENHANCED DEBUG FUNCTIONS WITH ENSEMBLE SUPPORT =====
+-- ===== ENHANCED DEBUG FUNCTIONS WITH EMPTY SLOT SUPPORT =====
 function DOKI:DebugButtonTextures()
 	print("|cffff69b4DOKI|r === BUTTON TEXTURE DEBUG ===")
 	print(string.format("Texture file validated: %s", tostring(self.textureValidated)))
@@ -731,8 +803,9 @@ function DOKI:DebugButtonTextures()
 	print(string.format("Button textures: %d total, %d active (%d battlepets, %d ensembles, %d merchant)",
 		totalCount, activeCount, battlepetCount, ensembleCount, merchantCount))
 	print(string.format("Texture pool size: %d", #self.texturePool))
-	print(string.format("Button tracking: %d buttons in snapshot",
-		self.lastButtonSnapshot and self:TableCount(self.lastButtonSnapshot) or 0))
+	-- ADDED: Enhanced snapshot debugging
+	local snapshotInfo = self:DebugSnapshotInfo()
+	print(string.format("Button tracking: %s", snapshotInfo))
 	-- ADDED: Show delayed scan status
 	if self.delayedScanTimer then
 		print(string.format("Delayed cleanup scan: PENDING"))
@@ -741,6 +814,35 @@ function DOKI:DebugButtonTextures()
 	end
 
 	print("|cffff69b4DOKI|r === END DEBUG ===")
+end
+
+-- ADDED: Enhanced snapshot debugging
+function DOKI:DebugSnapshotInfo()
+	if not self.lastButtonSnapshot then
+		return "No snapshot available"
+	end
+
+	local totalButtons = 0
+	local buttonsWithItems = 0
+	local emptySlots = 0
+	local battlepets = 0
+	local ensembles = 0
+	for button, itemData in pairs(self.lastButtonSnapshot) do
+		totalButtons = totalButtons + 1
+		if itemData.isEmpty then
+			emptySlots = emptySlots + 1
+		elseif itemData.hasItem then
+			buttonsWithItems = buttonsWithItems + 1
+			if itemData.itemLink and string.find(itemData.itemLink, "battlepet:") then
+				battlepets = battlepets + 1
+			elseif itemData.itemID and self:IsEnsembleItem(itemData.itemID) then
+				ensembles = ensembles + 1
+			end
+		end
+	end
+
+	return string.format("%d buttons (%d with items, %d empty, %d battlepets, %d ensembles)",
+		totalButtons, buttonsWithItems, emptySlots, battlepets, ensembles)
 end
 
 function DOKI:DebugEnsembleTracking()
@@ -754,9 +856,12 @@ function DOKI:DebugEnsembleTracking()
 	local ensembleCount = 0
 	local regularItemCount = 0
 	local battlepetCount = 0
+	local emptySlotCount = 0
 	print("|cffff69b4DOKI|r Current button snapshot analysis:")
 	for button, itemData in pairs(snapshot) do
-		if type(itemData) == "table" and itemData.itemID then
+		if itemData.isEmpty then
+			emptySlotCount = emptySlotCount + 1
+		elseif itemData.hasItem and itemData.itemID then
 			-- Check if it's a battlepet
 			if itemData.itemLink and string.find(itemData.itemLink, "battlepet:") then
 				battlepetCount = battlepetCount + 1
@@ -782,8 +887,9 @@ function DOKI:DebugEnsembleTracking()
 		end
 	end
 
-	print(string.format("Total snapshot items: %d (%d regular, %d battlepets, %d ensembles)",
-		regularItemCount + battlepetCount + ensembleCount, regularItemCount, battlepetCount, ensembleCount))
+	print(string.format("Total snapshot items: %d (%d regular, %d battlepets, %d ensembles, %d empty)",
+		regularItemCount + battlepetCount + ensembleCount + emptySlotCount,
+		regularItemCount, battlepetCount, ensembleCount, emptySlotCount))
 	-- Check active indicators for ensembles
 	local activeEnsembleIndicators = 0
 	if self.buttonTextures then
@@ -855,13 +961,14 @@ function DOKI:TestButtonTextureCreation()
 			itemLink = nil,
 			isCollected = false,
 			showYellowD = false,
+			showPurple = false,
 			frameType = "test",
 		}
 		local success = self:AddButtonIndicator(testButton, testData)
 		if success then
 			print("|cffff69b4DOKI|r Test indicator created (orange, top-right)")
-			print("|cffff69b4DOKI|r Try moving items or scrolling merchant to test response")
-			print("|cffff69b4DOKI|r Delayed cleanup scan will trigger in 0.2s after item movement")
+			print("|cffff69b4DOKI|r Try moving items or selling to merchant to test response")
+			print("|cffff69b4DOKI|r Enhanced empty slot detection will catch item removals")
 		else
 			print("|cffff69b4DOKI|r Failed to create test indicator")
 		end
@@ -870,80 +977,31 @@ function DOKI:TestButtonTextureCreation()
 	end
 end
 
--- ADDED: Enhanced test function for delayed cleanup scanning
-function DOKI:TestDelayedCleanupScan()
-	print("|cffff69b4DOKI|r === TESTING DELAYED CLEANUP SCAN ===")
-	-- Check if system is available
-	if not self.ScheduleDelayedCleanupScan then
-		print("|cffff69b4DOKI|r Delayed cleanup scan system not available")
-		return
-	end
-
-	-- Show current status
-	if self.delayedScanTimer then
-		print("|cffff69b4DOKI|r Current status: Delayed scan PENDING")
-		print("|cffff69b4DOKI|r Testing cancellation...")
-		self:CancelDelayedScan()
-		if not self.delayedScanTimer then
-			print("|cffff69b4DOKI|r Cancellation works correctly")
-		else
-			print("|cffff69b4DOKI|r Cancellation failed")
-		end
-	else
-		print("|cffff69b4DOKI|r Current status: Ready")
-	end
-
-	-- Test scheduling
-	print("|cffff69b4DOKI|r Testing delayed scan scheduling...")
-	self:ScheduleDelayedCleanupScan()
-	if self.delayedScanTimer then
-		print("|cffff69b4DOKI|r Delayed scan scheduled successfully")
-		print("|cffff69b4DOKI|r Will trigger in 0.2 seconds unless cancelled")
-		-- Test auto-cancellation after 0.5 seconds
-		C_Timer.After(0.5, function()
-			if DOKI.delayedScanTimer then
-				print("|cffff69b4DOKI|r Delayed scan did not auto-complete")
-			else
-				print("|cffff69b4DOKI|r Delayed scan completed or was cancelled correctly")
-			end
-		end)
-	else
-		print("|cffff69b4DOKI|r Failed to schedule delayed scan")
-	end
-
-	print("|cffff69b4DOKI|r === END DELAYED CLEANUP TEST ===")
-end
-
--- ADDED: Enhanced snapshot comparison test
-function DOKI:TestSnapshotComparison()
-	print("|cffff69b4DOKI|r === TESTING SNAPSHOT COMPARISON ===")
+-- ADDED: Test function for empty slot detection
+function DOKI:TestEmptySlotDetection()
+	print("|cffff69b4DOKI|r === TESTING EMPTY SLOT DETECTION ===")
 	-- Create initial snapshot
 	local snapshot1 = self:CreateButtonSnapshot()
-	local itemCount = 0
-	for _ in pairs(snapshot1) do itemCount = itemCount + 1 end
+	local totalSlots = 0
+	local emptySlots = 0
+	local itemSlots = 0
+	for button, itemData in pairs(snapshot1) do
+		totalSlots = totalSlots + 1
+		if itemData.isEmpty then
+			emptySlots = emptySlots + 1
+		elseif itemData.hasItem then
+			itemSlots = itemSlots + 1
+		end
+	end
 
-	print(string.format("|cffff69b4DOKI|r Initial snapshot: %d buttons with items", itemCount))
+	print(string.format("Initial snapshot: %d total slots (%d with items, %d empty)",
+		totalSlots, itemSlots, emptySlots))
 	-- Store as last snapshot
 	self.lastButtonSnapshot = snapshot1
 	-- Test surgical update (should show no changes)
 	local changes = self:ProcessSurgicalUpdate()
-	print(string.format("|cffff69b4DOKI|r Surgical update result: %d changes (should be 0)", changes))
-	-- Simulate item movement by clearing a random button from snapshot
-	local testButton = nil
-	for button, _ in pairs(snapshot1) do
-		testButton = button
-		break -- Just take the first one
-	end
-
-	if testButton then
-		print("|cffff69b4DOKI|r Simulating item removal...")
-		self.lastButtonSnapshot[testButton] = nil
-		-- Test surgical update again
-		local changes2 = self:ProcessSurgicalUpdate()
-		print(string.format("|cffff69b4DOKI|r After simulated change: %d changes detected", changes2))
-	else
-		print("|cffff69b4DOKI|r No buttons in snapshot to test with")
-	end
-
-	print("|cffff69b4DOKI|r === END SNAPSHOT COMPARISON TEST ===")
+	print(string.format("Surgical update result: %d changes (should be 0)", changes))
+	print("|cffff69b4DOKI|r Try selling an item to a merchant, then check /doki status")
+	print("|cffff69b4DOKI|r The indicator should disappear when the item is sold")
+	print("|cffff69b4DOKI|r === END EMPTY SLOT DETECTION TEST ===")
 end
