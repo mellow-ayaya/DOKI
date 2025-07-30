@@ -16,11 +16,16 @@ local function InitializeSavedVariables()
 		DOKI_DB = {
 			enabled = true,
 			debugMode = false,
-			smartMode = false,
+			smartMode = true,
+			attMode = true,
 		}
 	else
 		if DOKI_DB.smartMode == nil then
 			DOKI_DB.smartMode = false
+		end
+
+		if DOKI_DB.attMode == nil then
+			DOKI_DB.attMode = false
 		end
 	end
 
@@ -158,9 +163,10 @@ SlashCmdList["DOKI"] = function(msg)
 			end
 		end
 
-		print(string.format("|cffff69b4DOKI|r Status: %s, Smart: %s, Debug: %s",
+		print(string.format("|cffff69b4DOKI|r Status: %s, Smart: %s, ATT: %s, Debug: %s",
 			DOKI.db.enabled and "Enabled" or "Disabled",
 			DOKI.db.smartMode and "On" or "Off",
+			DOKI.db.attMode and "On" or "Off", -- ADDED: ATT mode status
 			DOKI.db.debugMode and "On" or "Off"))
 		print(string.format("|cffff69b4DOKI|r Active indicators: %d (%d battlepets)", indicatorCount, battlepetCount))
 		print(string.format("|cffff69b4DOKI|r Tracked buttons: %d", snapshotCount))
@@ -168,17 +174,6 @@ SlashCmdList["DOKI"] = function(msg)
 		local ensembleWord = DOKI.ensembleWordCache
 		print(string.format("|cffff69b4DOKI|r Ensemble detection: %s",
 			ensembleWord and ("Ready (" .. ensembleWord .. ")") or "Not initialized"))
-		print("|cffff69b4DOKI|r System: War Within Enhanced Surgical System with Ensemble + Merchant Support")
-		print("  |cff00ff00•|r Regular updates: 0.2s interval")
-		print("  |cff00ff00•|r Clean events: Noisy events removed")
-		print("  |cff00ff00•|r Battlepet support: Caged pet detection")
-		print("  |cff00ff00•|r Mount fix: GetMountFromItem API")
-		print("  |cff00ff00•|r Pet timing: Collection event delays")
-		print("  |cff00ff00•|r |cffff8000NEW:|r Ensemble support: Locale-aware detection + color-based collection status")
-		print("  |cff00ff00•|r |cffff8000NEW:|r Merchant scroll detection")
-		print("  |cff00ff00•|r |cffff8000NEW:|r OnMouseWheel + MERCHANT_UPDATE events")
-		print("  |cff00ff00•|r |cffff8000NEW:|r Smart mode auto-rescan on toggle")
-		print("  |cff00ff00•|r |cffff8000NEW:|r Delayed cleanup scan (0.2s) with auto-cancellation")
 		-- ADDED: Show delayed scan status
 		if DOKI.delayedScanTimer then
 			print("  |cffffff00•|r Delayed cleanup scan: PENDING")
@@ -630,6 +625,28 @@ SlashCmdList["DOKI"] = function(msg)
 			DOKI:DebugFoundFrames()
 		else
 			print("|cffff69b4DOKI|r Frame debug function not available")
+		end
+	elseif command == "att" then
+		-- ADDED: ATT mode toggle
+		DOKI.db.attMode = not DOKI.db.attMode
+		local status = DOKI.db.attMode and "|cff00ff00enabled|r" or "|cffff0000disabled|r"
+		print("|cffff69b4DOKI|r ATT mode is now " .. status)
+		print("|cffff69b4DOKI|r ATT mode uses AllTheThings addon data when available")
+		-- Clear collection cache since ATT mode changes how collection status is calculated
+		if DOKI.ClearCollectionCache then
+			DOKI:ClearCollectionCache()
+		end
+
+		-- Force full rescan if addon is enabled and UI is visible
+		if DOKI.db.enabled then
+			C_Timer.After(0.1, function()
+				if DOKI.db and DOKI.db.enabled and DOKI.ForceUniversalScan then
+					local count = DOKI:ForceUniversalScan()
+					if DOKI.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r ATT mode toggle rescan: %d indicators created", count))
+					end
+				end
+			end)
 		end
 	else
 		print("|cffff69b4DOKI|r War Within Enhanced Surgical System with Ensemble + Merchant Support Commands:")

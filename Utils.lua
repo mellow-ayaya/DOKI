@@ -1573,6 +1573,88 @@ function DOKI:IsCollectibleItem(itemID, itemLink)
 	return false
 end
 
+-- ===== ATT SUPPORT ADDITION =====
+function DOKI:GetATTCollectionStatus(itemID, itemLink)
+	if not itemID then return nil end
+
+	-- Check cache first using existing system
+	local cachedCollected, cachedYellowD = self:GetCachedCollectionStatus(itemID, itemLink)
+	if cachedCollected ~= nil then
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r ATT using CACHED result for item %d: %s",
+				itemID, cachedCollected and "COLLECTED" or "NOT COLLECTED"))
+		end
+
+		return cachedCollected
+	end
+
+	-- Create fresh tooltip with unique name (same pattern as ensemble tooltips)
+	local tooltipName = "DOKIATTTooltip" .. itemID
+	local tooltip = CreateFrame("GameTooltip", tooltipName, nil, "GameTooltipTemplate")
+	tooltip:SetOwner(UIParent, "ANCHOR_NONE")
+	-- Set the item (prefer itemLink for accuracy)
+	if itemLink then
+		tooltip:SetHyperlink(itemLink)
+	else
+		tooltip:SetItemByID(itemID)
+	end
+
+	tooltip:Show()
+	-- Look for ATT collection status in the first few lines
+	local attStatus = nil
+	for i = 1, math.min(5, tooltip:NumLines()) do
+		-- CHECK RIGHT SIDE (where ATT puts collection status)
+		local rightLine = _G[tooltipName .. "TextRight" .. i]
+		if rightLine and rightLine.GetText then
+			local success, text = pcall(rightLine.GetText, rightLine)
+			if success and text then
+				-- Convert to lowercase for case-insensitive matching
+				local lowerText = string.lower(text)
+				-- Look for ATT status patterns (handles ✕ ✓ symbols)
+				if string.find(lowerText, "not collected") then
+					attStatus = false
+					if self.db and self.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r ATT status found - NOT COLLECTED: '%s' (ID: %d)", text, itemID))
+					end
+
+					break
+				elseif string.find(lowerText, "unknown") then
+					attStatus = false
+					if self.db and self.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r ATT status found - NOT COLLECTED: '%s' (ID: %d)", text, itemID))
+					end
+
+					break
+				elseif string.find(lowerText, "collected") and not string.find(lowerText, "not collected") then
+					-- Make sure it's "collected" but not "not collected"
+					attStatus = true
+					if self.db and self.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r ATT status found - COLLECTED: '%s' (ID: %d)", text, itemID))
+					end
+
+					break
+				elseif string.find(lowerText, "known") then
+					attStatus = true
+					if self.db and self.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r ATT status found - COLLECTED: '%s' (ID: %d)", text, itemID))
+					end
+
+					break
+				end
+			end
+		end
+	end
+
+	tooltip:Hide()
+	tooltip:SetParent(nil)
+	-- Cache the result if we found ATT status
+	if attStatus ~= nil then
+		self:SetCachedCollectionStatus(itemID, itemLink, attStatus, false)
+	end
+
+	return attStatus
+end
+
 -- ADDED: Extract species ID from caged pet (battlepet) links
 function DOKI:GetPetSpeciesFromBattlePetLink(itemLink)
 	if not itemLink or not string.find(itemLink, "battlepet:") then
@@ -1596,6 +1678,25 @@ end
 -- WAR WITHIN FIXED: Enhanced collection detection with caged pets, ensembles, and corrected APIs
 function DOKI:IsItemCollected(itemID, itemLink)
 	if not itemID and not itemLink then return false, false end
+
+	-- ATT MODE: Try to get ATT status first (if enabled)
+	if self.db and self.db.attMode then
+		local attStatus = self:GetATTCollectionStatus(itemID, itemLink)
+		if attStatus ~= nil then
+			-- ATT gave us a definitive answer
+			if self.db and self.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r Using ATT result for item %d: %s",
+					itemID, attStatus and "COLLECTED" or "NOT COLLECTED"))
+			end
+
+			return attStatus, false -- ATT doesn't use showYellowD logic
+		end
+
+		-- ATT didn't have data for this item, continue with fallback logic
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r No ATT data for item %d, using fallback logic", itemID))
+		end
+	end
 
 	-- ADDED: Handle ensembles first
 	local itemName = C_Item.GetItemInfo(itemID)
