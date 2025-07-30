@@ -1,4 +1,4 @@
--- DOKI Utils - War Within Complete Fix with Merchant Scroll Detection + Enhanced Delayed Cleanup + Ensemble Support (FACTION DETECTION REMOVED)
+-- DOKI Utils - War Within Complete Fix with Merchant Scroll Detection + Enhanced Delayed Cleanup + Ensemble Support + Purple Indicators (FACTION DETECTION REMOVED)
 local addonName, DOKI = ...
 -- Initialize storage
 DOKI.currentItems = DOKI.currentItems or {}
@@ -242,7 +242,7 @@ function DOKI:TrackUpdatePerformance(duration, isImmediate)
 	self.avgUpdateDuration = total / #self.updateDurations
 end
 
--- ===== CACHE MANAGEMENT =====
+-- ===== ENHANCED CACHE MANAGEMENT WITH PURPLE SUPPORT =====
 function DOKI:ClearCollectionCache()
 	self.collectionCache = {}
 	self.lastCacheUpdate = GetTime()
@@ -256,19 +256,241 @@ function DOKI:GetCachedCollectionStatus(itemID, itemLink)
 	local cached = self.collectionCache[cacheKey]
 	-- Cache expires after 30 seconds or if collections were updated
 	if cached and (GetTime() - cached.timestamp < 30) then
-		return cached.isCollected, cached.showYellowD
+		return cached.isCollected, cached.showYellowD, cached.showPurple or false
 	end
 
-	return nil, nil
+	return nil, nil, nil
 end
 
-function DOKI:SetCachedCollectionStatus(itemID, itemLink, isCollected, showYellowD)
+function DOKI:SetCachedCollectionStatus(itemID, itemLink, isCollected, showYellowD, showPurple)
 	local cacheKey = itemLink or tostring(itemID)
 	self.collectionCache[cacheKey] = {
 		isCollected = isCollected,
 		showYellowD = showYellowD,
+		showPurple = showPurple or false,
 		timestamp = GetTime(),
 	}
+end
+
+-- ===== ATT SUPPORT WITH PURPLE INDICATORS =====
+function DOKI:GetCachedATTStatus(itemID, itemLink)
+	local cacheKey = "ATT_" .. (itemLink or tostring(itemID))
+	local cached = self.collectionCache[cacheKey]
+	-- Cache expires after 30 seconds
+	if cached and (GetTime() - cached.timestamp < 30) then
+		return cached.isCollected, cached.showYellowD, cached.showPurple
+	end
+
+	return nil, nil, nil
+end
+
+function DOKI:SetCachedATTStatus(itemID, itemLink, isCollected, showYellowD, showPurple)
+	local cacheKey = "ATT_" .. (itemLink or tostring(itemID))
+	self.collectionCache[cacheKey] = {
+		isCollected = isCollected,
+		showYellowD = showYellowD,
+		showPurple = showPurple,
+		timestamp = GetTime(),
+	}
+end
+
+function DOKI:GetATTCollectionStatus(itemID, itemLink)
+	if not itemID then return nil, nil, nil end
+
+	-- Check cache first (now handles all three values)
+	local cachedCollected, cachedYellowD, cachedPurple = self:GetCachedATTStatus(itemID, itemLink)
+	if cachedCollected ~= nil then
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r ATT using CACHED result for item %d: %s%s%s",
+				itemID,
+				cachedCollected and "COLLECTED" or "NOT COLLECTED",
+				cachedYellowD and " (other source)" or "",
+				cachedPurple and " (fractional)" or ""))
+		end
+
+		return cachedCollected, cachedYellowD, cachedPurple
+	end
+
+	-- Create fresh tooltip with unique name
+	local tooltipName = "DOKIATTTooltip" .. itemID
+	local tooltip = CreateFrame("GameTooltip", tooltipName, nil, "GameTooltipTemplate")
+	tooltip:SetOwner(UIParent, "ANCHOR_NONE")
+	-- Set the item (prefer itemLink for accuracy)
+	if itemLink then
+		tooltip:SetHyperlink(itemLink)
+	else
+		tooltip:SetItemByID(itemID)
+	end
+
+	tooltip:Show()
+	-- Look for ATT collection status in the first few lines
+	local attStatus = nil
+	local showYellowD = false
+	local showPurple = false
+	for i = 1, math.min(5, tooltip:NumLines()) do
+		-- CHECK RIGHT SIDE (where ATT puts collection status)
+		local rightLine = _G[tooltipName .. "TextRight" .. i]
+		if rightLine and rightLine.GetText then
+			local success, text = pcall(rightLine.GetText, rightLine)
+			if success and text and string.len(text) > 0 then
+				if self.db and self.db.debugMode then
+					print(string.format("|cffff69b4DOKI|r ATT tooltip line %d: '%s'", i, text))
+				end
+
+				-- LOCALE-INDEPENDENT: Look for Unicode symbols first
+				if string.find(text, "✗") or string.find(text, "❌") or string.find(text, "✕") or string.find(text, "X") then
+					-- Not collected symbols
+					attStatus = false
+					showYellowD = false
+					showPurple = false
+					if self.db and self.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r ATT symbol detection - NOT COLLECTED: '%s' (ID: %d)", text, itemID))
+					end
+
+					break
+				elseif string.find(text, "⭕") or string.find(text, "🔴") or (string.find(text, "✓") and string.find(text, "*")) then
+					-- Circled symbols or checkmark with asterisk - collected from other source
+					attStatus = true
+					showYellowD = true -- Show blue indicator in basic mode
+					showPurple = false
+					if self.db and self.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r ATT symbol detection - COLLECTED (other source): '%s' (ID: %d)", text,
+							itemID))
+					end
+
+					break
+				elseif string.find(text, "✓") or string.find(text, "✅") or string.find(text, "☑") then
+					-- Regular checkmark - fully collected
+					attStatus = true
+					showYellowD = false
+					showPurple = false
+					if self.db and self.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r ATT symbol detection - COLLECTED: '%s' (ID: %d)", text, itemID))
+					end
+
+					break
+				end
+
+				-- LOCALE-INDEPENDENT: Look for numerical patterns like "1/3", "2/3", "3/3"
+				local current, total = string.match(text, "(%d+)/(%d+)")
+				if current and total then
+					current = tonumber(current)
+					total = tonumber(total)
+					if current >= total then
+						-- Fully collected (3/3, etc.)
+						attStatus = true
+						showYellowD = false
+						showPurple = false
+						if self.db and self.db.debugMode then
+							print(string.format("|cffff69b4DOKI|r ATT numerical detection - FULLY COLLECTED (%d/%d): '%s' (ID: %d)",
+								current, total, text, itemID))
+						end
+					else
+						-- Partially collected (1/3, 2/3, etc.) - show PURPLE indicator
+						attStatus = false
+						showYellowD = false
+						showPurple = true
+						if self.db and self.db.debugMode then
+							print(string.format(
+								"|cffff69b4DOKI|r ATT numerical detection - FRACTIONAL (%d/%d) - PURPLE INDICATOR: '%s' (ID: %d)",
+								current, total, text, itemID))
+						end
+					end
+
+					break
+				end
+
+				-- LOCALE-INDEPENDENT: Look for percentage patterns like "66.66%", "100%"
+				local percentage = string.match(text, "(%d+%.?%d*)%%")
+				if percentage then
+					percentage = tonumber(percentage)
+					if percentage >= 100 then
+						-- 100% collected
+						attStatus = true
+						showYellowD = false
+						showPurple = false
+						if self.db and self.db.debugMode then
+							print(string.format("|cffff69b4DOKI|r ATT percentage detection - FULLY COLLECTED (%.1f%%): '%s' (ID: %d)",
+								percentage, text, itemID))
+						end
+					else
+						-- Partially collected - show PURPLE indicator
+						attStatus = false
+						showYellowD = false
+						showPurple = true
+						if self.db and self.db.debugMode then
+							print(string.format(
+								"|cffff69b4DOKI|r ATT percentage detection - FRACTIONAL (%.1f%%) - PURPLE INDICATOR: '%s' (ID: %d)",
+								percentage, text, itemID))
+						end
+					end
+
+					break
+				end
+
+				-- FALLBACK: Text-based detection (existing logic, kept for compatibility)
+				local lowerText = string.lower(text)
+				if string.find(lowerText, "not collected") then
+					attStatus = false
+					showYellowD = false
+					showPurple = false
+					if self.db and self.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r ATT text fallback - NOT COLLECTED: '%s' (ID: %d)", text, itemID))
+					end
+
+					break
+				elseif string.find(lowerText, "unknown") then
+					attStatus = false
+					showYellowD = false
+					showPurple = false
+					if self.db and self.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r ATT text fallback - NOT COLLECTED: '%s' (ID: %d)", text, itemID))
+					end
+
+					break
+				elseif string.find(lowerText, "collected") and not string.find(lowerText, "not collected") then
+					-- Make sure it's "collected" but not "not collected"
+					-- Check if it mentions other source
+					if string.find(lowerText, "source") or string.find(lowerText, "other") or string.find(text, "*") then
+						attStatus = true
+						showYellowD = true
+						showPurple = false
+						if self.db and self.db.debugMode then
+							print(string.format("|cffff69b4DOKI|r ATT text fallback - COLLECTED (other source): '%s' (ID: %d)", text,
+								itemID))
+						end
+					else
+						attStatus = true
+						showYellowD = false
+						showPurple = false
+						if self.db and self.db.debugMode then
+							print(string.format("|cffff69b4DOKI|r ATT text fallback - COLLECTED: '%s' (ID: %d)", text, itemID))
+						end
+					end
+
+					break
+				elseif string.find(lowerText, "known") then
+					attStatus = true
+					showYellowD = false
+					showPurple = false
+					if self.db and self.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r ATT text fallback - COLLECTED: '%s' (ID: %d)", text, itemID))
+					end
+
+					break
+				end
+			end
+		end
+	end
+
+	tooltip:Hide()
+	tooltip:SetParent(nil)
+	-- Cache the result if we found ATT status (now caches all three values)
+	if attStatus ~= nil then
+		self:SetCachedATTStatus(itemID, itemLink, attStatus, showYellowD, showPurple)
+	end
+
+	return attStatus, showYellowD, showPurple
 end
 
 -- ===== ENSEMBLE DETECTION SYSTEM =====
@@ -354,18 +576,18 @@ function DOKI:IsEnsembleItem(itemID, itemName)
 end
 
 function DOKI:IsEnsembleCollected(itemID, itemLink)
-	if not itemID then return false, false end
+	if not itemID then return false, false, false end
 
 	-- Check cache first (following your existing pattern)
-	local cachedCollected, cachedYellowD = self:GetCachedCollectionStatus(itemID, itemLink)
+	local cachedCollected, cachedYellowD, cachedPurple = self:GetCachedCollectionStatus(itemID, itemLink)
 	if cachedCollected ~= nil then
-		return cachedCollected, cachedYellowD
+		return cachedCollected, cachedYellowD, cachedPurple
 	end
 
 	local isCollected = self:CheckEnsembleByTooltip(itemID, itemLink)
-	-- Cache the result (ensembles don't use yellow D logic)
-	self:SetCachedCollectionStatus(itemID, itemLink, isCollected, false)
-	return isCollected, false
+	-- Cache the result (ensembles don't use yellow D or purple logic)
+	self:SetCachedCollectionStatus(itemID, itemLink, isCollected, false, false)
+	return isCollected, false, false
 end
 
 function DOKI:CheckEnsembleByTooltip(itemID, itemLink)
@@ -695,14 +917,15 @@ function DOKI:ScanMerchantFrames()
 				local itemID, itemLink = self:GetItemFromMerchantButton(button, i)
 				-- FIXED: Skip empty slots entirely for indicator creation
 				if itemID and itemID ~= "EMPTY_SLOT" and self:IsCollectibleItem(itemID, itemLink) then
-					local isCollected, showYellowD = self:IsItemCollected(itemID, itemLink)
-					-- Only create indicator if NOT collected
-					if not isCollected then
+					local isCollected, showYellowD, showPurple = self:IsItemCollected(itemID, itemLink)
+					-- Only create indicator if NOT collected OR if it needs purple indicator
+					if not isCollected or showPurple then
 						local itemData = {
 							itemID = itemID,
 							itemLink = itemLink,
 							isCollected = isCollected,
 							showYellowD = showYellowD,
+							showPurple = showPurple,
 							frameType = "merchant",
 						}
 						-- Try to create indicator
@@ -711,8 +934,9 @@ function DOKI:ScanMerchantFrames()
 							indicatorCount = indicatorCount + 1
 							if self.db.debugMode then
 								local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
-								print(string.format("|cffff69b4DOKI|r Created indicator for %s (ID: %d) on %s",
-									itemName, itemID, buttonName))
+								local colorType = showPurple and "PURPLE" or (showYellowD and "BLUE" or "ORANGE")
+								print(string.format("|cffff69b4DOKI|r Created %s indicator for %s (ID: %d) on %s",
+									colorType, itemName, itemID, buttonName))
 							end
 						end
 
@@ -842,12 +1066,14 @@ function DOKI:ScanBagFrames()
 									for _, elvUIButtonName in ipairs(possibleNames) do
 										local elvUIButton = _G[elvUIButtonName]
 										if elvUIButton and elvUIButton:IsVisible() then
-											local isCollected, showYellowD = self:IsItemCollected(itemInfo.itemID, itemInfo.hyperlink)
+											local isCollected, showYellowD, showPurple = self:IsItemCollected(itemInfo.itemID,
+												itemInfo.hyperlink)
 											local itemData = {
 												itemID = itemInfo.itemID,
 												itemLink = itemInfo.hyperlink,
 												isCollected = isCollected,
 												showYellowD = showYellowD,
+												showPurple = showPurple,
 												frameType = "bag",
 											}
 											indicatorCount = indicatorCount + self:CreateUniversalIndicator(elvUIButton, itemData)
@@ -897,12 +1123,13 @@ function DOKI:ScanBagFrames()
 							end
 
 							if button then
-								local isCollected, showYellowD = self:IsItemCollected(itemInfo.itemID, itemInfo.hyperlink)
+								local isCollected, showYellowD, showPurple = self:IsItemCollected(itemInfo.itemID, itemInfo.hyperlink)
 								local itemData = {
 									itemID = itemInfo.itemID,
 									itemLink = itemInfo.hyperlink,
 									isCollected = isCollected,
 									showYellowD = showYellowD,
+									showPurple = showPurple,
 									frameType = "bag",
 								}
 								indicatorCount = indicatorCount + self:CreateUniversalIndicator(button, itemData)
@@ -934,12 +1161,14 @@ function DOKI:ScanBagFrames()
 								for _, buttonName in ipairs(possibleNames) do
 									local button = _G[buttonName]
 									if button and button:IsVisible() then
-										local isCollected, showYellowD = self:IsItemCollected(itemInfo.itemID, itemInfo.hyperlink)
+										local isCollected, showYellowD, showPurple = self:IsItemCollected(itemInfo.itemID, itemInfo
+											.hyperlink)
 										local itemData = {
 											itemID = itemInfo.itemID,
 											itemLink = itemInfo.hyperlink,
 											isCollected = isCollected,
 											showYellowD = showYellowD,
+											showPurple = showPurple,
 											frameType = "bag",
 										}
 										indicatorCount = indicatorCount + self:CreateUniversalIndicator(button, itemData)
@@ -961,7 +1190,7 @@ end
 
 -- Create universal indicator
 function DOKI:CreateUniversalIndicator(frame, itemData)
-	if itemData.isCollected then
+	if itemData.isCollected and not itemData.showPurple then
 		if self.RemoveButtonIndicator then
 			self:RemoveButtonIndicator(frame)
 		end
@@ -1172,7 +1401,7 @@ function DOKI:InitializeUniversalScanning()
 	self:FullItemScan()
 	if self.db and self.db.debugMode then
 		print(
-			"|cffff69b4DOKI|r Enhanced surgical system initialized with ensemble + delayed cleanup scanning (FACTION DETECTION REMOVED)")
+			"|cffff69b4DOKI|r Enhanced surgical system initialized with ensemble + delayed cleanup scanning + PURPLE indicators (FACTION DETECTION REMOVED)")
 		print("  |cff00ff00•|r Regular updates: 0.2s interval")
 		print("  |cff00ff00•|r Clean events: Removed noisy COMPANION_UPDATE, etc.")
 		print("  |cff00ff00•|r Battlepet support: Caged pet detection")
@@ -1182,6 +1411,7 @@ function DOKI:InitializeUniversalScanning()
 		print("  |cff00ff00•|r |cffff8000NEW:|r Merchant scroll detection")
 		print("  |cff00ff00•|r |cffff8000NEW:|r OnMouseWheel + MERCHANT_UPDATE events")
 		print("  |cff00ff00•|r |cffff8000NEW:|r Delayed cleanup scan (0.2s) with auto-cancellation")
+		print("  |cff00ff00•|r |cffff8000NEW:|r PURPLE indicators for fractional items")
 		print("  |cff00ff00•|r |cffff8000REMOVED:|r Faction detection (unreliable)")
 		print(string.format("  |cff00ff00•|r Throttling: %.0fms minimum between updates",
 			self.surgicalUpdateThrottleTime * 1000))
@@ -1296,16 +1526,17 @@ function DOKI:TraceItemDetection(itemID, itemLink)
 	-- Step 2: Check collection status
 	print("|cffff69b4DOKI|r 2. COLLECTION STATUS CHECK:")
 	-- Check cache first
-	local cachedCollected, cachedYellowD = self:GetCachedCollectionStatus(itemID, itemLink)
+	local cachedCollected, cachedYellowD, cachedPurple = self:GetCachedCollectionStatus(itemID, itemLink)
 	if cachedCollected ~= nil then
 		print("   Found in cache:")
 		print(string.format("    Collected: %s", cachedCollected and "YES" or "NO"))
 		print(string.format("    Show Yellow D: %s", cachedYellowD and "YES" or "NO"))
+		print(string.format("    Show Purple: %s", cachedPurple and "YES" or "NO"))
 	else
 		print("   Not in cache - checking APIs...")
 	end
 
-	local isCollected, showYellowD = false, false
+	local isCollected, showYellowD, showPurple = false, false, false
 	if classID == 15 and subClassID == 5 then
 		-- Mount check
 		print("   Checking mount status...")
@@ -1409,10 +1640,17 @@ function DOKI:TraceItemDetection(itemID, itemLink)
 	print(string.format("  Collectible: %s", isCollectible and "YES" or "NO"))
 	print(string.format("  Collected: %s", isCollected and "YES" or "NO"))
 	print(string.format("  Show Yellow D: %s", showYellowD and "YES" or "NO"))
-	local needsIndicator = isCollectible and not isCollected
+	print(string.format("  Show Purple: %s", showPurple and "YES" or "NO"))
+	local needsIndicator = isCollectible and (not isCollected or showPurple)
 	print(string.format("   NEEDS INDICATOR: %s", needsIndicator and "YES" or "NO"))
 	if needsIndicator then
-		local color = showYellowD and "BLUE (has other sources)" or "ORANGE (no other sources)"
+		local color = "ORANGE (uncollected)"
+		if showPurple then
+			color = "PURPLE (fractional)"
+		elseif showYellowD then
+			color = "BLUE (has other sources)"
+		end
+
 		print(string.format("   Indicator Color: %s", color))
 	end
 
@@ -1573,88 +1811,6 @@ function DOKI:IsCollectibleItem(itemID, itemLink)
 	return false
 end
 
--- ===== ATT SUPPORT ADDITION =====
-function DOKI:GetATTCollectionStatus(itemID, itemLink)
-	if not itemID then return nil end
-
-	-- Check cache first using existing system
-	local cachedCollected, cachedYellowD = self:GetCachedCollectionStatus(itemID, itemLink)
-	if cachedCollected ~= nil then
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r ATT using CACHED result for item %d: %s",
-				itemID, cachedCollected and "COLLECTED" or "NOT COLLECTED"))
-		end
-
-		return cachedCollected
-	end
-
-	-- Create fresh tooltip with unique name (same pattern as ensemble tooltips)
-	local tooltipName = "DOKIATTTooltip" .. itemID
-	local tooltip = CreateFrame("GameTooltip", tooltipName, nil, "GameTooltipTemplate")
-	tooltip:SetOwner(UIParent, "ANCHOR_NONE")
-	-- Set the item (prefer itemLink for accuracy)
-	if itemLink then
-		tooltip:SetHyperlink(itemLink)
-	else
-		tooltip:SetItemByID(itemID)
-	end
-
-	tooltip:Show()
-	-- Look for ATT collection status in the first few lines
-	local attStatus = nil
-	for i = 1, math.min(5, tooltip:NumLines()) do
-		-- CHECK RIGHT SIDE (where ATT puts collection status)
-		local rightLine = _G[tooltipName .. "TextRight" .. i]
-		if rightLine and rightLine.GetText then
-			local success, text = pcall(rightLine.GetText, rightLine)
-			if success and text then
-				-- Convert to lowercase for case-insensitive matching
-				local lowerText = string.lower(text)
-				-- Look for ATT status patterns (handles ✕ ✓ symbols)
-				if string.find(lowerText, "not collected") then
-					attStatus = false
-					if self.db and self.db.debugMode then
-						print(string.format("|cffff69b4DOKI|r ATT status found - NOT COLLECTED: '%s' (ID: %d)", text, itemID))
-					end
-
-					break
-				elseif string.find(lowerText, "unknown") then
-					attStatus = false
-					if self.db and self.db.debugMode then
-						print(string.format("|cffff69b4DOKI|r ATT status found - NOT COLLECTED: '%s' (ID: %d)", text, itemID))
-					end
-
-					break
-				elseif string.find(lowerText, "collected") and not string.find(lowerText, "not collected") then
-					-- Make sure it's "collected" but not "not collected"
-					attStatus = true
-					if self.db and self.db.debugMode then
-						print(string.format("|cffff69b4DOKI|r ATT status found - COLLECTED: '%s' (ID: %d)", text, itemID))
-					end
-
-					break
-				elseif string.find(lowerText, "known") then
-					attStatus = true
-					if self.db and self.db.debugMode then
-						print(string.format("|cffff69b4DOKI|r ATT status found - COLLECTED: '%s' (ID: %d)", text, itemID))
-					end
-
-					break
-				end
-			end
-		end
-	end
-
-	tooltip:Hide()
-	tooltip:SetParent(nil)
-	-- Cache the result if we found ATT status
-	if attStatus ~= nil then
-		self:SetCachedCollectionStatus(itemID, itemLink, attStatus, false)
-	end
-
-	return attStatus
-end
-
 -- ADDED: Extract species ID from caged pet (battlepet) links
 function DOKI:GetPetSpeciesFromBattlePetLink(itemLink)
 	if not itemLink or not string.find(itemLink, "battlepet:") then
@@ -1675,21 +1831,34 @@ function DOKI:IsPetSpeciesCollected(speciesID)
 	return numCollected and numCollected > 0
 end
 
--- WAR WITHIN FIXED: Enhanced collection detection with caged pets, ensembles, and corrected APIs
+-- WAR WITHIN FIXED: Enhanced collection detection with caged pets, ensembles, purple indicators, and corrected APIs
 function DOKI:IsItemCollected(itemID, itemLink)
-	if not itemID and not itemLink then return false, false end
+	if not itemID and not itemLink then return false, false, false end
 
 	-- ATT MODE: Try to get ATT status first (if enabled)
 	if self.db and self.db.attMode then
-		local attStatus = self:GetATTCollectionStatus(itemID, itemLink)
+		local attStatus, attShowYellowD, attShowPurple = self:GetATTCollectionStatus(itemID, itemLink)
 		if attStatus ~= nil then
 			-- ATT gave us a definitive answer
 			if self.db and self.db.debugMode then
-				print(string.format("|cffff69b4DOKI|r Using ATT result for item %d: %s",
-					itemID, attStatus and "COLLECTED" or "NOT COLLECTED"))
+				local statusText = attStatus and "COLLECTED" or "NOT COLLECTED"
+				local indicatorText = ""
+				if attShowPurple then
+					indicatorText = " (show purple indicator)"
+				elseif attShowYellowD then
+					indicatorText = " (show blue indicator)"
+				end
+
+				print(string.format("|cffff69b4DOKI|r Using ATT result for item %d: %s%s",
+					itemID, statusText, indicatorText))
 			end
 
-			return attStatus, false -- ATT doesn't use showYellowD logic
+			-- Handle purple indicators for fractional items
+			if attShowPurple then
+				return false, false, true           -- Not collected, don't show yellow D, show purple
+			else
+				return attStatus, attShowYellowD, false -- Normal ATT result, don't show purple
+			end
 		end
 
 		-- ATT didn't have data for this item, continue with fallback logic
@@ -1701,8 +1870,8 @@ function DOKI:IsItemCollected(itemID, itemLink)
 	-- ADDED: Handle ensembles first
 	local itemName = C_Item.GetItemInfo(itemID)
 	if self:IsEnsembleItem(itemID, itemName) then
-		local isCollected = self:IsEnsembleCollected(itemID, itemLink)
-		return isCollected, false
+		local isCollected, showYellowD, showPurple = self:IsEnsembleCollected(itemID, itemLink)
+		return isCollected, showYellowD, showPurple
 	end
 
 	-- ADDED: Handle caged pets (battlepet links) next
@@ -1710,38 +1879,41 @@ function DOKI:IsItemCollected(itemID, itemLink)
 	if petSpeciesID then
 		local isCollected = self:IsPetSpeciesCollected(petSpeciesID)
 		-- Cache the result using itemLink as key since no itemID
-		self:SetCachedCollectionStatus(petSpeciesID, itemLink, isCollected, false)
-		return isCollected, false
+		self:SetCachedCollectionStatus(petSpeciesID, itemLink, isCollected, false, false)
+		return isCollected, false, false
 	end
 
-	if not itemID then return false, false end
+	if not itemID then return false, false, false end
 
 	-- Check cache first
-	local cachedCollected, cachedYellowD = self:GetCachedCollectionStatus(itemID, itemLink)
+	local cachedCollected, cachedYellowD, cachedPurple = self:GetCachedCollectionStatus(itemID, itemLink)
 	if cachedCollected ~= nil then
-		return cachedCollected, cachedYellowD
+		return cachedCollected, cachedYellowD, cachedPurple
 	end
 
 	local _, itemType, itemSubType, itemEquipLoc, icon, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
 	if not classID or not subClassID then
 		-- Cache negative result briefly
-		self:SetCachedCollectionStatus(itemID, itemLink, false, false)
-		return false, false
+		self:SetCachedCollectionStatus(itemID, itemLink, false, false, false)
+		return false, false, false
 	end
 
-	local isCollected, showYellowD = false, false
+	local isCollected, showYellowD, showPurple = false, false, false
 	-- Check mounts - FIXED FOR WAR WITHIN
 	if classID == 15 and subClassID == 5 then
 		isCollected = self:IsMountCollectedWarWithin(itemID)
 		showYellowD = false
+		showPurple = false
 		-- Check pets - FIXED FOR WAR WITHIN
 	elseif classID == 15 and subClassID == 2 then
 		isCollected = self:IsPetCollectedWarWithin(itemID)
 		showYellowD = false
+		showPurple = false
 		-- Check toys
 	elseif C_ToyBox and C_ToyBox.GetToyInfo(itemID) then
 		isCollected = PlayerHasToy(itemID)
 		showYellowD = false
+		showPurple = false
 		-- Check transmog
 	elseif classID == 2 or classID == 4 then
 		if self.db and self.db.smartMode then
@@ -1749,11 +1921,13 @@ function DOKI:IsItemCollected(itemID, itemLink)
 		else
 			isCollected, showYellowD = self:IsTransmogCollected(itemID, itemLink)
 		end
+
+		showPurple = false -- Transmog items don't use purple indicators (that's only for ATT fractional)
 	end
 
 	-- Cache the result
-	self:SetCachedCollectionStatus(itemID, itemLink, isCollected, showYellowD)
-	return isCollected, showYellowD
+	self:SetCachedCollectionStatus(itemID, itemLink, isCollected, showYellowD, showPurple)
+	return isCollected, showYellowD, showPurple
 end
 
 -- WAR WITHIN FIXED: Use the correct GetMountFromItem API
@@ -2162,6 +2336,8 @@ function DOKI:DebugFoundFrames()
 		local extraInfo = ""
 		if frameInfo.itemData.petSpeciesID then
 			extraInfo = string.format(" [Pet Species: %d]", frameInfo.itemData.petSpeciesID)
+		elseif frameInfo.itemData.showPurple then
+			extraInfo = " [Purple Indicator]"
 		end
 
 		print(string.format("%d. %s (ID: %d) in %s [%s] - %s%s",
@@ -2185,7 +2361,8 @@ function DOKI:DebugBattlepetSnapshot()
 	local battlepetCount = 0
 	local regularItemCount = 0
 	local ensembleCount = 0
-	print("|cffff69b4DOKI|r === BATTLEPET + ENSEMBLE SNAPSHOT DEBUG ===")
+	local purpleIndicatorCount = 0
+	print("|cffff69b4DOKI|r === BATTLEPET + ENSEMBLE + PURPLE SNAPSHOT DEBUG ===")
 	for button, itemData in pairs(snapshot) do
 		if type(itemData) == "table" and itemData.itemID then
 			if itemData.itemLink and string.find(itemData.itemLink, "battlepet:") then
@@ -2200,14 +2377,25 @@ function DOKI:DebugBattlepetSnapshot()
 					button:GetName() or "unnamed", itemName, itemData.itemID))
 			else
 				regularItemCount = regularItemCount + 1
+				-- Check if this would get a purple indicator from ATT
+				if self.db and self.db.attMode then
+					local _, _, showPurple = self:GetATTCollectionStatus(itemData.itemID, itemData.itemLink)
+					if showPurple then
+						purpleIndicatorCount = purpleIndicatorCount + 1
+						local itemName = C_Item.GetItemInfo(itemData.itemID) or "Unknown"
+						print(string.format("  Purple Indicator: %s -> %s (ID: %d)",
+							button:GetName() or "unnamed", itemName, itemData.itemID))
+					end
+				end
 			end
 		else
 			regularItemCount = regularItemCount + 1
 		end
 	end
 
-	print(string.format("Total snapshot items: %d (%d regular, %d battlepets, %d ensembles)",
-		regularItemCount + battlepetCount + ensembleCount, regularItemCount, battlepetCount, ensembleCount))
+	print(string.format("Total snapshot items: %d (%d regular, %d battlepets, %d ensembles, %d purple indicators)",
+		regularItemCount + battlepetCount + ensembleCount, regularItemCount, battlepetCount, ensembleCount,
+		purpleIndicatorCount))
 	print("|cffff69b4DOKI|r === END SNAPSHOT DEBUG ===")
 end
 

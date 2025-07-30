@@ -481,12 +481,13 @@ function DOKI:GetItemDataForSurgicalUpdate(itemID, itemLink)
 
 	if not self:IsCollectibleItem(itemID, itemLink) then return nil end
 
-	local isCollected, showYellowD = self:IsItemCollected(itemID, itemLink)
+	local isCollected, showYellowD, showPurple = self:IsItemCollected(itemID, itemLink)
 	return {
 		itemID = itemID,
 		itemLink = itemLink,
 		isCollected = isCollected,
 		showYellowD = showYellowD,
+		showPurple = showPurple,
 		frameType = "surgical",
 	}
 end
@@ -501,11 +502,13 @@ function DOKI:AddButtonIndicator(button, itemData)
 	local textureData = self:GetButtonTexture(button)
 	if not textureData then return false end
 
-	-- Set color
-	if itemData.showYellowD then
-		textureData:SetColor(0.082, 0.671, 1.0) -- Blue
+	-- Set color based on indicator type
+	if itemData.showPurple then
+		textureData:SetColor(1.0, 0.4, 0.7)   -- Purple for fractional items -- Adjusted to pink for better visibility
+	elseif itemData.showYellowD then
+		textureData:SetColor(0.082, 0.671, 1.0) -- Blue for other sources
 	else
-		textureData:SetColor(1.0, 0.573, 0.2) -- Orange
+		textureData:SetColor(1.0, 0.573, 0.2) -- Orange for uncollected
 	end
 
 	textureData:Show()
