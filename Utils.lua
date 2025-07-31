@@ -135,6 +135,16 @@ end
 -- ===== CORE ITEM DETECTION =====
 -- FIXED: Enhanced collectible item detection with better data loading
 function DOKI:IsCollectibleItem(itemID, itemLink)
+	-- ATT MODE: Consider ALL items as potentially collectible
+	if self.db and self.db.attMode then
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r ATT mode: treating item %d as collectible for parsing", itemID or 0))
+		end
+
+		return true
+	end
+
+	-- EXISTING LOGIC: Only for non-ATT mode
 	-- ADDED: Check for ensembles first
 	if self:IsEnsembleItem(itemID) then
 		return true
@@ -237,16 +247,23 @@ end
 function DOKI:IsItemCollected(itemID, itemLink)
 	if not itemID and not itemLink then return false, false, false end
 
-	-- ATT MODE: Try to get ATT status first (if enabled)
+	-- ATT MODE: ONLY use ATT data, ignore items ATT doesn't know about
 	if self.db and self.db.attMode then
 		local attStatus, attShowYellowD, attShowPurple = self:GetATTCollectionStatus(itemID, itemLink)
-		if attStatus ~= nil then
+		if attStatus == "NO_ATT_DATA" then
+			-- ATT has no data for this item - treat as "not relevant" (no indicator)
+			if self.db and self.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r ATT mode: No ATT data for item %d, treating as not relevant", itemID))
+			end
+
+			return true, false, false -- Return "collected" so no indicator is shown
+		elseif attStatus ~= nil then
 			-- ATT gave us a definitive answer
 			if self.db and self.db.debugMode then
 				local statusText = attStatus and "COLLECTED" or "NOT COLLECTED"
 				local indicatorText = ""
 				if attShowPurple then
-					indicatorText = " (show purple indicator)"
+					indicatorText = " (show pink indicator)"
 				elseif attShowYellowD then
 					indicatorText = " (show blue indicator)"
 				end
@@ -261,14 +278,18 @@ function DOKI:IsItemCollected(itemID, itemLink)
 			else
 				return attStatus, attShowYellowD, false -- Normal ATT result, don't show purple
 			end
-		end
+		else
+			-- ATT is still processing this item - return "collected" temporarily to avoid false indicators
+			if self.db and self.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r ATT mode: Item %d still being processed, returning temporary 'collected'",
+					itemID))
+			end
 
-		-- ATT didn't have data for this item, continue with fallback logic
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r No ATT data for item %d, using fallback logic", itemID))
+			return true, false, false -- Return "collected" temporarily until ATT processes it
 		end
 	end
 
+	-- EXISTING LOGIC: Only for non-ATT mode
 	-- ADDED: Handle ensembles first
 	local itemName = C_Item.GetItemInfo(itemID)
 	if self:IsEnsembleItem(itemID, itemName) then

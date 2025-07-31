@@ -430,197 +430,6 @@ SlashCmdList["DOKI"] = function(msg)
 		end
 
 		print(string.format("  Collection cache entries: %d", cacheCount))
-	elseif command == "initensemble" then
-		DOKI:InitializeEnsembleDetection()
-		print("|cffff69b4DOKI|r Ensemble detection re-initialized")
-		-- Show result
-		local ensembleWord = DOKI.ensembleWordCache
-		if ensembleWord then
-			print(string.format("|cffff69b4DOKI|r Successfully extracted ensemble word: '%s'", ensembleWord))
-		else
-			print("|cffff69b4DOKI|r Failed to extract ensemble word - check if item 234522 is available")
-		end
-	elseif string.find(command, "testensemble") then
-		-- Extract item ID from command like "testensemble 12345"
-		local itemID = tonumber(string.match(command, "testensemble (%d+)"))
-		if not itemID then
-			itemID = 234522 -- Default to known ensemble
-		end
-
-		print(string.format("|cffff69b4DOKI|r Testing ensemble detection for item %d", itemID))
-		if DOKI.TraceEnsembleDetection then
-			DOKI:TraceEnsembleDetection(itemID, nil)
-		else
-			print("|cffff69b4DOKI|r TraceEnsembleDetection function not available")
-		end
-	elseif command == "testbagensembles" then
-		print("|cffff69b4DOKI|r === SCANNING BAGS FOR ENSEMBLES ===")
-		local totalItems = 0
-		local ensembleItems = 0
-		local collectedEnsembles = 0
-		local needIndicatorEnsembles = 0
-		for bagID = 0, NUM_BAG_SLOTS do
-			local numSlots = C_Container.GetContainerNumSlots(bagID)
-			if numSlots and numSlots > 0 then
-				for slotID = 1, numSlots do
-					local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
-					if itemInfo and itemInfo.itemID then
-						totalItems = totalItems + 1
-						if DOKI:IsEnsembleItem(itemInfo.itemID) then
-							ensembleItems = ensembleItems + 1
-							local itemName = C_Item.GetItemInfo(itemInfo.itemID) or "Unknown"
-							local isCollected = DOKI:IsEnsembleCollected(itemInfo.itemID, itemInfo.hyperlink)
-							if isCollected then
-								collectedEnsembles = collectedEnsembles + 1
-								print(string.format("   %s (ID: %d) - COLLECTED", itemName, itemInfo.itemID))
-							else
-								needIndicatorEnsembles = needIndicatorEnsembles + 1
-								print(string.format("   %s (ID: %d) - NEEDS INDICATOR", itemName, itemInfo.itemID))
-							end
-						end
-					end
-				end
-			end
-		end
-
-		print(string.format("|cffff69b4DOKI|r Bag scan complete:"))
-		print(string.format("  Total items: %d", totalItems))
-		print(string.format("  Ensemble items: %d", ensembleItems))
-		print(string.format("  Collected ensembles: %d", collectedEnsembles))
-		print(string.format("  Need indicators: %d", needIndicatorEnsembles))
-		if ensembleItems == 0 then
-			print("|cffff69b4DOKI|r No ensembles found in bags. Try with known ensemble items.")
-		end
-	elseif string.find(command, "why ") or string.find(command, "trace ") then
-		-- Extract item ID from command like "why 12345" or "trace 12345"
-		local itemID = tonumber(string.match(command, "%d+"))
-		if itemID then
-			DOKI:TraceItemDetection(itemID, nil)
-		else
-			print("|cffff69b4DOKI|r Usage: /doki why <itemID> or /doki trace <itemID>")
-			print("|cffff69b4DOKI|r Example: /doki why 61357")
-		end
-	elseif command == "testconnection" or command == "testbridge" then
-		print("|cffff69b4DOKI|r === TESTING SURGICAL→TEXTURE CONNECTION ===")
-		print("|cffff69b4DOKI|r Testing the bridge between surgical detection and button textures...")
-		if DOKI.ProcessSurgicalUpdate then
-			print("   ProcessSurgicalUpdate function exists")
-			local changes = DOKI:ProcessSurgicalUpdate()
-			print(string.format("   Surgical update completed: %d changes detected", changes))
-			local activeCount = 0
-			local battlepetCount = 0
-			if DOKI.buttonTextures then
-				for _, textureData in pairs(DOKI.buttonTextures) do
-					if textureData.isActive then
-						activeCount = activeCount + 1
-						if textureData.itemLink and string.find(textureData.itemLink, "battlepet:") then
-							battlepetCount = battlepetCount + 1
-						end
-					end
-				end
-			end
-
-			print(string.format("   Active button textures: %d (%d battlepets)", activeCount, battlepetCount))
-		else
-			print("   ProcessSurgicalUpdate function missing!")
-		end
-
-		print("|cffff69b4DOKI|r Event system status:")
-		if DOKI.eventFrame then
-			print("   Event frame exists")
-			print("   Listening for: PET_JOURNAL_LIST_UPDATE, COMPANION_LEARNED/UNLEARNED")
-			print("   |cffff8000NEW:|r Listening for: MERCHANT_SHOW, MERCHANT_UPDATE, MERCHANT_CLOSED")
-			print("   Removed noisy events: COMPANION_UPDATE, MOUNT_JOURNAL_USABILITY_CHANGED")
-		else
-			print("   Event frame missing!")
-		end
-
-		print("|cffff69b4DOKI|r Merchant system status:")
-		if DOKI.InitializeMerchantScrollDetection then
-			print("   Merchant scroll detection available")
-			if MerchantFrame and MerchantFrame:IsVisible() then
-				print("   Merchant is open - testing scroll hooks")
-				local scrollBox = MerchantFrame.ScrollBox
-				if scrollBox then
-					print("     ScrollBox found")
-					print(string.format("    Mouse wheel enabled: %s", tostring(scrollBox:IsMouseWheelEnabled())))
-				else
-					print("     ScrollBox not found")
-				end
-			else
-				print("   Merchant is closed - open a merchant to test")
-			end
-		else
-			print("   Merchant scroll detection missing!")
-		end
-
-		print("|cffff69b4DOKI|r Connection test complete!")
-	elseif command == "buttondebug" then
-		if DOKI.DebugButtonTextures then
-			DOKI:DebugButtonTextures()
-		else
-			print("|cffff69b4DOKI|r Button texture debug not available")
-		end
-	elseif command == "testbutton" then
-		if DOKI.TestButtonTextureCreation then
-			DOKI:TestButtonTextureCreation()
-		else
-			print("|cffff69b4DOKI|r Button texture test not available")
-		end
-	elseif command == "snapshot" then
-		if DOKI.CreateButtonSnapshot then
-			local snapshot = DOKI:CreateButtonSnapshot()
-			local count = 0
-			local battlepetCount = 0
-			for button, itemData in pairs(snapshot) do
-				count = count + 1
-				if count <= 5 then
-					local buttonName = ""
-					local nameSuccess, name = pcall(button.GetName, button)
-					if nameSuccess and name then
-						buttonName = name
-					else
-						buttonName = "unnamed"
-					end
-
-					local itemName = C_Item.GetItemInfo(itemData.itemID) or "Unknown"
-					local extraInfo = ""
-					if itemData.itemLink and string.find(itemData.itemLink, "battlepet:") then
-						battlepetCount = battlepetCount + 1
-						local speciesID = DOKI:GetPetSpeciesFromBattlePetLink(itemData.itemLink)
-						extraInfo = string.format(" [Battlepet Species: %d]", speciesID or 0)
-					end
-
-					print(string.format("|cffff69b4DOKI|r %s: %s (ID: %d)%s",
-						buttonName, itemName, itemData.itemID, extraInfo))
-				elseif itemData.itemLink and string.find(itemData.itemLink, "battlepet:") then
-					battlepetCount = battlepetCount + 1
-				end
-			end
-
-			if count > 5 then
-				print(string.format("|cffff69b4DOKI|r ... and %d more buttons", count - 5))
-			end
-
-			print(string.format("|cffff69b4DOKI|r Total: %d buttons with items (%d battlepets)", count, battlepetCount))
-		else
-			print("|cffff69b4DOKI|r Snapshot function not available")
-		end
-
-		-- ADDED: New battlepet-specific debug command
-	elseif command == "battlepet" or command == "bp" then
-		if DOKI.DebugBattlepetSnapshot then
-			DOKI:DebugBattlepetSnapshot()
-		else
-			print("|cffff69b4DOKI|r Battlepet debug function not available")
-		end
-	elseif command == "performance" or command == "perf" then
-		if DOKI.ShowPerformanceStats then
-			DOKI:ShowPerformanceStats()
-		else
-			print("|cffff69b4DOKI|r Performance stats not available")
-		end
-	elseif command == "frames" then
 		if DOKI.DebugFoundFrames then
 			DOKI:DebugFoundFrames()
 		else
@@ -648,6 +457,475 @@ SlashCmdList["DOKI"] = function(msg)
 				end
 			end)
 		end
+	elseif command == "attbatch" then
+		print("|cffff69b4DOKI|r === ATT BATCH PROCESSING STATUS ===")
+		print(string.format("ATT Mode: %s", DOKI.db.attMode and "ENABLED" or "DISABLED"))
+		print(string.format("Queue size: %d items", #(DOKI.attBatchQueue or {})))
+		print(string.format("Currently processing: %s", DOKI.attBatchProcessing and "YES" or "NO"))
+		local cacheCount = 0
+		local attCacheCount = 0
+		if DOKI.collectionCache then
+			for key, cached in pairs(DOKI.collectionCache) do
+				cacheCount = cacheCount + 1
+				if cached.isATTResult then
+					attCacheCount = attCacheCount + 1
+				end
+			end
+		end
+
+		print(string.format("Cache entries: %d total (%d ATT results)", cacheCount, attCacheCount))
+		if #(DOKI.attBatchQueue or {}) > 0 then
+			print("Next 5 items in queue:")
+			for i = 1, math.min(5, #DOKI.attBatchQueue) do
+				local item = DOKI.attBatchQueue[i]
+				local itemName = C_Item.GetItemInfo(item.itemID) or "Unknown"
+				print(string.format("  %d. %s (ID: %d)", i, itemName, item.itemID))
+			end
+		end
+	elseif command == "attclear" then
+		DOKI:ClearATTBatchQueue()
+		-- Also clear ATT cache
+		local cleared = 0
+		if DOKI.collectionCache then
+			for key, cached in pairs(DOKI.collectionCache) do
+				if cached.isATTResult then
+					DOKI.collectionCache[key] = nil
+					cleared = cleared + 1
+				end
+			end
+		end
+
+		print(string.format("|cffff69b4DOKI|r Cleared ATT batch queue and %d cached ATT results", cleared))
+	elseif command == "debugatt" then
+		if not DOKI.db.attMode then
+			print("|cffff69b4DOKI|r ATT mode is disabled. Enable with /doki att")
+			return
+		end
+
+		print("|cffff69b4DOKI|r === ATT DEBUG - TRACING INDICATOR CREATION ===")
+		-- Enable debug mode temporarily
+		local oldDebug = DOKI.db.debugMode
+		DOKI.db.debugMode = true
+		-- Force a scan to see what happens
+		print("|cffff69b4DOKI|r Running full scan with debug enabled...")
+		local count = DOKI:FullItemScan()
+		-- Restore debug mode
+		DOKI.db.debugMode = oldDebug
+		print(string.format("|cffff69b4DOKI|r Full scan complete: %d indicators created", count))
+		print("|cffff69b4DOKI|r Check the output above to see which items got indicators and why")
+	elseif string.find(command, "attrace ") then
+		-- Extract item ID from command like "attrace 12345"
+		local itemID = tonumber(string.match(command, "%d+"))
+		if not itemID then
+			print("|cffff69b4DOKI|r Usage: /doki attrace <itemID>")
+			print("|cffff69b4DOKI|r Example: /doki attrace 226107")
+			return
+		end
+
+		if not DOKI.db.attMode then
+			print("|cffff69b4DOKI|r ATT mode is disabled. Enable with /doki att")
+			return
+		end
+
+		print(string.format("|cffff69b4DOKI|r === ATT TRACE FOR ITEM %d ===", itemID))
+		local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+		print(string.format("Item: %s (ID: %d)", itemName, itemID))
+		-- Step 1: Check if considered collectible
+		local isCollectible = DOKI:IsCollectibleItem(itemID, nil)
+		print(string.format("IsCollectibleItem (ATT mode): %s", isCollectible and "TRUE" or "FALSE"))
+		-- Step 2: Check ATT status directly
+		local attCollected, attYellowD, attPurple = DOKI:ParseATTTooltipDirect(itemID, nil)
+		print("Direct ATT parsing:")
+		if attCollected ~= nil then
+			print(string.format("  Result: %s", attCollected and "COLLECTED" or "NOT COLLECTED"))
+			print(string.format("  Show Yellow D: %s", attYellowD and "YES" or "NO"))
+			print(string.format("  Show Purple: %s", attPurple and "YES" or "NO"))
+		else
+			print("  Result: NO ATT DATA")
+		end
+
+		-- Step 3: Check what IsItemCollected returns
+		local isCollected, showYellowD, showPurple = DOKI:IsItemCollected(itemID, nil)
+		print("IsItemCollected result:")
+		print(string.format("  Collected: %s", isCollected and "TRUE" or "FALSE"))
+		print(string.format("  Show Yellow D: %s", showYellowD and "YES" or "NO"))
+		print(string.format("  Show Purple: %s", showPurple and "YES" or "NO"))
+		-- Step 4: Determine if indicator should be created
+		local shouldGetIndicator = isCollectible and (not isCollected or showPurple)
+		print(string.format("Should get indicator: %s", shouldGetIndicator and "YES" or "NO"))
+		if shouldGetIndicator then
+			local colorType = "NONE"
+			if not isCollected and not showPurple then
+				colorType = "ORANGE"
+			elseif showPurple then
+				colorType = "PINK"
+			elseif isCollected and showYellowD then
+				colorType = "BLUE"
+			end
+
+			print(string.format("Indicator color: %s", colorType))
+		end
+
+		print("|cffff69b4DOKI|r === END TRACE ===")
+	elseif command == "testatt" then
+		if not DOKI.db.attMode then
+			print("|cffff69b4DOKI|r ATT mode is disabled. Enable with /doki att")
+			return
+		end
+
+		print("|cffff69b4DOKI|r === TESTING ENHANCED ATT MODE ===")
+		print("|cffff69b4DOKI|r Scanning first 10 items in bags for ATT data...")
+		print("|cffff69b4DOKI|r (Only items with ATT data will get indicators)")
+		local tested = 0
+		local attDataFound = 0
+		for bagID = 0, NUM_BAG_SLOTS do
+			local numSlots = C_Container.GetContainerNumSlots(bagID)
+			if numSlots and numSlots > 0 then
+				for slotID = 1, numSlots do
+					local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+					if itemInfo and itemInfo.itemID and tested < 10 then
+						tested = tested + 1
+						local itemName = C_Item.GetItemInfo(itemInfo.itemID) or "Unknown"
+						-- Test direct parsing
+						local isCollected, showYellowD, showPurple = DOKI:ParseATTTooltipDirect(itemInfo.itemID, itemInfo.hyperlink)
+						if isCollected ~= nil then
+							attDataFound = attDataFound + 1
+							local colorType = "NONE"
+							if not isCollected and not showPurple then
+								colorType = "ORANGE (0/number or not collected)"
+							elseif showPurple then
+								colorType = "PINK (>0/number partial)"
+							elseif isCollected and showYellowD then
+								colorType = "BLUE (other source)"
+							elseif isCollected then
+								colorType = "NONE (fully collected)"
+							end
+
+							print(string.format("  ✓ %s (ID: %d) - %s - Indicator: %s",
+								itemName, itemInfo.itemID,
+								isCollected and "COLLECTED" or "NOT COLLECTED",
+								colorType))
+						else
+							print(string.format("  - %s (ID: %d) - No ATT data (will be ignored)",
+								itemName, itemInfo.itemID))
+						end
+					end
+				end
+			end
+
+			if tested >= 10 then break end
+		end
+
+		if tested == 0 then
+			print("|cffff69b4DOKI|r No items found in bags")
+		else
+			print(string.format("|cffff69b4DOKI|r Summary: %d/%d items have ATT data", attDataFound, tested))
+			print("|cffff69b4DOKI|r Items without ATT data will not get indicators in ATT mode")
+		end
+	elseif command == "testattall" then
+		if not DOKI.db.attMode then
+			print("|cffff69b4DOKI|r ATT mode is disabled. Enable with /doki att")
+			return
+		end
+
+		print("|cffff69b4DOKI|r === TESTING ALL ITEMS FOR ATT DATA ===")
+		local totalItems = 0
+		local attDataFound = 0
+		local needsOrangeIndicator = 0
+		local needsPinkIndicator = 0
+		local needsBlueIndicator = 0
+		for bagID = 0, NUM_BAG_SLOTS do
+			local numSlots = C_Container.GetContainerNumSlots(bagID)
+			if numSlots and numSlots > 0 then
+				for slotID = 1, numSlots do
+					local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+					if itemInfo and itemInfo.itemID then
+						totalItems = totalItems + 1
+						-- Test direct parsing
+						local isCollected, showYellowD, showPurple = DOKI:ParseATTTooltipDirect(itemInfo.itemID, itemInfo.hyperlink)
+						if isCollected ~= nil then
+							attDataFound = attDataFound + 1
+							if not isCollected and not showPurple then
+								needsOrangeIndicator = needsOrangeIndicator + 1
+							elseif showPurple then
+								needsPinkIndicator = needsPinkIndicator + 1
+							elseif isCollected and showYellowD then
+								needsBlueIndicator = needsBlueIndicator + 1
+							end
+						end
+					end
+				end
+			end
+		end
+
+		print(string.format("Total items in bags: %d", totalItems))
+		print(string.format("Items with ATT data: %d (%.1f%%)", attDataFound, (attDataFound / totalItems) * 100))
+		print(string.format("Would get ORANGE indicators: %d", needsOrangeIndicator))
+		print(string.format("Would get PINK indicators: %d", needsPinkIndicator))
+		print(string.format("Would get BLUE indicators: %d", needsBlueIndicator))
+		print(string.format("Total indicators: %d", needsOrangeIndicator + needsPinkIndicator + needsBlueIndicator))
+	elseif command == "attperf" then
+		-- Set performance-tuned ATT settings based on test results
+		local batchSize = 20  -- From optimization results
+		local batchDelay = 0.03 -- Faster delay for automatic scans
+		DOKI:SetATTPerformanceSettings(batchSize, batchDelay)
+		print(string.format("|cffff69b4DOKI|r Set performance-tuned ATT settings: %d items/batch, %.0fms delay",
+			batchSize, batchDelay * 1000))
+		print("|cffff69b4DOKI|r These settings are now active for automatic bag scanning")
+	elseif string.find(command, "attperf ") then
+		-- Custom performance settings: /doki attperf 15 0.02
+		local params = {}
+		for param in string.gmatch(command, "%S+") do
+			table.insert(params, param)
+		end
+
+		local batchSize = tonumber(params[2])
+		local delay = tonumber(params[3])
+		if not batchSize then
+			print("|cffff69b4DOKI|r Usage: /doki attperf <batchSize> [delay]")
+			print("|cffff69b4DOKI|r Example: /doki attperf 15 0.02")
+			print("|cffff69b4DOKI|r Current settings:")
+			local currentBatch, currentDelay = DOKI:GetATTPerformanceSettings()
+			print(string.format("  Batch size: %d items", currentBatch))
+			print(string.format("  Delay: %.0fms", currentDelay * 1000))
+			return
+		end
+
+		DOKI:SetATTPerformanceSettings(batchSize, delay)
+		local actualBatch, actualDelay = DOKI:GetATTPerformanceSettings()
+		print(string.format("|cffff69b4DOKI|r Updated ATT performance settings: %d items/batch, %.0fms delay",
+			actualBatch, actualDelay * 1000))
+	elseif command == "testbags" then
+		print("|cffff69b4DOKI|r === TESTING ENHANCED BAG DETECTION ===")
+		print("|cffff69b4DOKI|r Checking for visible bag frames...")
+		-- Test ElvUI
+		local elvuiVisible = false
+		if ElvUI then
+			elvuiVisible = DOKI:IsElvUIBagVisible()
+			print(string.format("  ElvUI bags visible: %s", tostring(elvuiVisible)))
+		else
+			print("  ElvUI: Not loaded")
+		end
+
+		-- Test Blizzard methods
+		print("  Blizzard UI detection:")
+		local combinedVisible = ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown()
+		print(string.format("    Combined bags: %s", tostring(combinedVisible)))
+		local containerCount = 0
+		for bagID = 0, NUM_BAG_SLOTS do
+			local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
+			if containerFrame and containerFrame:IsVisible() then
+				containerCount = containerCount + 1
+				print(string.format("    ContainerFrame%d: visible", bagID + 1))
+			end
+		end
+
+		print(string.format("    Individual containers visible: %d", containerCount))
+		local anyUIVisible = elvuiVisible or combinedVisible or containerCount > 0
+		print(string.format("  Would trigger surgical update: %s", tostring(anyUIVisible)))
+		if anyUIVisible then
+			print("|cffff69b4DOKI|r Running enhanced scan to see what happens...")
+			print("  Items detected in bags via Container API:")
+			local totalItems = 0
+			local collectibleItems = 0
+			local battlepetItems = 0
+			for bagID = 0, NUM_BAG_SLOTS do
+				local numSlots = C_Container.GetContainerNumSlots(bagID)
+				if numSlots and numSlots > 0 then
+					for slotID = 1, numSlots do
+						local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+						if itemInfo and itemInfo.itemID then
+							totalItems = totalItems + 1
+							if DOKI:IsCollectibleItem(itemInfo.itemID, itemInfo.hyperlink) then
+								collectibleItems = collectibleItems + 1
+								local itemName = C_Item.GetItemInfo(itemInfo.itemID) or "Unknown"
+								local isCollected = DOKI:IsItemCollected(itemInfo.itemID, itemInfo.hyperlink)
+								local extraInfo = ""
+								-- Check if it's a battlepet
+								if itemInfo.hyperlink and string.find(itemInfo.hyperlink, "battlepet:") then
+									battlepetItems = battlepetItems + 1
+									local speciesID = DOKI:GetPetSpeciesFromBattlePetLink(itemInfo.hyperlink)
+									extraInfo = string.format(" [Battlepet Species: %d]", speciesID or 0)
+								end
+
+								print(string.format("    Bag %d Slot %d: %s (ID: %d) - %s%s",
+									bagID, slotID, itemName, itemInfo.itemID,
+									isCollected and "COLLECTED" or "NEEDS INDICATOR", extraInfo))
+							end
+						end
+					end
+				end
+			end
+
+			print(string.format("  Total items: %d, Collectible items: %d (%d battlepets)",
+				totalItems, collectibleItems, battlepetItems))
+			-- Test the enhanced scanning
+			local startTime = GetTime()
+			local count = DOKI:ScanBagFrames()
+			local endTime = GetTime()
+			local duration = endTime - startTime
+			print(string.format("  Enhanced scan result: %d indicators created in %.3fs", count, duration))
+			if DOKI.db.attMode then
+				local batchSize, delay = DOKI:GetATTPerformanceSettings()
+				print(string.format("  ATT performance settings: %d items/batch, %.0fms delay", batchSize, delay * 1000))
+			end
+		else
+			print("|cffff69b4DOKI|r No bags visible - open your bags and try again")
+		end
+	elseif command == "scanperf" then
+		-- Show current scanning performance and settings
+		print("|cffff69b4DOKI|r === SCANNING PERFORMANCE STATUS ===")
+		print(string.format("ATT Mode: %s", DOKI.db.attMode and "ENABLED" or "DISABLED"))
+		if DOKI.db.attMode then
+			local currentBatch, currentDelay = DOKI:GetATTPerformanceSettings()
+			print(string.format("Performance settings: %d items/batch, %.0fms delay",
+				currentBatch, currentDelay * 1000))
+			-- Show cache status
+			local cacheCount = 0
+			local attCacheCount = 0
+			local noDataCount = 0
+			if DOKI.collectionCache then
+				for key, cached in pairs(DOKI.collectionCache) do
+					cacheCount = cacheCount + 1
+					if cached.isATTResult then
+						attCacheCount = attCacheCount + 1
+						if cached.noATTData then
+							noDataCount = noDataCount + 1
+						end
+					end
+				end
+			end
+
+			print(string.format("Cache status: %d total entries (%d ATT results, %d 'no data' results)",
+				cacheCount, attCacheCount, noDataCount))
+			-- Show queue status
+			local queueSize = #(DOKI.attBatchQueue or {})
+			local processing = DOKI.attBatchProcessing and "YES" or "NO"
+			print(string.format("Batch queue: %d items, processing: %s", queueSize, processing))
+			-- Performance recommendation
+			if currentBatch < 10 then
+				print("|cffffff00SUGGESTION:|r Consider increasing batch size to 15-20 for better performance")
+			elseif currentBatch > 25 then
+				print("|cffffff00SUGGESTION:|r Consider decreasing batch size to 15-20 to reduce lag")
+			else
+				print("|cff00ff00OPTIMAL:|r Batch size is in the recommended range")
+			end
+
+			if currentDelay > 0.05 then
+				print("|cffffff00SUGGESTION:|r Consider decreasing delay to 0.03s for faster scanning")
+			elseif currentDelay < 0.02 then
+				print("|cffffff00SUGGESTION:|r Consider increasing delay to 0.03s to reduce lag")
+			else
+				print("|cff00ff00OPTIMAL:|r Delay is in the recommended range")
+			end
+		else
+			print("ATT mode disabled - using standard collectible detection")
+		end
+	elseif command == "bagtest" then
+		-- Quick bag opening performance test
+		if not DOKI.db.attMode then
+			print("|cffff69b4DOKI|r ATT mode is disabled. Enable with /doki att")
+			return
+		end
+
+		print("|cffff69b4DOKI|r === BAG OPENING PERFORMANCE TEST ===")
+		print("|cffff69b4DOKI|r This simulates what happens when you open your bags...")
+		-- Clear some cache to simulate first-time opening
+		local clearedItems = 0
+		if DOKI.collectionCache then
+			for key, cached in pairs(DOKI.collectionCache) do
+				if cached.isATTResult and math.random() < 0.3 then -- Clear 30% randomly
+					DOKI.collectionCache[key] = nil
+					clearedItems = clearedItems + 1
+				end
+			end
+		end
+
+		print(string.format("Cleared %d cache entries to simulate fresh bag opening", clearedItems))
+		-- Test the bag scanning performance
+		local startTime = GetTime()
+		local indicatorCount = DOKI:ScanBagFrames()
+		local endTime = GetTime()
+		local duration = endTime - startTime
+		local batchSize, delay = DOKI:GetATTPerformanceSettings()
+		print("|cffff69b4DOKI|r === BAG PERFORMANCE RESULTS ===")
+		print(string.format("Scan duration: %.3f seconds", duration))
+		print(string.format("Indicators created: %d", indicatorCount))
+		print(string.format("Performance settings: %d items/batch, %.0fms delay", batchSize, delay * 1000))
+		if duration < 0.5 then
+			print("|cff00ff00EXCELLENT:|r Bag opening should feel smooth")
+		elseif duration < 1.0 then
+			print("|cffffff00GOOD:|r Bag opening should be acceptable")
+		else
+			print("|cffff0000SLOW:|r Bag opening may feel laggy - consider adjusting settings")
+			print("|cffffff00TIP:|r Try '/doki attperf 25 0.02' for faster processing")
+		end
+	elseif command == "testfix" then
+		print("|cffff69b4DOKI|r === TESTING FIXED ATT SYSTEM ===")
+		DOKI:ClearATTBatchQueue()
+		local testCount = 0
+		for bagID = 0, NUM_BAG_SLOTS do
+			local numSlots = C_Container.GetContainerNumSlots(bagID)
+			if numSlots and numSlots > 0 then
+				for slotID = 1, math.min(5, numSlots) do
+					local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+					if itemInfo and itemInfo.itemID and testCount < 5 then
+						testCount = testCount + 1
+						local itemName = C_Item.GetItemInfo(itemInfo.itemID) or "Unknown"
+						print(string.format("Testing item %d: %s", testCount, itemName))
+						local startTime = GetTime()
+						local isCollected, showYellowD, showPurple = DOKI:IsItemCollected(itemInfo.itemID, itemInfo.hyperlink)
+						local endTime = GetTime()
+						print(string.format("  Result: %s (%.3fs)",
+							isCollected and "COLLECTED" or "NOT COLLECTED",
+							endTime - startTime))
+					end
+				end
+			end
+
+			if testCount >= 5 then break end
+		end
+	elseif command == "pace" then
+		-- Toggle paced processing
+		DOKI.attPerformanceSettings.useAsyncProcessing = not DOKI.attPerformanceSettings.useAsyncProcessing
+		local status = DOKI.attPerformanceSettings.useAsyncProcessing and "ENABLED" or "DISABLED"
+		print(string.format("|cffff69b4DOKI|r Paced processing: %s", status))
+		if DOKI.attPerformanceSettings.useAsyncProcessing then
+			print("ATT items will be processed in small batches to prevent FPS drops")
+		else
+			print("ATT items will be processed immediately (may cause FPS drops)")
+		end
+	elseif string.find(command, "pace ") then
+		-- Custom pace settings: /doki pace 3 0.02
+		local params = {}
+		for param in string.gmatch(command, "%S+") do
+			table.insert(params, param)
+		end
+
+		local batchSize = tonumber(params[2])
+		local delay = tonumber(params[3])
+		if batchSize then
+			DOKI.attPerformanceSettings.batchSize = math.max(1, math.min(20, batchSize))
+		end
+
+		if delay then
+			DOKI.attPerformanceSettings.batchDelay = math.max(0.01, math.min(0.2, delay))
+		end
+
+		print(string.format("|cffff69b4DOKI|r Pace settings: %d items/batch, %.0fms delay",
+			DOKI.attPerformanceSettings.batchSize,
+			DOKI.attPerformanceSettings.batchDelay * 1000))
+	elseif command == "pacestatus" then
+		-- Show current pace settings
+		print("|cffff69b4DOKI|r === PACING STATUS ===")
+		print(string.format("Paced processing: %s",
+			DOKI.attPerformanceSettings.useAsyncProcessing and "ENABLED" or "DISABLED"))
+		print(string.format("Batch size: %d items", DOKI.attPerformanceSettings.batchSize))
+		print(string.format("Batch delay: %.0fms", DOKI.attPerformanceSettings.batchDelay * 1000))
+		local queueSize = #(DOKI.attBatchQueue or {})
+		print(string.format("Current queue: %d items", queueSize))
+		print(string.format("Processing: %s", DOKI.attBatchProcessing and "YES" or "NO"))
+		print("|cffff69b4DOKI|r Fix test complete - should see no individual batch messages")
 	else
 		print("|cffff69b4DOKI|r War Within Enhanced Surgical System with Ensemble + Merchant Support Commands:")
 		print("")

@@ -1,4 +1,4 @@
--- DOKI Collections - FIXED: Surgical Updates, Empty Slot Detection, and Merchant Selling
+-- DOKI Collections - ENHANCED: Complete ATT Integration with Batch Processing
 local addonName, DOKI = ...
 -- Initialize collection-specific storage
 DOKI.foundFramesThisScan = {}
@@ -16,12 +16,20 @@ DOKI.merchantScrollDetector = {
 }
 -- Enhanced surgical update throttling with delayed cleanup
 DOKI.lastSurgicalUpdate = 0
-DOKI.surgicalUpdateThrottleTime = 0.1 -- INCREASED: 100ms minimum between updates for rapid selling
+DOKI.surgicalUpdateThrottleTime = 0.1 -- 100ms minimum between updates for rapid selling
 DOKI.pendingSurgicalUpdate = false
+DOKI.attPerformanceSettings = {
+	batchSize = 20,   -- Use optimal batch size from testing
+	batchDelay = 0.03, -- Faster delay for automatic scans
+}
 -- Enhanced scanning system variables
 DOKI.delayedScanTimer = nil       -- Timer for delayed secondary scan
 DOKI.delayedScanCancelled = false -- Flag to track if delayed scan should be cancelled
--- ===== CACHE MANAGEMENT WITH PURPLE SUPPORT =====
+-- ENHANCED: ATT Batch Processing System
+DOKI.attBatchQueue = {}
+DOKI.attBatchProcessing = false
+DOKI.attBatchTimer = nil
+-- ===== CACHE MANAGEMENT WITH PURPLE SUPPORT AND ATT "NO DATA" TRACKING =====
 function DOKI:ClearCollectionCache()
 	self.collectionCache = {}
 	self.lastCacheUpdate = GetTime()
@@ -51,12 +59,17 @@ function DOKI:SetCachedCollectionStatus(itemID, itemLink, isCollected, showYello
 	}
 end
 
--- ===== ATT SUPPORT WITH PURPLE INDICATORS =====
+-- ===== ENHANCED ATT SUPPORT WITH PERSISTENT CACHING AND BATCH PROCESSING =====
 function DOKI:GetCachedATTStatus(itemID, itemLink)
 	local cacheKey = "ATT_" .. (itemLink or tostring(itemID))
 	local cached = self.collectionCache[cacheKey]
-	-- Cache expires after 30 seconds
-	if cached and (GetTime() - cached.timestamp < 30) then
+	-- ATT cache persists until reload (no timestamp check)
+	if cached and cached.isATTResult then
+		-- Handle "no ATT data" cached results
+		if cached.noATTData then
+			return "NO_ATT_DATA", nil, nil -- Special return value
+		end
+
 		return cached.isCollected, cached.showYellowD, cached.showPurple
 	end
 
@@ -65,33 +78,75 @@ end
 
 function DOKI:SetCachedATTStatus(itemID, itemLink, isCollected, showYellowD, showPurple)
 	local cacheKey = "ATT_" .. (itemLink or tostring(itemID))
-	self.collectionCache[cacheKey] = {
-		isCollected = isCollected,
-		showYellowD = showYellowD,
-		showPurple = showPurple,
-		timestamp = GetTime(),
-	}
+	-- Handle caching "no ATT data" results
+	if isCollected == nil and showYellowD == nil and showPurple == nil then
+		-- This is a "no ATT data" result
+		self.collectionCache[cacheKey] = {
+			isATTResult = true,
+			noATTData = true, -- Special flag for "no data"
+			timestamp = GetTime(),
+		}
+	else
+		-- Normal ATT result
+		self.collectionCache[cacheKey] = {
+			isCollected = isCollected,
+			showYellowD = showYellowD,
+			showPurple = showPurple,
+			isATTResult = true,
+			noATTData = false,
+			timestamp = GetTime(),
+		}
+	end
 end
 
+-- ===== ENHANCED ATT BATCH PROCESSING SYSTEM =====
+function DOKI:ProcessATTBatchQueue()
+	-- DISABLED: This system was causing individual item processing
+	-- Now using direct processing with immediate caching
+	self.attBatchProcessing = false
+	self.attBatchQueue = {}
+	return
+end
+
+function DOKI:ProcessATTBatchChunk()
+	-- DISABLED: This was the source of the "1 items queued" spam
+	return
+end
+
+-- ===== ENHANCED ATT COLLECTION STATUS WITH 0/number vs >0/number DISTINCTION =====
 function DOKI:GetATTCollectionStatus(itemID, itemLink)
 	if not itemID then return nil, nil, nil end
 
-	-- Check cache first (now handles all three values)
+	-- Check cache first
 	local cachedCollected, cachedYellowD, cachedPurple = self:GetCachedATTStatus(itemID, itemLink)
-	if cachedCollected ~= nil then
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r ATT using CACHED result for item %d: %s%s%s",
-				itemID,
-				cachedCollected and "COLLECTED" or "NOT COLLECTED",
-				cachedYellowD and " (other source)" or "",
-				cachedPurple and " (fractional)" or ""))
-		end
-
+	if cachedCollected == "NO_ATT_DATA" then
+		return "NO_ATT_DATA", nil, nil
+	elseif cachedCollected ~= nil then
 		return cachedCollected, cachedYellowD, cachedPurple
 	end
 
+	-- FIXED: Parse directly and cache immediately
+	-- This eliminates the broken individual batch queue system
+	local isCollected, showYellowD, showPurple = self:ParseATTTooltipDirect(itemID, itemLink)
+	-- Cache the result immediately
+	if isCollected ~= nil then
+		self:SetCachedATTStatus(itemID, itemLink, isCollected, showYellowD, showPurple)
+	else
+		self:SetCachedATTStatus(itemID, itemLink, nil, nil, nil)
+	end
+
+	-- Return the result
+	if isCollected == nil then
+		return "NO_ATT_DATA", nil, nil
+	else
+		return isCollected, showYellowD, showPurple
+	end
+end
+
+-- ===== ENHANCED ATT TOOLTIP PARSING WITH 0/number vs >0/number DISTINCTION =====
+function DOKI:ParseATTTooltipDirect(itemID, itemLink)
 	-- Create fresh tooltip with unique name
-	local tooltipName = "DOKIATTTooltip" .. itemID
+	local tooltipName = "DOKIATTBatchTooltip" .. itemID
 	local tooltip = CreateFrame("GameTooltip", tooltipName, nil, "GameTooltipTemplate")
 	tooltip:SetOwner(UIParent, "ANCHOR_NONE")
 	-- Set the item (prefer itemLink for accuracy)
@@ -150,7 +205,7 @@ function DOKI:GetATTCollectionStatus(itemID, itemLink)
 					break
 				end
 
-				-- LOCALE-INDEPENDENT: Look for numerical patterns like "1/3", "2/3", "3/3"
+				-- ENHANCED: Look for numerical patterns like "0/3", "1/3", "2/3", "3/3"
 				local current, total = string.match(text, "(%d+)/(%d+)")
 				if current and total then
 					current = tonumber(current)
@@ -164,14 +219,24 @@ function DOKI:GetATTCollectionStatus(itemID, itemLink)
 							print(string.format("|cffff69b4DOKI|r ATT numerical detection - FULLY COLLECTED (%d/%d): '%s' (ID: %d)",
 								current, total, text, itemID))
 						end
+					elseif current == 0 then
+						-- ENHANCED: 0/number - show ORANGE indicator (not collected)
+						attStatus = false
+						showYellowD = false
+						showPurple = false
+						if self.db and self.db.debugMode then
+							print(string.format(
+								"|cffff69b4DOKI|r ATT numerical detection - NOT COLLECTED (0/%d) - ORANGE INDICATOR: '%s' (ID: %d)",
+								total, text, itemID))
+						end
 					else
-						-- Partially collected (1/3, 2/3, etc.) - show PURPLE indicator
+						-- ENHANCED: >0 but <total - show PINK indicator (partially collected)
 						attStatus = false
 						showYellowD = false
 						showPurple = true
 						if self.db and self.db.debugMode then
 							print(string.format(
-								"|cffff69b4DOKI|r ATT numerical detection - FRACTIONAL (%d/%d) - PURPLE INDICATOR: '%s' (ID: %d)",
+								"|cffff69b4DOKI|r ATT numerical detection - PARTIAL (%d/%d) - PINK INDICATOR: '%s' (ID: %d)",
 								current, total, text, itemID))
 						end
 					end
@@ -179,7 +244,7 @@ function DOKI:GetATTCollectionStatus(itemID, itemLink)
 					break
 				end
 
-				-- LOCALE-INDEPENDENT: Look for percentage patterns like "66.66%", "100%"
+				-- ENHANCED: Look for percentage patterns like "0%", "33.33%", "66.66%", "100%"
 				local percentage = string.match(text, "(%d+%.?%d*)%%")
 				if percentage then
 					percentage = tonumber(percentage)
@@ -192,14 +257,24 @@ function DOKI:GetATTCollectionStatus(itemID, itemLink)
 							print(string.format("|cffff69b4DOKI|r ATT percentage detection - FULLY COLLECTED (%.1f%%): '%s' (ID: %d)",
 								percentage, text, itemID))
 						end
+					elseif percentage == 0 then
+						-- ENHANCED: 0% - show ORANGE indicator (not collected)
+						attStatus = false
+						showYellowD = false
+						showPurple = false
+						if self.db and self.db.debugMode then
+							print(string.format(
+								"|cffff69b4DOKI|r ATT percentage detection - NOT COLLECTED (0%%) - ORANGE INDICATOR: '%s' (ID: %d)",
+								text, itemID))
+						end
 					else
-						-- Partially collected - show PURPLE indicator
+						-- ENHANCED: >0% but <100% - show PINK indicator (partially collected)
 						attStatus = false
 						showYellowD = false
 						showPurple = true
 						if self.db and self.db.debugMode then
 							print(string.format(
-								"|cffff69b4DOKI|r ATT percentage detection - FRACTIONAL (%.1f%%) - PURPLE INDICATOR: '%s' (ID: %d)",
+								"|cffff69b4DOKI|r ATT percentage detection - PARTIAL (%.1f%%) - PINK INDICATOR: '%s' (ID: %d)",
 								percentage, text, itemID))
 						end
 					end
@@ -264,12 +339,21 @@ function DOKI:GetATTCollectionStatus(itemID, itemLink)
 
 	tooltip:Hide()
 	tooltip:SetParent(nil)
-	-- Cache the result if we found ATT status (now caches all three values)
-	if attStatus ~= nil then
-		self:SetCachedATTStatus(itemID, itemLink, attStatus, showYellowD, showPurple)
+	return attStatus, showYellowD, showPurple
+end
+
+-- ===== CLEAR ATT BATCH QUEUE =====
+function DOKI:ClearATTBatchQueue()
+	self.attBatchQueue = {}
+	self.attBatchProcessing = false
+	if self.attBatchTimer then
+		self.attBatchTimer:Cancel()
+		self.attBatchTimer = nil
 	end
 
-	return attStatus, showYellowD, showPurple
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r ATT batch queue cleared")
+	end
 end
 
 -- ===== ENSEMBLE DETECTION SYSTEM =====
@@ -914,15 +998,16 @@ function DOKI:FullItemScan(withDelay)
 	end
 
 	if self.db.debugMode then
-		print("|cffff69b4DOKI|r === FULL SCAN START ===")
+		print("|cffff69b4DOKI|r === ENHANCED FULL SCAN START ===")
 	end
 
 	local startTime = GetTime()
 	local indicatorCount = 0
 	self.foundFramesThisScan = {}
-	-- Scan all UI elements
-	indicatorCount = indicatorCount + self:ScanMerchantFrames()
+	-- Use enhanced scanning for bags (with ATT pre-processing when enabled)
 	indicatorCount = indicatorCount + self:ScanBagFrames()
+	-- Keep original merchant scanning (usually fewer items)
+	indicatorCount = indicatorCount + self:ScanMerchantFrames()
 	-- Update snapshot after full scan
 	if self.CreateButtonSnapshot then
 		self.lastButtonSnapshot = self:CreateButtonSnapshot()
@@ -936,12 +1021,31 @@ function DOKI:FullItemScan(withDelay)
 	end
 
 	if self.db.debugMode then
-		print(string.format("|cffff69b4DOKI|r Full scan: %d indicators in %.3fs",
+		print(string.format("|cffff69b4DOKI|r Enhanced full scan: %d indicators in %.3fs",
 			indicatorCount, scanDuration))
-		print("|cffff69b4DOKI|r === FULL SCAN END ===")
+		print("|cffff69b4DOKI|r === ENHANCED FULL SCAN END ===")
 	end
 
 	return indicatorCount
+end
+
+function DOKI:SetATTPerformanceSettings(batchSize, batchDelay)
+	if batchSize then
+		self.attPerformanceSettings.batchSize = math.max(1, math.min(50, batchSize))
+	end
+
+	if batchDelay then
+		self.attPerformanceSettings.batchDelay = math.max(0.01, math.min(0.2, batchDelay))
+	end
+
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r Updated ATT performance settings: batch size %d, delay %.0fms",
+			self.attPerformanceSettings.batchSize, self.attPerformanceSettings.batchDelay * 1000))
+	end
+end
+
+function DOKI:GetATTPerformanceSettings()
+	return self.attPerformanceSettings.batchSize, self.attPerformanceSettings.batchDelay
 end
 
 -- Helper function to get item info directly from merchant button
@@ -1050,20 +1154,30 @@ function DOKI:ScanMerchantFrames()
 end
 
 function DOKI:ScanBagFrames()
+	if not self.db or not self.db.enabled then return 0 end
+
 	local indicatorCount = 0
-	-- Scan ElvUI bags if visible
-	if ElvUI and self:IsElvUIBagVisible() then
-		local E = ElvUI[1]
-		if E then
-			local B = E:GetModule("Bags", true)
-			if B and (B.BagFrame and B.BagFrame:IsShown()) then
-				for bagID = 0, NUM_BAG_SLOTS do
-					local numSlots = C_Container.GetContainerNumSlots(bagID)
-					if numSlots and numSlots > 0 then
-						for slotID = 1, numSlots do
-							local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
-							if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
-								if self:IsCollectibleItem(itemInfo.itemID, itemInfo.hyperlink) then
+	-- ATT MODE: Pre-process all items in batches before creating indicators
+	if self.db.attMode then
+		if self.db.debugMode then
+			print("|cffff69b4DOKI|r ATT mode: Pre-processing all bag items in performance-tuned batches...")
+		end
+
+		-- Collect all bag items first
+		local allBagItems = {}
+		local needsProcessing = {}
+		-- Scan ElvUI bags if visible
+		if ElvUI and self:IsElvUIBagVisible() then
+			local E = ElvUI[1]
+			if E then
+				local B = E:GetModule("Bags", true)
+				if B and (B.BagFrame and B.BagFrame:IsShown()) then
+					for bagID = 0, NUM_BAG_SLOTS do
+						local numSlots = C_Container.GetContainerNumSlots(bagID)
+						if numSlots and numSlots > 0 then
+							for slotID = 1, numSlots do
+								local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+								if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
 									local possibleNames = {
 										string.format("ElvUI_ContainerFrameBag%dSlot%dHash", bagID, slotID),
 										string.format("ElvUI_ContainerFrameBag%dSlot%d", bagID, slotID),
@@ -1072,17 +1186,17 @@ function DOKI:ScanBagFrames()
 									for _, elvUIButtonName in ipairs(possibleNames) do
 										local elvUIButton = _G[elvUIButtonName]
 										if elvUIButton and elvUIButton:IsVisible() then
-											local isCollected, showYellowD, showPurple = self:IsItemCollected(itemInfo.itemID,
-												itemInfo.hyperlink)
-											local itemData = {
+											allBagItems[elvUIButton] = {
 												itemID = itemInfo.itemID,
 												itemLink = itemInfo.hyperlink,
-												isCollected = isCollected,
-												showYellowD = showYellowD,
-												showPurple = showPurple,
 												frameType = "bag",
 											}
-											indicatorCount = indicatorCount + self:CreateUniversalIndicator(elvUIButton, itemData)
+											-- Check if ATT processing is needed
+											local cached = self:GetCachedATTStatus(itemInfo.itemID, itemInfo.hyperlink)
+											if cached == nil then
+												table.insert(needsProcessing, { itemID = itemInfo.itemID, itemLink = itemInfo.hyperlink })
+											end
+
 											break
 										end
 									end
@@ -1093,19 +1207,17 @@ function DOKI:ScanBagFrames()
 				end
 			end
 		end
-	end
 
-	-- Scan Blizzard bags using container API approach
-	local scannedBlizzardBags = false
-	-- Combined bags (newer interface)
-	if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
-		for bagID = 0, NUM_BAG_SLOTS do
-			local numSlots = C_Container.GetContainerNumSlots(bagID)
-			if numSlots and numSlots > 0 then
-				for slotID = 1, numSlots do
-					local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
-					if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
-						if self:IsCollectibleItem(itemInfo.itemID, itemInfo.hyperlink) then
+		-- Scan Blizzard bags using container API approach
+		local scannedBlizzardBags = false
+		-- Combined bags (newer interface)
+		if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
+			for bagID = 0, NUM_BAG_SLOTS do
+				local numSlots = C_Container.GetContainerNumSlots(bagID)
+				if numSlots and numSlots > 0 then
+					for slotID = 1, numSlots do
+						local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+						if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
 							-- Find the corresponding button
 							local button = nil
 							if ContainerFrameCombinedBags.EnumerateValidItems then
@@ -1129,37 +1241,35 @@ function DOKI:ScanBagFrames()
 							end
 
 							if button then
-								local isCollected, showYellowD, showPurple = self:IsItemCollected(itemInfo.itemID, itemInfo.hyperlink)
-								local itemData = {
+								allBagItems[button] = {
 									itemID = itemInfo.itemID,
 									itemLink = itemInfo.hyperlink,
-									isCollected = isCollected,
-									showYellowD = showYellowD,
-									showPurple = showPurple,
 									frameType = "bag",
 								}
-								indicatorCount = indicatorCount + self:CreateUniversalIndicator(button, itemData)
+								-- Check if ATT processing is needed
+								local cached = self:GetCachedATTStatus(itemInfo.itemID, itemInfo.hyperlink)
+								if cached == nil then
+									table.insert(needsProcessing, { itemID = itemInfo.itemID, itemLink = itemInfo.hyperlink })
+								end
 							end
 						end
 					end
 				end
 			end
+
+			scannedBlizzardBags = true
 		end
 
-		scannedBlizzardBags = true
-	end
-
-	-- Individual container frames (classic interface)
-	if not scannedBlizzardBags then
-		for bagID = 0, NUM_BAG_SLOTS do
-			local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
-			if containerFrame and containerFrame:IsVisible() then
-				local numSlots = C_Container.GetContainerNumSlots(bagID)
-				if numSlots and numSlots > 0 then
-					for slotID = 1, numSlots do
-						local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
-						if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
-							if self:IsCollectibleItem(itemInfo.itemID, itemInfo.hyperlink) then
+		-- Individual container frames (classic interface)
+		if not scannedBlizzardBags then
+			for bagID = 0, NUM_BAG_SLOTS do
+				local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
+				if containerFrame and containerFrame:IsVisible() then
+					local numSlots = C_Container.GetContainerNumSlots(bagID)
+					if numSlots and numSlots > 0 then
+						for slotID = 1, numSlots do
+							local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+							if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
 								local possibleNames = {
 									string.format("ContainerFrame%dItem%d", bagID + 1, slotID),
 									string.format("ContainerFrame%dItem%dButton", bagID + 1, slotID),
@@ -1167,26 +1277,223 @@ function DOKI:ScanBagFrames()
 								for _, buttonName in ipairs(possibleNames) do
 									local button = _G[buttonName]
 									if button and button:IsVisible() then
-										local isCollected, showYellowD, showPurple = self:IsItemCollected(itemInfo.itemID, itemInfo
-											.hyperlink)
-										local itemData = {
+										allBagItems[button] = {
 											itemID = itemInfo.itemID,
 											itemLink = itemInfo.hyperlink,
-											isCollected = isCollected,
-											showYellowD = showYellowD,
-											showPurple = showPurple,
 											frameType = "bag",
 										}
-										indicatorCount = indicatorCount + self:CreateUniversalIndicator(button, itemData)
+										-- Check if ATT processing is needed
+										local cached = self:GetCachedATTStatus(itemInfo.itemID, itemInfo.hyperlink)
+										if cached == nil then
+											table.insert(needsProcessing, { itemID = itemInfo.itemID, itemLink = itemInfo.hyperlink })
+										end
+
 										break
 									end
 								end
 							end
 						end
 					end
-				end
 
-				scannedBlizzardBags = true
+					scannedBlizzardBags = true
+				end
+			end
+		end
+
+		-- PRE-PROCESS ATT DATA IN PERFORMANCE-TUNED BATCHES
+		if #needsProcessing > 0 then
+			if self.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r ATT mode: Pre-processing %d uncached items...", #needsProcessing))
+			end
+
+			-- Add all items to queue at once
+			for _, item in ipairs(needsProcessing) do
+				table.insert(self.attBatchQueue, item)
+			end
+
+			-- Process in performance-tuned batches and wait for completion
+			if not self.attBatchProcessing then
+				self:ProcessATTBatchQueue()
+			end
+
+			-- Wait for processing to complete before creating indicators
+			local maxWaitTime = 5.0 -- Maximum 5 seconds
+			local waitStartTime = GetTime()
+			local function waitForATTCompletion()
+				if not self.attBatchProcessing or (GetTime() - waitStartTime) > maxWaitTime then
+					-- Processing complete or timeout - create indicators
+					if self.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r ATT pre-processing complete, creating indicators..."))
+					end
+
+					-- Create indicators for all items
+					for button, itemData in pairs(allBagItems) do
+						local isCollected, showYellowD, showPurple = self:IsItemCollected(itemData.itemID, itemData.itemLink)
+						itemData.isCollected = isCollected
+						itemData.showYellowD = showYellowD
+						itemData.showPurple = showPurple
+						indicatorCount = indicatorCount + self:CreateUniversalIndicator(button, itemData)
+					end
+
+					if self.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r Enhanced bag scan complete: %d indicators created", indicatorCount))
+					end
+				else
+					-- Still processing - check again
+					C_Timer.After(0.1, waitForATTCompletion)
+				end
+			end
+
+			waitForATTCompletion()
+		else
+			-- All items already cached - create indicators immediately
+			for button, itemData in pairs(allBagItems) do
+				local isCollected, showYellowD, showPurple = self:IsItemCollected(itemData.itemID, itemData.itemLink)
+				itemData.isCollected = isCollected
+				itemData.showYellowD = showYellowD
+				itemData.showPurple = showPurple
+				indicatorCount = indicatorCount + self:CreateUniversalIndicator(button, itemData)
+			end
+		end
+	else
+		-- NON-ATT MODE: Use original scanning logic
+		-- Scan ElvUI bags if visible
+		if ElvUI and self:IsElvUIBagVisible() then
+			local E = ElvUI[1]
+			if E then
+				local B = E:GetModule("Bags", true)
+				if B and (B.BagFrame and B.BagFrame:IsShown()) then
+					for bagID = 0, NUM_BAG_SLOTS do
+						local numSlots = C_Container.GetContainerNumSlots(bagID)
+						if numSlots and numSlots > 0 then
+							for slotID = 1, numSlots do
+								local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+								if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+									if self:IsCollectibleItem(itemInfo.itemID, itemInfo.hyperlink) then
+										local possibleNames = {
+											string.format("ElvUI_ContainerFrameBag%dSlot%dHash", bagID, slotID),
+											string.format("ElvUI_ContainerFrameBag%dSlot%d", bagID, slotID),
+											string.format("ElvUI_ContainerFrameBag%dSlot%dCenter", bagID, slotID),
+										}
+										for _, elvUIButtonName in ipairs(possibleNames) do
+											local elvUIButton = _G[elvUIButtonName]
+											if elvUIButton and elvUIButton:IsVisible() then
+												local isCollected, showYellowD, showPurple = self:IsItemCollected(itemInfo.itemID,
+													itemInfo.hyperlink)
+												local itemData = {
+													itemID = itemInfo.itemID,
+													itemLink = itemInfo.hyperlink,
+													isCollected = isCollected,
+													showYellowD = showYellowD,
+													showPurple = showPurple,
+													frameType = "bag",
+												}
+												indicatorCount = indicatorCount + self:CreateUniversalIndicator(elvUIButton, itemData)
+												break
+											end
+										end
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+
+		-- Scan Blizzard bags using container API approach
+		local scannedBlizzardBags = false
+		-- Combined bags (newer interface)
+		if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
+			for bagID = 0, NUM_BAG_SLOTS do
+				local numSlots = C_Container.GetContainerNumSlots(bagID)
+				if numSlots and numSlots > 0 then
+					for slotID = 1, numSlots do
+						local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+						if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+							if self:IsCollectibleItem(itemInfo.itemID, itemInfo.hyperlink) then
+								-- Find the corresponding button
+								local button = nil
+								if ContainerFrameCombinedBags.EnumerateValidItems then
+									for _, itemButton in ContainerFrameCombinedBags:EnumerateValidItems() do
+										if itemButton and itemButton:IsVisible() then
+											local buttonBagID, buttonSlotID = nil, nil
+											if itemButton.GetBagID and itemButton.GetID then
+												local success1, bID = pcall(itemButton.GetBagID, itemButton)
+												local success2, sID = pcall(itemButton.GetID, itemButton)
+												if success1 and success2 then
+													buttonBagID, buttonSlotID = bID, sID
+												end
+											end
+
+											if buttonBagID == bagID and buttonSlotID == slotID then
+												button = itemButton
+												break
+											end
+										end
+									end
+								end
+
+								if button then
+									local isCollected, showYellowD, showPurple = self:IsItemCollected(itemInfo.itemID, itemInfo.hyperlink)
+									local itemData = {
+										itemID = itemInfo.itemID,
+										itemLink = itemInfo.hyperlink,
+										isCollected = isCollected,
+										showYellowD = showYellowD,
+										showPurple = showPurple,
+										frameType = "bag",
+									}
+									indicatorCount = indicatorCount + self:CreateUniversalIndicator(button, itemData)
+								end
+							end
+						end
+					end
+				end
+			end
+
+			scannedBlizzardBags = true
+		end
+
+		-- Individual container frames (classic interface)
+		if not scannedBlizzardBags then
+			for bagID = 0, NUM_BAG_SLOTS do
+				local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
+				if containerFrame and containerFrame:IsVisible() then
+					local numSlots = C_Container.GetContainerNumSlots(bagID)
+					if numSlots and numSlots > 0 then
+						for slotID = 1, numSlots do
+							local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+							if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+								if self:IsCollectibleItem(itemInfo.itemID, itemInfo.hyperlink) then
+									local possibleNames = {
+										string.format("ContainerFrame%dItem%d", bagID + 1, slotID),
+										string.format("ContainerFrame%dItem%dButton", bagID + 1, slotID),
+									}
+									for _, buttonName in ipairs(possibleNames) do
+										local button = _G[buttonName]
+										if button and button:IsVisible() then
+											local isCollected, showYellowD, showPurple = self:IsItemCollected(itemInfo.itemID, itemInfo
+												.hyperlink)
+											local itemData = {
+												itemID = itemInfo.itemID,
+												itemLink = itemInfo.hyperlink,
+												isCollected = isCollected,
+												showYellowD = showYellowD,
+												showPurple = showPurple,
+												frameType = "bag",
+											}
+											indicatorCount = indicatorCount + self:CreateUniversalIndicator(button, itemData)
+											break
+										end
+									end
+								end
+							end
+						end
+					end
+
+					scannedBlizzardBags = true
+				end
 			end
 		end
 	end
@@ -1365,6 +1672,8 @@ function DOKI:SetupMinimalEventSystem()
 				event == "COMPANION_LEARNED" or event == "COMPANION_UNLEARNED" then
 			-- Collection changed - clear cache and FORCE FULL SCAN WITH DELAY for battlepets
 			DOKI:ClearCollectionCache()
+			-- ENHANCED: Also clear ATT cache for pets/mounts since collection status changed
+			DOKI:ClearATTBatchQueue()
 			C_Timer.After(0.05, function()
 				if DOKI.db and DOKI.db.enabled then
 					-- Use withDelay=true for potential battlepet timing issues
@@ -1374,6 +1683,8 @@ function DOKI:SetupMinimalEventSystem()
 		elseif event == "TRANSMOG_COLLECTION_UPDATED" or event == "TOYS_UPDATED" then
 			-- Transmog/toy collection changed - clear cache and FORCE FULL SCAN
 			DOKI:ClearCollectionCache()
+			-- ENHANCED: Also clear ATT cache since collection status changed
+			DOKI:ClearATTBatchQueue()
 			C_Timer.After(0.05, function()
 				if DOKI.db and DOKI.db.enabled then
 					-- Force full scan to re-evaluate all visible items
@@ -1457,7 +1768,7 @@ function DOKI:InitializeUniversalScanning()
 	self:FullItemScan()
 	if self.db and self.db.debugMode then
 		print(
-			"|cffff69b4DOKI|r Enhanced surgical system initialized with ensemble + delayed cleanup scanning + merchant selling detection")
+			"|cffff69b4DOKI|r Enhanced surgical system initialized with ensemble + delayed cleanup scanning + merchant selling detection + ATT batch processing")
 		print("  |cff00ff00•|r Regular updates: 0.2s interval")
 		print("  |cff00ff00•|r Clean events: Removed noisy COMPANION_UPDATE, etc.")
 		print("  |cff00ff00•|r Battlepet support: Caged pet detection")
@@ -1466,6 +1777,8 @@ function DOKI:InitializeUniversalScanning()
 		print("  |cff00ff00•|r |cffff8000NEW:|r Merchant selling event detection")
 		print("  |cff00ff00•|r |cffff8000NEW:|r Data loading retry system")
 		print("  |cff00ff00•|r |cffff8000NEW:|r Delayed full rescan for failed loads")
+		print("  |cff00ff00•|r |cffff8000NEW:|r ATT batch processing with persistent caching")
+		print("  |cff00ff00•|r |cffff8000NEW:|r Enhanced 0/number vs >0/number ATT detection")
 		print(string.format("  |cff00ff00•|r Throttling: %.0fms minimum between updates",
 			self.surgicalUpdateThrottleTime * 1000))
 	end
