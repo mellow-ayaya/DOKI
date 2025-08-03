@@ -828,14 +828,14 @@ SlashCmdList["DOKI"] = function(msg)
 			print("ATT mode disabled - using standard collectible detection")
 		end
 
-		-- Add these missing debug commands to the slash command handler in Core.lua
-		-- Insert these after the existing ATT commands (around line 400-500)
-	elseif command == "attbagscan" or command == "bagatt" then
+		-- Replace these command handlers with the fixed versions:
+	elseif command == "attbagscan" or command == "bagatt" or string.find(command, "^attbagscan ") or string.find(command, "^bagatt ") then
 		-- Debug ATT bag scan - scans first N items for ATT data
 		local maxItems = 10 -- default
-		if string.find(command, " ") then
-			local num = tonumber(string.match(command, "%d+"))
-			if num then maxItems = num end
+		-- Extract number from command if present
+		local num = tonumber(string.match(command, "%d+"))
+		if num then
+			maxItems = num
 		end
 
 		if DOKI.DebugATTBagScan then
@@ -843,47 +843,13 @@ SlashCmdList["DOKI"] = function(msg)
 		else
 			print("|cffff69b4DOKI|r DebugATTBagScan function not available")
 		end
-	elseif string.find(command, "testenhanced ") then
-		-- Test enhanced ATT item - /doki testenhanced 12345
-		local itemID = tonumber(string.match(command, "%d+"))
-		if not itemID then
-			print("|cffff69b4DOKI|r Usage: /doki testenhanced <itemID>")
-			print("|cffff69b4DOKI|r Example: /doki testenhanced 226107")
-			return
-		end
-
-		if DOKI.TestEnhancedATTItem then
-			DOKI:TestEnhancedATTItem(itemID)
-		else
-			print("|cffff69b4DOKI|r TestEnhancedATTItem function not available")
-		end
-	elseif command == "catalyst" or command == "catalysts" then
-		-- Scan for catalyst items
-		local maxItems = 20 -- default
-		if string.find(command, " ") then
-			local num = tonumber(string.match(command, "%d+"))
-			if num then maxItems = num end
-		end
-
-		if DOKI.ScanForCatalystItems then
-			DOKI:ScanForCatalystItems(maxItems)
-		else
-			print("|cffff69b4DOKI|r ScanForCatalystItems function not available")
-		end
-	elseif string.find(command, "catalyst ") then
-		-- Scan for catalyst items with custom count - /doki catalyst 30
-		local maxItems = tonumber(string.match(command, "%d+")) or 20
-		if DOKI.ScanForCatalystItems then
-			DOKI:ScanForCatalystItems(maxItems)
-		else
-			print("|cffff69b4DOKI|r ScanForCatalystItems function not available")
-		end
-	elseif command == "testloading" then
+	elseif command == "atttest" or string.find(command, "^atttest ") then
 		-- Test proper item loading system
 		local targetItemID = 211017 -- default catalyst item
-		if string.find(command, " ") then
-			local num = tonumber(string.match(command, "%d+"))
-			if num then targetItemID = num end
+		-- Extract number from command if present
+		local num = tonumber(string.match(command, "%d+"))
+		if num then
+			targetItemID = num
 		end
 
 		if DOKI.TestProperItemLoading then
@@ -891,19 +857,19 @@ SlashCmdList["DOKI"] = function(msg)
 		else
 			print("|cffff69b4DOKI|r TestProperItemLoading function not available")
 		end
-	elseif string.find(command, "testloading ") then
-		-- Test proper item loading with specific item - /doki testloading 12345
-		local itemID = tonumber(string.match(command, "%d+"))
-		if not itemID then
-			print("|cffff69b4DOKI|r Usage: /doki testloading <itemID>")
-			print("|cffff69b4DOKI|r Example: /doki testloading 211017")
-			return
+	elseif command == "testensemble" or string.find(command, "^testensemble ") then
+		-- Test ensemble detection
+		local itemID = 234522 -- default ensemble item
+		-- Extract number from command if present
+		local num = tonumber(string.match(command, "%d+"))
+		if num then
+			itemID = num
 		end
 
-		if DOKI.TestProperItemLoading then
-			DOKI:TestProperItemLoading(itemID)
+		if DOKI.TraceEnsembleDetection then
+			DOKI:TraceEnsembleDetection(itemID, nil)
 		else
-			print("|cffff69b4DOKI|r TestProperItemLoading function not available")
+			print("|cffff69b4DOKI|r TraceEnsembleDetection function not available")
 		end
 	elseif command == "initensemble" then
 		-- Re-initialize ensemble detection
@@ -913,28 +879,6 @@ SlashCmdList["DOKI"] = function(msg)
 			print("|cffff69b4DOKI|r Ensemble detection re-initialized")
 		else
 			print("|cffff69b4DOKI|r InitializeEnsembleDetection function not available")
-		end
-	elseif command == "testensemble" then
-		-- Test ensemble detection with default item
-		local itemID = 234522 -- default ensemble item
-		if DOKI.TraceEnsembleDetection then
-			DOKI:TraceEnsembleDetection(itemID, nil)
-		else
-			print("|cffff69b4DOKI|r TraceEnsembleDetection function not available")
-		end
-	elseif string.find(command, "testensemble ") then
-		-- Test ensemble detection with specific item - /doki testensemble 12345
-		local itemID = tonumber(string.match(command, "%d+"))
-		if not itemID then
-			print("|cffff69b4DOKI|r Usage: /doki testensemble <itemID>")
-			print("|cffff69b4DOKI|r Example: /doki testensemble 234522")
-			return
-		end
-
-		if DOKI.TraceEnsembleDetection then
-			DOKI:TraceEnsembleDetection(itemID, nil)
-		else
-			print("|cffff69b4DOKI|r TraceEnsembleDetection function not available")
 		end
 	elseif command == "testbagensembles" then
 		-- Scan bags for ensemble items
@@ -1057,17 +1001,6 @@ SlashCmdList["DOKI"] = function(msg)
 		-- Clean up the item loader
 		DOKI:CleanupItemLoader()
 		print("|cffff69b4DOKI|r Item loader cleaned up")
-	elseif command == "debugmissing" then
-		-- Debug why item 159478 has no ATT data
-		DOKI:DebugATTMissingData(159478)
-	elseif string.find(command, "debugmissing ") then
-		-- Debug specific item ID
-		local itemID = tonumber(string.match(command, "%d+"))
-		if itemID then
-			DOKI:DebugATTMissingData(itemID)
-		else
-			print("|cffff69b4DOKI|r Usage: /doki debugmissing <itemID>")
-		end
 	elseif command == "testknown" then
 		-- Test known ATT items to verify ATT is working
 		DOKI:TestKnownATTItems()

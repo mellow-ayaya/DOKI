@@ -2020,165 +2020,6 @@ end
 
 -- ===== ATT DEBUGGING FUNCTIONS =====
 -- Comprehensive debugging for items returning NO_ATT_DATA
-function DOKI:DebugATTMissingData(itemID)
-	itemID = itemID or 159478
-	print(string.format("|cffff69b4DOKI|r === DEBUGGING ATT MISSING DATA FOR ITEM %d ===", itemID))
-	-- Step 1: Basic item info
-	local itemName, itemLink, itemRarity, itemLevel, itemMinLevel, itemType, itemSubType, itemStackCount,
-	itemEquipLoc, itemTexture, sellPrice, classID, subClassID = C_Item.GetItemInfo(itemID)
-	print(string.format("Item Info:"))
-	print(string.format("  Name: %s", itemName or "UNKNOWN"))
-	print(string.format("  Link: %s", itemLink or "UNKNOWN"))
-	print(string.format("  Type: %s / %s", itemType or "UNKNOWN", itemSubType or "UNKNOWN"))
-	print(string.format("  Class/Subclass: %d/%d", classID or -1, subClassID or -1))
-	print(string.format("  Rarity: %d", itemRarity or -1))
-	-- Step 2: Check if DOKI thinks it's collectible
-	local isCollectible = self:IsCollectibleItem(itemID, itemLink)
-	print(string.format("DOKI thinks collectible: %s", tostring(isCollectible)))
-	-- Step 3: Check ATT availability
-	local app = _G["AllTheThings"]
-	if not app then
-		print("❌ AllTheThings addon not found!")
-		return
-	end
-
-	print("✅ AllTheThings addon found")
-	-- Step 4: Test ATT search functions
-	print("\n=== TESTING ATT SEARCH METHODS ===")
-	-- Method 1: Basic item search
-	if app.SearchForLink then
-		print("Testing SearchForLink...")
-		local searchCmd = "item:" .. itemID
-		print(string.format("  Search command: %s", searchCmd))
-		app.SetSkipLevel(1)
-		local success, result = pcall(app.GetCachedSearchResults, app.SearchForLink, searchCmd)
-		app.SetSkipLevel(0)
-		if success then
-			if result then
-				print("  ✅ SearchForLink returned data")
-				print(string.format("    Result type: %s", type(result)))
-				if type(result) == "table" then
-					print(string.format("    Fields: %s", table.concat(self:GetTableKeys(result), ", ")))
-					if result.text then
-						print(string.format("    Text: %s", result.text))
-					end
-
-					if result.collected ~= nil then
-						print(string.format("    Collected: %s", tostring(result.collected)))
-					end
-
-					if result.progress and result.total then
-						print(string.format("    Progress: %s/%s", tostring(result.progress), tostring(result.total)))
-					end
-				end
-			else
-				print("  ❌ SearchForLink returned nil")
-			end
-		else
-			print(string.format("  ❌ SearchForLink failed: %s", tostring(result)))
-		end
-	else
-		print("❌ SearchForLink function not available")
-	end
-
-	-- Method 2: Check ATT's item database directly
-	print("\nTesting direct database lookup...")
-	if app.SearchForField then
-		local success, results = pcall(app.SearchForField, "itemID", itemID)
-		if success and results then
-			print(string.format("  ✅ Found %d entries in ATT database", #results))
-			for i, entry in ipairs(results) do
-				if i <= 3 then -- Show first 3 entries
-					print(string.format("    Entry %d: %s", i, entry.text or "No text"))
-				end
-			end
-		else
-			print("  ❌ Item not found in ATT database")
-		end
-	end
-
-	-- Method 3: Test tooltip method
-	print("\n=== TESTING TOOLTIP METHOD ===")
-	if itemLink then
-		local tooltip = GameTooltip
-		tooltip:Hide()
-		tooltip:ClearLines()
-		tooltip:SetOwner(UIParent, "ANCHOR_NONE")
-		tooltip:SetHyperlink(itemLink)
-		tooltip:Show()
-		-- Wait for ATT to inject data
-		C_Timer.After(0.3, function()
-			print("Tooltip parsing after ATT injection:")
-			local foundATTData = false
-			for i = 1, tooltip:NumLines() do
-				local leftLine = _G["GameTooltipTextLeft" .. i]
-				local rightLine = _G["GameTooltipTextRight" .. i]
-				if leftLine then
-					local leftText = leftLine:GetText()
-					if leftText and (string.find(leftText, "ATT") or string.find(leftText, "AllTheThings")) then
-						print(string.format("  Left %d: %s", i, leftText))
-						foundATTData = true
-					end
-				end
-
-				if rightLine then
-					local rightText = rightLine:GetText()
-					if rightText and string.len(rightText) > 0 then
-						print(string.format("  Right %d: %s", i, rightText))
-						foundATTData = true
-					end
-				end
-			end
-
-			if not foundATTData then
-				print("  ❌ No ATT data found in tooltip")
-			else
-				print("  ✅ ATT data found in tooltip")
-			end
-
-			tooltip:Hide()
-			tooltip:ClearLines()
-		end)
-	else
-		print("❌ No item link available for tooltip test")
-	end
-
-	-- Step 5: Test with different item formats
-	print("\n=== TESTING DIFFERENT ITEM FORMATS ===")
-	local testFormats = {
-		string.format("item:%d", itemID),
-		itemLink,
-		itemName,
-	}
-	for i, format in ipairs(testFormats) do
-		if format then
-			print(string.format("Testing format %d: %s", i, format))
-			if app.SearchForLink then
-				app.SetSkipLevel(1)
-				local success, result = pcall(app.GetCachedSearchResults, app.SearchForLink, format)
-				app.SetSkipLevel(0)
-				if success and result then
-					print("  ✅ Found data with this format")
-				else
-					print("  ❌ No data with this format")
-				end
-			end
-		end
-	end
-
-	print("|cffff69b4DOKI|r === END ATT DEBUG ===")
-end
-
--- Helper function to get table keys
-function DOKI:GetTableKeys(tbl)
-	local keys = {}
-	for key, _ in pairs(tbl) do
-		table.insert(keys, tostring(key))
-	end
-
-	return keys
-end
-
 -- Quick test for specific items that should have ATT data
 function DOKI:TestKnownATTItems()
 	print("|cffff69b4DOKI|r === TESTING KNOWN ATT ITEMS ===")
@@ -2267,4 +2108,156 @@ function DOKI:TestProperItemLoading(targetItemID)
 	end
 
 	print(string.format("Item %d not found in bags", targetItemID))
+end
+
+function DOKI:DebugATTBagScan(maxItems)
+	maxItems = maxItems or 10 -- Default to 10 items, easily changeable
+	if not self.db or not self.db.attMode then
+		print("|cffff69b4DOKI|r ATT mode is disabled. Enable with /doki att")
+		return
+	end
+
+	print(string.format("|cffff69b4DOKI|r === ATT BAG SCAN DEBUG (First %d bag slots) ===", maxItems))
+	print("|cffff69b4DOKI|r Using proper async item loading system...")
+	local slotsToScan = {}
+	local slotsScanned = 0
+	local results = {}
+	local totalSlots = 0
+	-- First, collect all the slots we want to scan
+	for bagID = 0, NUM_BAG_SLOTS do
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			for slotID = 1, numSlots do
+				if totalSlots >= maxItems then
+					break
+				end
+
+				totalSlots = totalSlots + 1
+				table.insert(slotsToScan, { bagID = bagID, slotID = slotID })
+			end
+		end
+
+		if totalSlots >= maxItems then
+			break
+		end
+	end
+
+	-- Function to process results when all slots are done
+	local function processResults()
+		print(string.format("|cffff69b4DOKI|r Processing %d slot results...", #results))
+		local itemsFound = 0
+		local collectibleItems = 0
+		local attDataItems = 0
+		-- Sort results by bagID, slotID for consistent output
+		table.sort(results, function(a, b)
+			if a.bagID == b.bagID then
+				return a.slotID < b.slotID
+			end
+
+			return a.bagID < b.bagID
+		end)
+		for _, result in ipairs(results) do
+			if result.isEmpty then
+				print(string.format("Slot %d.%d: EMPTY", result.bagID, result.slotID))
+			else
+				itemsFound = itemsFound + 1
+				if result.isCollectible then
+					collectibleItems = collectibleItems + 1
+				end
+
+				if result.hasATTData then
+					attDataItems = attDataItems + 1
+				end
+
+				local collectibleFlag = result.isCollectible and " [COLLECTIBLE]" or ""
+				print(string.format("Slot %d.%d: %s (ID: %d)%s -> ATT: %s",
+					result.bagID, result.slotID, result.itemName, result.itemID, collectibleFlag, result.attResult))
+			end
+		end
+
+		print(string.format("|cffff69b4DOKI|r Summary: %d slots scanned, %d items found (%d collectible, %d with ATT data)",
+			#results, itemsFound, collectibleItems, attDataItems))
+		print("|cffff69b4DOKI|r === END ATT BAG SCAN ===")
+	end
+
+	-- Async scan each slot
+	for i, slot in ipairs(slotsToScan) do
+		local bagID, slotID = slot.bagID, slot.slotID
+		-- Check if slot has an item first
+		local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+		if not itemInfo or not itemInfo.itemID then
+			-- Empty slot
+			table.insert(results, {
+				bagID = bagID,
+				slotID = slotID,
+				isEmpty = true,
+			})
+			-- Check if we're done
+			if #results >= #slotsToScan then
+				processResults()
+			end
+		else
+			-- Use the proper async loading system
+			self:GetItemLinkWhenReady(bagID, slotID, function(itemID, itemLink, success)
+				local result = {
+					bagID = bagID,
+					slotID = slotID,
+					isEmpty = false,
+					itemID = itemID or 0,
+					itemName = "Unknown",
+					isCollectible = false,
+					hasATTData = false,
+					attResult = "FAILED",
+				}
+				if success and itemID and itemLink then
+					-- Got complete item data
+					result.itemName = C_Item.GetItemInfo(itemID) or "Loading..."
+					result.isCollectible = DOKI:IsCollectibleItem(itemID, itemLink)
+					-- Test ATT with the complete hyperlink
+					local attStatus, attYellow, attPurple = DOKI:GetATTCollectionStatus(itemID, itemLink)
+					if attStatus == "NO_ATT_DATA" then
+						result.attResult = "NO_ATT_DATA"
+						result.hasATTData = false
+					elseif attStatus == nil then
+						result.attResult = "STILL_PROCESSING"
+						result.hasATTData = false
+					elseif attStatus == true then
+						result.attResult = "COLLECTED"
+						result.hasATTData = true
+					elseif attStatus == false then
+						result.hasATTData = true
+						if attPurple then
+							result.attResult = "PARTIAL (purple)"
+						elseif attYellow then
+							result.attResult = "UNCOLLECTED (blue)"
+						else
+							result.attResult = "UNCOLLECTED"
+						end
+					else
+						result.attResult = "UNKNOWN: " .. tostring(attStatus)
+						result.hasATTData = false
+					end
+
+					if DOKI.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r Async loaded: %s -> %s",
+							result.itemName, result.attResult))
+					end
+				else
+					-- Failed to load complete data
+					result.attResult = "LOAD_FAILED"
+					if itemID then
+						result.itemName = C_Item.GetItemInfo(itemID) or "Failed to load"
+					end
+				end
+
+				table.insert(results, result)
+				-- Check if we're done with all slots
+				if #results >= #slotsToScan then
+					processResults()
+				end
+			end)
+		end
+	end
+
+	print(string.format("|cffff69b4DOKI|r Initiated async scan of %d slots...", #slotsToScan))
 end
