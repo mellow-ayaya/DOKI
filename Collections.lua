@@ -2,8 +2,6 @@
 local addonName, DOKI = ...
 -- Initialize collection-specific storage
 DOKI.foundFramesThisScan = {}
-DOKI.collectionCache = DOKI.collectionCache or {}
-DOKI.lastCacheUpdate = 0
 -- Ensemble detection variables
 DOKI.ensembleWordCache = nil
 DOKI.ensembleKnownItemID = 234522
@@ -26,6 +24,275 @@ DOKI.pendingSurgicalUpdate = false
 -- Enhanced scanning system variables
 DOKI.delayedScanTimer = nil
 DOKI.delayedScanCancelled = false
+-- Enhanced cache system with specific cache types
+DOKI.collectionCache = DOKI.collectionCache or {}
+DOKI.cacheStats = {
+	hits = 0,
+	misses = 0,
+	invalidations = 0,
+	totalEntries = 0,
+}
+-- Cache type constants for targeted invalidation (GLOBAL to DOKI namespace)
+DOKI.CACHE_TYPES = {
+	TRANSMOG = "transmog",
+	PET = "pet",
+	MOUNT = "mount",
+	TOY = "toy",
+	ENSEMBLE = "ensemble",
+	ATT = "att",
+	BATTLEPET = "battlepet",
+}
+-- Debouncing system for rapid-fire events (GLOBAL to DOKI namespace)
+DOKI.eventDebouncer = {
+	timers = {},
+	pendingUpdates = {},
+	stats = {
+		totalEvents = 0,
+		debouncedEvents = 0,
+		executedUpdates = 0,
+	},
+}
+-- Debounce settings (in seconds) (GLOBAL to DOKI namespace)
+DOKI.DEBOUNCE_DELAYS = {
+	BAG_UPDATE = 0.1,         -- items moving in bags
+	ITEM_LOCK_CHANGED = 0.1,  -- item pickup/drop
+	CURSOR_CHANGED = 0.1,     -- cursor state changes
+	MERCHANT_UPDATE = 0.1,    -- merchant page changes
+	BAG_UPDATE_DELAYED = 0.15, -- delayed bag updates
+}
+-- ===== DEBOUNCING CORE FUNCTIONS =====
+function DOKI:DebounceEvent(eventName, callback, customDelay)
+	local delay = customDelay or DOKI.DEBOUNCE_DELAYS[eventName] or 0.05
+	-- Cancel existing timer for this event
+	if self.eventDebouncer.timers[eventName] then
+		self.eventDebouncer.timers[eventName]:Cancel()
+		self.eventDebouncer.stats.debouncedEvents = self.eventDebouncer.stats.debouncedEvents + 1
+	end
+
+	self.eventDebouncer.stats.totalEvents = self.eventDebouncer.stats.totalEvents + 1
+	self.eventDebouncer.pendingUpdates[eventName] = true
+	-- DEBUG: Simple logging
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r DEBOUNCE: %s (%.0fms delay, total events: %d)",
+			eventName, delay * 1000, self.eventDebouncer.stats.totalEvents))
+	end
+
+	-- Create new debounced timer
+	self.eventDebouncer.timers[eventName] = C_Timer.NewTimer(delay, function()
+		if DOKI.eventDebouncer.pendingUpdates[eventName] then
+			DOKI.eventDebouncer.pendingUpdates[eventName] = nil
+			DOKI.eventDebouncer.timers[eventName] = nil
+			DOKI.eventDebouncer.stats.executedUpdates = DOKI.eventDebouncer.stats.executedUpdates + 1
+			-- Execute the callback
+			local success, result = pcall(callback)
+			if not success and DOKI.db and DOKI.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r Debounced callback error for %s: %s", eventName, tostring(result)))
+			end
+		end
+	end)
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r Debounced %s (%.0fms delay)", eventName, delay * 1000))
+	end
+end
+
+-- Enhanced surgical update with debouncing
+function DOKI:DebouncedSurgicalUpdate(eventName, isImmediate)
+	if not self.db or not self.db.enabled then return end
+
+	-- Check if UI is visible (same logic as before)
+	local anyUIVisible = self:IsAnyRelevantUIVisible()
+	if anyUIVisible then
+		self:DebounceEvent(eventName or "SURGICAL_UPDATE", function()
+			if DOKI.db and DOKI.db.enabled then
+				DOKI:TriggerImmediateSurgicalUpdate()
+			end
+		end)
+	end
+end
+
+-- Check if any relevant UI is visible
+function DOKI:IsAnyRelevantUIVisible()
+	-- Check ElvUI
+	if ElvUI and self:IsElvUIBagVisible() then
+		return true
+	end
+
+	-- Check Blizzard UI
+	if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
+		return true
+	end
+
+	-- Check individual containers
+	for bagID = 0, NUM_BAG_SLOTS do
+		local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
+		if containerFrame and containerFrame:IsVisible() then
+			return true
+		end
+	end
+
+	-- Check merchant
+	if MerchantFrame and MerchantFrame:IsVisible() then
+		return true
+	end
+
+	-- Check if cursor has item
+	if C_Cursor and C_Cursor.GetCursorItem() then
+		return true
+	end
+
+	return false
+end
+
+-- ===== ENHANCED EVENT SYSTEM WITH DEBOUNCING =====
+function DOKI:SetupDebouncedEventSystem()
+	if self.eventFrame then
+		self.eventFrame:UnregisterAllEvents()
+	else
+		self.eventFrame = CreateFrame("Frame")
+	end
+
+	-- Events that should be debounced (rapid-fire events)
+	local debouncedEvents = {
+		"BAG_UPDATE",
+		"BAG_UPDATE_DELAYED",
+		"ITEM_LOCK_CHANGED",
+		"CURSOR_CHANGED",
+		"MERCHANT_UPDATE",
+	}
+	-- Events that should trigger immediate updates (collection changes)
+	local immediateEvents = {
+		"MERCHANT_SHOW",
+		"MERCHANT_CLOSED",
+		"BANKFRAME_OPENED",
+		"BANKFRAME_CLOSED",
+		"PET_JOURNAL_LIST_UPDATE",
+		"COMPANION_LEARNED",
+		"COMPANION_UNLEARNED",
+		"TRANSMOG_COLLECTION_UPDATED",
+		"TOYS_UPDATED",
+		"MERCHANT_CONFIRM_TRADE_TIMER_REMOVAL",
+		"UI_INFO_MESSAGE",
+	}
+	-- Register all events
+	for _, event in ipairs(debouncedEvents) do
+		self.eventFrame:RegisterEvent(event)
+	end
+
+	for _, event in ipairs(immediateEvents) do
+		self.eventFrame:RegisterEvent(event)
+	end
+
+	self.eventFrame:SetScript("OnEvent", function(self, event, ...)
+		if not (DOKI.db and DOKI.db.enabled) then return end
+
+		-- Handle debounced events
+		if tContains(debouncedEvents, event) then
+			DOKI:DebouncedSurgicalUpdate(event, false)
+			return
+		end
+
+		-- Handle immediate events (existing logic with minor optimizations)
+		if event == "MERCHANT_SHOW" then
+			DOKI.merchantScrollDetector.merchantOpen = true
+			DOKI:InitializeMerchantScrollDetection()
+			-- Debounce this too since merchant can be spammy
+			DOKI:DebounceEvent("MERCHANT_SHOW", function()
+				if DOKI.db and DOKI.db.enabled then
+					DOKI:FullItemScan()
+				end
+			end, 0.2)
+		elseif event == "MERCHANT_CLOSED" then
+			DOKI.merchantScrollDetector.merchantOpen = false
+			DOKI.merchantScrollDetector.lastMerchantState = nil
+			if DOKI.CleanupMerchantTextures then
+				DOKI:CleanupMerchantTextures()
+			end
+		elseif event == "BANKFRAME_OPENED" then
+			DOKI:DebounceEvent("BANKFRAME_OPENED", function()
+				if DOKI.db and DOKI.db.enabled then
+					DOKI:FullItemScan()
+				end
+			end, 0.2)
+		elseif event == "BANKFRAME_CLOSED" then
+			if DOKI.CleanupBankTextures then
+				DOKI:CleanupBankTextures()
+			end
+		elseif event == "MERCHANT_CONFIRM_TRADE_TIMER_REMOVAL" or event == "UI_INFO_MESSAGE" then
+			-- Enhanced detection for merchant selling - still debounce slightly
+			DOKI:DebounceEvent("MERCHANT_SELL", function()
+				if DOKI.db and DOKI.db.enabled then
+					DOKI:TriggerImmediateSurgicalUpdate()
+				end
+			end, 0.05)
+		elseif event == "PET_JOURNAL_LIST_UPDATE" or
+				event == "COMPANION_LEARNED" or
+				event == "COMPANION_UNLEARNED" then
+			-- Collection changed - these can be slightly debounced too
+			DOKI:DebounceEvent("COLLECTION_CHANGE", function()
+				if DOKI.db and DOKI.db.enabled then
+					-- Cache was already cleared by the cache invalidation system
+					DOKI:FullItemScan(true) -- Use withDelay for battlepet timing
+				end
+			end, 0.1)
+		elseif event == "TRANSMOG_COLLECTION_UPDATED" or event == "TOYS_UPDATED" then
+			-- Transmog/toy collection changed
+			DOKI:DebounceEvent("COLLECTION_CHANGE", function()
+				if DOKI.db and DOKI.db.enabled then
+					-- Cache was already cleared by the cache invalidation system
+					DOKI:FullItemScan()
+				end
+			end, 0.1)
+		end
+	end)
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Enhanced event system with debouncing initialized")
+		print(string.format("  Debounced events: %d", #debouncedEvents))
+		print(string.format("  Immediate events: %d", #immediateEvents))
+	end
+end
+
+-- ===== DEBOUNCING STATISTICS AND CLEANUP =====
+function DOKI:GetDebouncingStats()
+	return {
+		totalEvents = self.eventDebouncer.stats.totalEvents,
+		debouncedEvents = self.eventDebouncer.stats.debouncedEvents,
+		executedUpdates = self.eventDebouncer.stats.executedUpdates,
+		pendingTimers = self:TableCount(self.eventDebouncer.timers),
+		pendingUpdates = self:TableCount(self.eventDebouncer.pendingUpdates),
+	}
+end
+
+function DOKI:ShowDebouncingStats()
+	local stats = self:GetDebouncingStats()
+	print("|cffff69b4DOKI|r === DEBOUNCING STATISTICS ===")
+	print(string.format("Total events received: %d", stats.totalEvents))
+	print(string.format("Events debounced: %d", stats.debouncedEvents))
+	print(string.format("Updates executed: %d", stats.executedUpdates))
+	print(string.format("Currently pending: %d timers, %d updates", stats.pendingTimers, stats.pendingUpdates))
+	if stats.totalEvents > 0 then
+		local efficiency = ((stats.totalEvents - stats.executedUpdates) / stats.totalEvents) * 100
+		print(string.format("Efficiency: %.1f%% fewer updates", efficiency))
+	end
+
+	print("|cffff69b4DOKI|r === END DEBOUNCING STATS ===")
+end
+
+function DOKI:CleanupDebouncingSystem()
+	-- Cancel all pending timers
+	for eventName, timer in pairs(self.eventDebouncer.timers) do
+		if timer then
+			timer:Cancel()
+		end
+	end
+
+	-- Clear state
+	self.eventDebouncer.timers = {}
+	self.eventDebouncer.pendingUpdates = {}
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Debouncing system cleaned up")
+	end
+end
+
 -- Initialize the item loading system (called from Core.lua)
 function DOKI:InitializeItemLoader()
 	if self.itemLoader.initialized then return end
@@ -163,33 +430,209 @@ function DOKI:CleanupItemLoader()
 	end
 end
 
--- ===== CACHE MANAGEMENT WITH PURPLE SUPPORT AND ATT "NO DATA" TRACKING =====
-function DOKI:ClearCollectionCache()
-	self.collectionCache = {}
-	self.lastCacheUpdate = GetTime()
+-- ===== ENHANCED CACHE MANAGEMENT =====
+function DOKI:ClearCollectionCache(cacheType)
+	if not cacheType then
+		-- Clear all caches
+		local oldCount = self:TableCount(self.collectionCache)
+		self.collectionCache = {}
+		self.cacheStats.invalidations = self.cacheStats.invalidations + 1
+		self.cacheStats.totalEntries = 0
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r Cleared entire cache (%d entries)", oldCount))
+		end
+
+		return
+	end
+
+	-- Clear specific cache type
+	local clearedCount = 0
+	for key, cached in pairs(self.collectionCache) do
+		if cached.cacheType == cacheType then
+			self.collectionCache[key] = nil
+			clearedCount = clearedCount + 1
+		end
+	end
+
+	self.cacheStats.invalidations = self.cacheStats.invalidations + 1
+	self.cacheStats.totalEntries = self.cacheStats.totalEntries - clearedCount
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Collection cache cleared")
+		print(string.format("|cffff69b4DOKI|r Cleared %s cache (%d entries)", cacheType, clearedCount))
 	end
 end
 
 function DOKI:GetCachedCollectionStatus(itemID, itemLink)
 	local cacheKey = itemLink or tostring(itemID)
 	local cached = self.collectionCache[cacheKey]
-	if cached and (GetTime() - cached.timestamp < 30) then
+	if cached then
+		self.cacheStats.hits = self.cacheStats.hits + 1
+		-- DEBUG: Simple logging
+		if self.db and self.db.debugMode then
+			local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+			print(string.format("|cffff69b4DOKI|r CACHE HIT: %s (ID: %d)", itemName, itemID))
+		end
+
 		return cached.isCollected, cached.hasOtherTransmogSources, cached.isPartiallyCollected or false
+	end
+
+	self.cacheStats.misses = self.cacheStats.misses + 1
+	-- DEBUG: Simple logging
+	if self.db and self.db.debugMode then
+		local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+		print(string.format("|cffff69b4DOKI|r CACHE MISS: %s (ID: %d)", itemName, itemID))
 	end
 
 	return nil, nil, nil
 end
 
-function DOKI:SetCachedCollectionStatus(itemID, itemLink, isCollected, hasOtherTransmogSources, isPartiallyCollected)
+function DOKI:SetCachedCollectionStatus(itemID, itemLink, isCollected, hasOtherTransmogSources, isPartiallyCollected,
+		cacheType)
 	local cacheKey = itemLink or tostring(itemID)
+	-- Don't cache if we don't have a proper result
+	if isCollected == nil then return end
+
+	-- Determine cache type if not provided
+	if not cacheType then
+		if itemLink and string.find(itemLink, "battlepet:") then
+			cacheType = DOKI.CACHE_TYPES.BATTLEPET
+		elseif itemID and self:IsEnsembleItem(itemID) then
+			cacheType = DOKI.CACHE_TYPES.ENSEMBLE
+		else
+			-- Determine by item class
+			local _, _, _, _, _, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
+			if classID == 15 and subClassID == 5 then
+				cacheType = DOKI.CACHE_TYPES.MOUNT
+			elseif classID == 15 and subClassID == 2 then
+				cacheType = DOKI.CACHE_TYPES.PET
+			elseif C_ToyBox and C_ToyBox.GetToyInfo(itemID) then
+				cacheType = DOKI.CACHE_TYPES.TOY
+			elseif classID == 2 or classID == 4 then
+				cacheType = DOKI.CACHE_TYPES.TRANSMOG
+			else
+				cacheType = "unknown"
+			end
+		end
+	end
+
+	-- Add to cache if not already present
+	if not self.collectionCache[cacheKey] then
+		self.cacheStats.totalEntries = self.cacheStats.totalEntries + 1
+	end
+
 	self.collectionCache[cacheKey] = {
 		isCollected = isCollected,
 		hasOtherTransmogSources = hasOtherTransmogSources,
 		isPartiallyCollected = isPartiallyCollected or false,
-		timestamp = GetTime(),
+		cacheType = cacheType,
+		sessionTime = GetTime(), -- For debugging/stats only
 	}
+end
+
+-- ===== EVENT-BASED CACHE INVALIDATION =====
+function DOKI:SetupCacheInvalidationEvents()
+	if self.cacheEventFrame then
+		self.cacheEventFrame:UnregisterAllEvents()
+	else
+		self.cacheEventFrame = CreateFrame("Frame")
+	end
+
+	-- FIXED: Better events that don't spam
+	local cacheEvents = {
+		["TRANSMOG_COLLECTION_UPDATED"] = DOKI.CACHE_TYPES.TRANSMOG,
+		["PET_JOURNAL_LIST_UPDATE"] = DOKI.CACHE_TYPES.PET,
+		["COMPANION_LEARNED"] = DOKI.CACHE_TYPES.PET,
+		["COMPANION_UNLEARNED"] = DOKI.CACHE_TYPES.PET,
+		["TOYS_UPDATED"] = DOKI.CACHE_TYPES.TOY,
+		-- FIXED: Use proper mount event instead of COMPANION_UPDATE
+		["NEW_MOUNT_ADDED"] = DOKI.CACHE_TYPES.MOUNT,
+		-- REMOVED: COMPANION_UPDATE (spams on movement)
+	}
+	for event, cacheType in pairs(cacheEvents) do
+		self.cacheEventFrame:RegisterEvent(event)
+	end
+
+	self.cacheEventFrame:SetScript("OnEvent", function(self, event, ...)
+		local cacheType = cacheEvents[event]
+		if cacheType then
+			-- FIXED: Only clear cache if we have entries to clear (reduce spam)
+			local clearedCount = 0
+			for key, cached in pairs(DOKI.collectionCache) do
+				if cached.cacheType == cacheType then
+					DOKI.collectionCache[key] = nil
+					clearedCount = clearedCount + 1
+				end
+			end
+
+			if clearedCount > 0 then
+				DOKI.cacheStats.invalidations = DOKI.cacheStats.invalidations + 1
+				DOKI.cacheStats.totalEntries = DOKI.cacheStats.totalEntries - clearedCount
+				if DOKI.db and DOKI.db.debugMode then
+					print(string.format("|cffff69b4DOKI|r Cleared %s cache (%d entries)", cacheType, clearedCount))
+				end
+			end
+
+			-- FIXED: Only clear ATT cache if we actually have ATT entries
+			if DOKI.db and DOKI.db.attMode then
+				local attCleared = 0
+				for key, cached in pairs(DOKI.collectionCache) do
+					if cached.isATTResult then
+						DOKI.collectionCache[key] = nil
+						attCleared = attCleared + 1
+					end
+				end
+
+				if attCleared > 0 then
+					DOKI.cacheStats.totalEntries = DOKI.cacheStats.totalEntries - attCleared
+					if DOKI.db and DOKI.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r Also cleared %d ATT cache entries", attCleared))
+					end
+				end
+			end
+		end
+	end)
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Cache invalidation events registered (reduced spam)")
+	end
+end
+
+-- ===== CACHE STATISTICS AND DEBUGGING =====
+function DOKI:GetCacheStats()
+	local stats = {
+		totalEntries = self.cacheStats.totalEntries,
+		hits = self.cacheStats.hits,
+		misses = self.cacheStats.misses,
+		invalidations = self.cacheStats.invalidations,
+		hitRate = 0,
+	}
+	local totalRequests = stats.hits + stats.misses
+	if totalRequests > 0 then
+		stats.hitRate = (stats.hits / totalRequests) * 100
+	end
+
+	-- Count by type
+	stats.byType = {}
+	for _, cached in pairs(self.collectionCache) do
+		local cacheType = cached.cacheType or "unknown"
+		stats.byType[cacheType] = (stats.byType[cacheType] or 0) + 1
+	end
+
+	return stats
+end
+
+function DOKI:ShowCacheStats()
+	local stats = self:GetCacheStats()
+	print("|cffff69b4DOKI|r === SESSION CACHE STATISTICS ===")
+	print(string.format("Total entries: %d", stats.totalEntries))
+	print(string.format("Cache hits: %d", stats.hits))
+	print(string.format("Cache misses: %d", stats.misses))
+	print(string.format("Hit rate: %.1f%%", stats.hitRate))
+	print(string.format("Invalidations: %d", stats.invalidations))
+	print("\nEntries by type:")
+	for cacheType, count in pairs(stats.byType) do
+		print(string.format("  %s: %d", cacheType, count))
+	end
+
+	print("|cffff69b4DOKI|r === END CACHE STATS ===")
 end
 
 -- ===== ENSEMBLE DETECTION SYSTEM =====
@@ -1362,6 +1805,9 @@ function DOKI:InitializeUniversalScanning()
 	self.pendingSurgicalUpdate = false
 	-- Initialize ensemble detection
 	self:InitializeEnsembleDetection()
+	-- NEW: Initialize cache and debouncing systems
+	self:SetupCacheInvalidationEvents() -- This was missing!
+	self:SetupDebouncedEventSystem()
 	-- Enhanced surgical update timer
 	self.surgicalTimer = C_Timer.NewTicker(0.2, function()
 		if self.db and self.db.enabled then
@@ -1386,14 +1832,14 @@ function DOKI:InitializeUniversalScanning()
 			end
 		end
 	end)
-	self:SetupMinimalEventSystem()
+	-- Use the debounced event system instead of minimal
+	-- self:SetupMinimalEventSystem()  -- Remove this line
 	self:FullItemScan()
 	if self.db and self.db.debugMode then
 		print("|cffff69b4DOKI|r Enhanced surgical system initialized")
-		print("  |cff00ff00•|r Direct ATT parsing for immediate results")
-		print("  |cff00ff00•|r Standard collection detection")
-		print("  |cff00ff00•|r Smart caching for performance")
-		print("  |cff00ff00•|r Surgical updates for responsive UI")
+		print("  |cff00ff00•|r Session-long caching enabled")
+		print("  |cff00ff00•|r Event debouncing enabled")
+		print("  |cff00ff00•|r Cache invalidation events registered")
 	end
 end
 

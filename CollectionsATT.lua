@@ -4,7 +4,7 @@ local addonName, DOKI = ...
 function DOKI:GetATTCollectionStatus(itemID, itemLink)
 	if not itemID then return nil, nil, nil end
 
-	-- Check cache first
+	-- FIXED: Actually use the cache lookup function!
 	local cachedIsCollected, cachedHasOtherSources, cachedIsPartiallyCollected = self:GetCachedATTStatus(itemID, itemLink)
 	if cachedIsCollected == "NO_ATT_DATA" then
 		return "NO_ATT_DATA", nil, nil
@@ -52,13 +52,8 @@ function DOKI:GetATTCollectionStatus(itemID, itemLink)
 
 	-- Parse with validated data - use enhanced parsing
 	local isCollected, hasOtherTransmogSources, isPartiallyCollected = self:ParseATTTooltipDirectEnhanced(itemID, itemLink)
-	-- Cache the result
-	if isCollected ~= nil then
-		self:SetCachedATTStatus(itemID, itemLink, isCollected, hasOtherTransmogSources, isPartiallyCollected)
-	else
-		self:SetCachedATTStatus(itemID, itemLink, nil, nil, nil)
-	end
-
+	-- FIXED: Cache the result using the enhanced cache system
+	self:SetCachedATTStatus(itemID, itemLink, isCollected, hasOtherTransmogSources, isPartiallyCollected)
 	if isCollected == nil then
 		return "NO_ATT_DATA", nil, nil
 	else
@@ -460,10 +455,12 @@ function DOKI:ParseATTTooltipFromGameTooltip(itemID)
 end
 
 -- ===== ATT CACHE MANAGEMENT =====
+-- Enhanced ATT cache methods with session-long storage
 function DOKI:GetCachedATTStatus(itemID, itemLink)
 	local cacheKey = "ATT_" .. (itemLink or tostring(itemID))
 	local cached = self.collectionCache[cacheKey]
 	if cached and cached.isATTResult then
+		self.cacheStats.hits = self.cacheStats.hits + 1
 		if cached.noATTData then
 			return "NO_ATT_DATA", nil, nil
 		end
@@ -471,16 +468,24 @@ function DOKI:GetCachedATTStatus(itemID, itemLink)
 		return cached.isCollected, cached.hasOtherTransmogSources, cached.isPartiallyCollected
 	end
 
+	self.cacheStats.misses = self.cacheStats.misses + 1
 	return nil, nil, nil
 end
 
 function DOKI:SetCachedATTStatus(itemID, itemLink, isCollected, hasOtherTransmogSources, isPartiallyCollected)
+	-- Use the enhanced cache system
 	local cacheKey = "ATT_" .. (itemLink or tostring(itemID))
+	-- Add to cache count if not already present
+	if not self.collectionCache[cacheKey] then
+		self.cacheStats.totalEntries = self.cacheStats.totalEntries + 1
+	end
+
 	if isCollected == nil and hasOtherTransmogSources == nil and isPartiallyCollected == nil then
 		self.collectionCache[cacheKey] = {
 			isATTResult = true,
 			noATTData = true,
-			timestamp = GetTime(),
+			cacheType = DOKI.CACHE_TYPES.ATT,
+			sessionTime = GetTime(),
 		}
 	else
 		self.collectionCache[cacheKey] = {
@@ -489,8 +494,16 @@ function DOKI:SetCachedATTStatus(itemID, itemLink, isCollected, hasOtherTransmog
 			isPartiallyCollected = isPartiallyCollected,
 			isATTResult = true,
 			noATTData = false,
-			timestamp = GetTime(),
+			cacheType = DOKI.CACHE_TYPES.ATT,
+			sessionTime = GetTime(),
 		}
+	end
+
+	-- DEBUG: Simple logging
+	if self.db and self.db.debugMode then
+		local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+		local result = isCollected and "COLLECTED" or (isCollected == nil and "NO_ATT_DATA" or "NOT_COLLECTED")
+		print(string.format("|cffff69b4DOKI|r ATT CACHED: %s (ID: %d) -> %s", itemName, itemID, result))
 	end
 end
 

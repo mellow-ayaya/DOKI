@@ -1016,6 +1016,13 @@ SlashCmdList["DOKI"] = function(msg)
 		else
 			print("|cffff69b4DOKI|r Fixed ATT parsing test function not available")
 		end
+	elseif command == "cachestats" then
+		DOKI:ShowCacheStats()
+	elseif command == "debounce" then
+		DOKI:ShowDebouncingStats()
+	elseif command == "clearcache" then
+		DOKI:ClearCollectionCache()
+		print("|cffff69b4DOKI|r Session cache cleared")
 	else
 		print("|cffff69b4DOKI|r War Within Enhanced Surgical System with Ensemble + Merchant Support Commands:")
 		print("")
