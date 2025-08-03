@@ -664,7 +664,7 @@ function DOKI:DebugATTBagScan(maxItems)
 	print("|cffff69b4DOKI|r Using proper async item loading system...")
 	local slotsToScan = {}
 	local slotsScanned = 0
-	local results = {}
+	local slotScanResults = {}
 	local totalSlots = 0
 	-- First, collect all the slots we want to scan
 	for bagID = 0, NUM_BAG_SLOTS do
@@ -685,41 +685,42 @@ function DOKI:DebugATTBagScan(maxItems)
 		end
 	end
 
-	-- Function to process results when all slots are done
+	-- Function to process slotScanResults when all slots are done
 	local function processResults()
-		print(string.format("|cffff69b4DOKI|r Processing %d slot results...", #results))
+		print(string.format("|cffff69b4DOKI|r Processing %d slot slotScanResults...", #slotScanResults))
 		local itemsFound = 0
 		local collectibleItems = 0
 		local attDataItems = 0
-		-- Sort results by bagID, slotID for consistent output
-		table.sort(results, function(a, b)
+		-- Sort slotScanResults by bagID, slotID for consistent output
+		table.sort(slotScanResults, function(a, b)
 			if a.bagID == b.bagID then
 				return a.slotID < b.slotID
 			end
 
 			return a.bagID < b.bagID
 		end)
-		for _, result in ipairs(results) do
-			if result.isEmpty then
-				print(string.format("Slot %d.%d: EMPTY", result.bagID, result.slotID))
+		for _, slotScanResult in ipairs(slotScanResults) do
+			if slotScanResult.isEmpty then
+				print(string.format("Slot %d.%d: EMPTY", slotScanResult.bagID, slotScanResult.slotID))
 			else
 				itemsFound = itemsFound + 1
-				if result.isCollectible then
+				if slotScanResult.isCollectible then
 					collectibleItems = collectibleItems + 1
 				end
 
-				if result.hasATTData then
+				if slotScanResult.hasATTData then
 					attDataItems = attDataItems + 1
 				end
 
-				local collectibleFlag = result.isCollectible and " [COLLECTIBLE]" or ""
+				local collectibleFlag = slotScanResult.isCollectible and " [COLLECTIBLE]" or ""
 				print(string.format("Slot %d.%d: %s (ID: %d)%s -> ATT: %s",
-					result.bagID, result.slotID, result.itemName, result.itemID, collectibleFlag, result.attResult))
+					slotScanResult.bagID, slotScanResult.slotID, slotScanResult.itemName, slotScanResult.itemID, collectibleFlag,
+					slotScanResult.attResult))
 			end
 		end
 
 		print(string.format("|cffff69b4DOKI|r Summary: %d slots scanned, %d items found (%d collectible, %d with ATT data)",
-			#results, itemsFound, collectibleItems, attDataItems))
+			#slotScanResults, itemsFound, collectibleItems, attDataItems))
 		print("|cffff69b4DOKI|r === END ATT BAG SCAN ===")
 	end
 
@@ -730,19 +731,19 @@ function DOKI:DebugATTBagScan(maxItems)
 		local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
 		if not itemInfo or not itemInfo.itemID then
 			-- Empty slot
-			table.insert(results, {
+			table.insert(slotScanResults, {
 				bagID = bagID,
 				slotID = slotID,
 				isEmpty = true,
 			})
 			-- Check if we're done
-			if #results >= #slotsToScan then
+			if #slotScanResults >= #slotsToScan then
 				processResults()
 			end
 		else
 			-- Use the proper async loading system
 			self:GetItemLinkWhenReady(bagID, slotID, function(itemID, itemLink, success)
-				local result = {
+				local slotScanResult = {
 					bagID = bagID,
 					slotID = slotID,
 					isEmpty = false,
@@ -754,48 +755,48 @@ function DOKI:DebugATTBagScan(maxItems)
 				}
 				if success and itemID and itemLink then
 					-- Got complete item data
-					result.itemName = C_Item.GetItemInfo(itemID) or "Loading..."
-					result.isCollectible = DOKI:IsCollectibleItem(itemID, itemLink)
+					slotScanResult.itemName = C_Item.GetItemInfo(itemID) or "Loading..."
+					slotScanResult.isCollectible = DOKI:IsCollectibleItem(itemID, itemLink)
 					-- Test ATT with the complete hyperlink
 					local attStatus, attYellow, attPurple = DOKI:GetATTCollectionStatus(itemID, itemLink)
 					if attStatus == "NO_ATT_DATA" then
-						result.attResult = "NO_ATT_DATA"
-						result.hasATTData = false
+						slotScanResult.attResult = "NO_ATT_DATA"
+						slotScanResult.hasATTData = false
 					elseif attStatus == nil then
-						result.attResult = "STILL_PROCESSING"
-						result.hasATTData = false
+						slotScanResult.attResult = "STILL_PROCESSING"
+						slotScanResult.hasATTData = false
 					elseif attStatus == true then
-						result.attResult = "COLLECTED"
-						result.hasATTData = true
+						slotScanResult.attResult = "COLLECTED"
+						slotScanResult.hasATTData = true
 					elseif attStatus == false then
-						result.hasATTData = true
+						slotScanResult.hasATTData = true
 						if attPurple then
-							result.attResult = "PARTIAL (purple)"
+							slotScanResult.attResult = "PARTIAL (purple)"
 						elseif attYellow then
-							result.attResult = "UNCOLLECTED (blue)"
+							slotScanResult.attResult = "UNCOLLECTED (blue)"
 						else
-							result.attResult = "UNCOLLECTED"
+							slotScanResult.attResult = "UNCOLLECTED"
 						end
 					else
-						result.attResult = "UNKNOWN: " .. tostring(attStatus)
-						result.hasATTData = false
+						slotScanResult.attResult = "UNKNOWN: " .. tostring(attStatus)
+						slotScanResult.hasATTData = false
 					end
 
 					if DOKI.db.debugMode then
 						print(string.format("|cffff69b4DOKI|r Async loaded: %s -> %s",
-							result.itemName, result.attResult))
+							slotScanResult.itemName, slotScanResult.attResult))
 					end
 				else
 					-- Failed to load complete data
-					result.attResult = "LOAD_FAILED"
+					slotScanResult.attResult = "LOAD_FAILED"
 					if itemID then
-						result.itemName = C_Item.GetItemInfo(itemID) or "Failed to load"
+						slotScanResult.itemName = C_Item.GetItemInfo(itemID) or "Failed to load"
 					end
 				end
 
-				table.insert(results, result)
+				table.insert(slotScanResults, slotScanResult)
 				-- Check if we're done with all slots
-				if #results >= #slotsToScan then
+				if #slotScanResults >= #slotsToScan then
 					processResults()
 				end
 			end)
