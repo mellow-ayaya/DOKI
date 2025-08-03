@@ -1022,10 +1022,10 @@ function DOKI:ScanBagFrames()
 								if itemButton and itemButton:IsVisible() then
 									local buttonBagID, buttonSlotID = nil, nil
 									if itemButton.GetBagID and itemButton.GetID then
-										local success1, bID = pcall(itemButton.GetBagID, itemButton)
-										local success2, sID = pcall(itemButton.GetID, itemButton)
-										if success1 and success2 then
-											buttonBagID, buttonSlotID = bID, sID
+										local bagIDRetrievalSuccess, retrievedBagID = pcall(itemButton.GetBagID, itemButton)
+										local slotIDRetrievalSuccess, retrievedBagID = pcall(itemButton.GetID, itemButton)
+										if bagIDRetrievalSuccess and slotIDRetrievalSuccess then
+											buttonBagID, buttonSlotID = retrievedBagID, retrievedBagID
 										end
 									end
 

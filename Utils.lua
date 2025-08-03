@@ -581,8 +581,9 @@ function DOKI:HasOtherTransmogSources(itemAppearanceID, excludeModifiedAppearanc
 
 	for _, sourceID in ipairs(sourceIDs) do
 		if type(sourceID) == "number" and sourceID ~= excludeModifiedAppearanceID then
-			local success2, hasThisSource = pcall(C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance, sourceID)
-			if success2 and hasThisSource then
+			local slotIDRetrievalSuccess, hasThisSource = pcall(C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance,
+				sourceID)
+			if slotIDRetrievalSuccess and hasThisSource then
 				return true
 			end
 		end
@@ -611,8 +612,8 @@ function DOKI:GetClassRestrictionsForSource(sourceID, appearanceID)
 
 	-- Fallback to GetSourceInfo
 	if not linkedItemID then
-		local success2, sourceInfo2 = pcall(C_TransmogCollection.GetSourceInfo, sourceID)
-		if success2 and sourceInfo2 and sourceInfo2.itemID then
+		local slotIDRetrievalSuccess, sourceInfo2 = pcall(C_TransmogCollection.GetSourceInfo, sourceID)
+		if slotIDRetrievalSuccess and sourceInfo2 and sourceInfo2.itemID then
 			linkedItemID = sourceInfo2.itemID
 		end
 	end
@@ -725,8 +726,9 @@ function DOKI:HasEqualOrLessRestrictiveSources(itemAppearanceID, excludeModified
 	-- Check each source we have collected
 	for _, sourceID in ipairs(allSources) do
 		if sourceID ~= excludeModifiedAppearanceID then
-			local success2, hasSource = pcall(C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance, sourceID)
-			if success2 and hasSource then
+			local slotIDRetrievalSuccess, hasSource = pcall(C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance,
+				sourceID)
+			if slotIDRetrievalSuccess and hasSource then
 				-- Get restrictions for this known source
 				local sourceRestrictions = self:GetClassRestrictionsForSource(sourceID, itemAppearanceID)
 				if sourceRestrictions then
