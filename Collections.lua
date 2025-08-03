@@ -38,8 +38,8 @@ end
 
 -- Handle the event when item data becomes available (called from Core.lua)
 function DOKI:OnItemInfoReceived(itemID, success)
-	local pending = self.itemLoader.pendingItems[itemID]
-	if not pending then return end
+	local pendingItemLoadData = self.itemLoader.pendingItems[itemID]
+	if not pendingItemLoadData then return end
 
 	if self.db and self.db.debugMode then
 		local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
@@ -49,8 +49,8 @@ function DOKI:OnItemInfoReceived(itemID, success)
 
 	-- Get the now-available item link
 	local itemLink = nil
-	if pending.bagID and pending.slotID then
-		itemLink = C_Container.GetContainerItemLink(pending.bagID, pending.slotID)
+	if pendingItemLoadData.bagID and pendingItemLoadData.slotID then
+		itemLink = C_Container.GetContainerItemLink(pendingItemLoadData.bagID, pendingItemLoadData.slotID)
 	end
 
 	-- Validate that the itemLink is actually complete now
@@ -61,7 +61,7 @@ function DOKI:OnItemInfoReceived(itemID, success)
 	end
 
 	-- Execute all callbacks for this item
-	for _, callback in ipairs(pending.callbacks) do
+	for _, callback in ipairs(pendingItemLoadData.callbacks) do
 		local success, result = pcall(callback, itemID, itemLink, isComplete)
 		if not success and self.db and self.db.debugMode then
 			print(string.format("|cffff69b4DOKI|r Callback error for item %d: %s", itemID, result))
@@ -278,10 +278,10 @@ function DOKI:IsEnsembleCollected(itemID, itemLink)
 	if not itemID then return false, false, false end
 
 	-- Check cache first
-	local cachedCollected, cachedHasOtherSources, cachedIsPartiallyCollected = self:GetCachedCollectionStatus(itemID,
+	local cachedIsCollected, cachedHasOtherSources, cachedIsPartiallyCollected = self:GetCachedCollectionStatus(itemID,
 		itemLink)
-	if cachedCollected ~= nil then
-		return cachedCollected, cachedHasOtherSources, cachedIsPartiallyCollected
+	if cachedIsCollected ~= nil then
+		return cachedIsCollected, cachedHasOtherSources, cachedIsPartiallyCollected
 	end
 
 	local isCollected = self:CheckEnsembleByTooltip(itemID, itemLink)

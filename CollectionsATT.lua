@@ -5,11 +5,11 @@ function DOKI:GetATTCollectionStatus(itemID, itemLink)
 	if not itemID then return nil, nil, nil end
 
 	-- Check cache first
-	local cachedCollected, cachedHasOtherSources, cachedIsPartiallyCollected = self:GetCachedATTStatus(itemID, itemLink)
-	if cachedCollected == "NO_ATT_DATA" then
+	local cachedIsCollected, cachedHasOtherSources, cachedIsPartiallyCollected = self:GetCachedATTStatus(itemID, itemLink)
+	if cachedIsCollected == "NO_ATT_DATA" then
 		return "NO_ATT_DATA", nil, nil
-	elseif cachedCollected ~= nil then
-		return cachedCollected, cachedHasOtherSources, cachedIsPartiallyCollected
+	elseif cachedIsCollected ~= nil then
+		return cachedIsCollected, cachedHasOtherSources, cachedIsPartiallyCollected
 	end
 
 	-- ENHANCED: Check if item data is loaded
@@ -142,16 +142,16 @@ function DOKI:ParseATTTooltipFromGameTooltipEnhanced(itemID)
 				end
 
 				-- PRIORITY 2: Look for simple fractions without percentage like "(0/1)" or "(2/3)"
-				local parenCurrent, parenTotal = string.match(text, "%((%d+)/(%d+)%)")
-				if parenCurrent and parenTotal then
-					parenCurrent = tonumber(parenCurrent)
-					parenTotal = tonumber(parenTotal)
-					if parenCurrent and parenTotal then
-						if parenCurrent >= parenTotal and parenTotal > 0 then
+				local fractionCurrentValue, fractionTotalValue = string.match(text, "%((%d+)/(%d+)%)")
+				if fractionCurrentValue and fractionTotalValue then
+					fractionCurrentValue = tonumber(fractionCurrentValue)
+					fractionTotalValue = tonumber(fractionTotalValue)
+					if fractionCurrentValue and fractionTotalValue then
+						if fractionCurrentValue >= fractionTotalValue and fractionTotalValue > 0 then
 							attStatus = true
 							hasOtherTransmogSources = false
 							isPartiallyCollected = false
-						elseif parenCurrent == 0 then
+						elseif fractionCurrentValue == 0 then
 							attStatus = false
 							hasOtherTransmogSources = false
 							isPartiallyCollected = false
@@ -164,7 +164,7 @@ function DOKI:ParseATTTooltipFromGameTooltipEnhanced(itemID)
 
 						if self.db and self.db.debugMode then
 							print(string.format("|cffff69b4DOKI|r Found ATT fraction: (%d/%d) -> %s",
-								parenCurrent, parenTotal,
+								fractionCurrentValue, fractionTotalValue,
 								attStatus and "COLLECTED" or (isPartiallyCollected and "PARTIAL" or "NOT COLLECTED")))
 						end
 
@@ -202,17 +202,18 @@ function DOKI:ParseATTTooltipFromGameTooltipEnhanced(itemID)
 					-- This is likely a currency/reagent item, look for the status
 					if string.find(text, "Collected") then
 						-- Look for the numbers in this line with safe pattern
-						local curr, tot = string.match(text, "(%d+)%s*/%s*(%d+)")
-						if curr and tot then
-							curr = tonumber(curr)
-							tot = tonumber(tot)
-							if curr and tot then
-								attStatus = (curr >= tot)
+						local currentCount, totalCount = string.match(text, "(%d+)%s*/%s*(%d+)")
+						if currentCount and totalCount then
+							currentCount = tonumber(currentCount)
+							totalCount = tonumber(totalCount)
+							if currentCount and totalCount then
+								attStatus = (currentCount >= totalCount)
 								hasOtherTransmogSources = false
-								isPartiallyCollected = (curr > 0 and curr < tot)
+								isPartiallyCollected = (currentCount > 0 and currentCount < totalCount)
 								if self.db and self.db.debugMode then
 									print(string.format("|cffff69b4DOKI|r Found diamond currency: %d/%d -> %s",
-										curr, tot, attStatus and "COLLECTED" or (isPartiallyCollected and "PARTIAL" or "NOT COLLECTED")))
+										currentCount, totalCount,
+										attStatus and "COLLECTED" or (isPartiallyCollected and "PARTIAL" or "NOT COLLECTED")))
 								end
 
 								break
@@ -365,15 +366,15 @@ function DOKI:ParseATTTooltipFromGameTooltip(itemID)
 				end
 
 				-- Look for simple fractions without percentage like "(0/1)" or "(2/3)"
-				local parenCurrent, parenTotal = string.match(text, "%((%d+)/(%d+)%)")
-				if parenCurrent and parenTotal then
-					parenCurrent = tonumber(parenCurrent)
-					parenTotal = tonumber(parenTotal)
-					if parenCurrent >= parenTotal and parenTotal > 0 then
+				local fractionCurrentValue, fractionTotalValue = string.match(text, "%((%d+)/(%d+)%)")
+				if fractionCurrentValue and fractionTotalValue then
+					fractionCurrentValue = tonumber(fractionCurrentValue)
+					fractionTotalValue = tonumber(fractionTotalValue)
+					if fractionCurrentValue >= fractionTotalValue and fractionTotalValue > 0 then
 						attStatus = true
 						hasOtherTransmogSources = false
 						isPartiallyCollected = false
-					elseif parenCurrent == 0 then
+					elseif fractionCurrentValue == 0 then
 						attStatus = false
 						hasOtherTransmogSources = false
 						isPartiallyCollected = false
@@ -386,7 +387,7 @@ function DOKI:ParseATTTooltipFromGameTooltip(itemID)
 
 					if self.db and self.db.debugMode then
 						print(string.format("|cffff69b4DOKI|r Found ATT fraction: (%d/%d) -> %s",
-							parenCurrent, parenTotal,
+							fractionCurrentValue, fractionTotalValue,
 							attStatus and "COLLECTED" or (isPartiallyCollected and "PARTIAL" or "NOT COLLECTED")))
 					end
 
@@ -423,16 +424,17 @@ function DOKI:ParseATTTooltipFromGameTooltip(itemID)
 					-- This is likely a currency/reagent item, look for the status
 					if string.find(text, "Collected") then
 						-- Look for the numbers in this line
-						local curr, tot = string.match(text, "(%d+) */ *(%d+)")
-						if curr and tot then
-							curr = tonumber(curr)
-							tot = tonumber(tot)
-							attStatus = (curr >= tot)
+						local currentCount, totalCount = string.match(text, "(%d+) */ *(%d+)")
+						if currentCount and totalCount then
+							currentCount = tonumber(currentCount)
+							totalCount = tonumber(totalCount)
+							attStatus = (currentCount >= totalCount)
 							hasOtherTransmogSources = false
-							isPartiallyCollected = (curr > 0 and curr < tot)
+							isPartiallyCollected = (currentCount > 0 and currentCount < totalCount)
 							if self.db and self.db.debugMode then
 								print(string.format("|cffff69b4DOKI|r Found diamond currency: %d/%d -> %s",
-									curr, tot, attStatus and "COLLECTED" or (isPartiallyCollected and "PARTIAL" or "NOT COLLECTED")))
+									currentCount, totalCount,
+									attStatus and "COLLECTED" or (isPartiallyCollected and "PARTIAL" or "NOT COLLECTED")))
 							end
 
 							break
