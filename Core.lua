@@ -551,21 +551,21 @@ SlashCmdList["DOKI"] = function(msg)
 		end
 
 		-- Step 3: Check what IsItemCollected returns
-		local isCollected, showYellowD, showPurple = DOKI:IsItemCollected(itemID, nil)
+		local isCollected, hasOtherTransmogSources, isPartiallyCollected = DOKI:IsItemCollected(itemID, nil)
 		print("IsItemCollected result:")
 		print(string.format("  Collected: %s", isCollected and "TRUE" or "FALSE"))
-		print(string.format("  Show Yellow D: %s", showYellowD and "YES" or "NO"))
-		print(string.format("  Show Purple: %s", showPurple and "YES" or "NO"))
+		print(string.format("  Show Yellow D: %s", hasOtherTransmogSources and "YES" or "NO"))
+		print(string.format("  Show Purple: %s", isPartiallyCollected and "YES" or "NO"))
 		-- Step 4: Determine if indicator should be created
-		local shouldGetIndicator = isCollectible and (not isCollected or showPurple)
+		local shouldGetIndicator = isCollectible and (not isCollected or isPartiallyCollected)
 		print(string.format("Should get indicator: %s", shouldGetIndicator and "YES" or "NO"))
 		if shouldGetIndicator then
 			local colorType = "NONE"
-			if not isCollected and not showPurple then
+			if not isCollected and not isPartiallyCollected then
 				colorType = "ORANGE"
-			elseif showPurple then
+			elseif isPartiallyCollected then
 				colorType = "PINK"
-			elseif isCollected and showYellowD then
+			elseif isCollected and hasOtherTransmogSources then
 				colorType = "BLUE"
 			end
 
@@ -593,15 +593,17 @@ SlashCmdList["DOKI"] = function(msg)
 						tested = tested + 1
 						local itemName = C_Item.GetItemInfo(itemInfo.itemID) or "Unknown"
 						-- Test direct parsing
-						local isCollected, showYellowD, showPurple = DOKI:ParseATTTooltipDirect(itemInfo.itemID, itemInfo.hyperlink)
+						local isCollected, hasOtherTransmogSources, isPartiallyCollected = DOKI:ParseATTTooltipDirect(
+							itemInfo.itemID,
+							itemInfo.hyperlink)
 						if isCollected ~= nil then
 							attDataFound = attDataFound + 1
 							local colorType = "NONE"
-							if not isCollected and not showPurple then
+							if not isCollected and not isPartiallyCollected then
 								colorType = "ORANGE (0/number or not collected)"
-							elseif showPurple then
+							elseif isPartiallyCollected then
 								colorType = "PINK (>0/number partial)"
-							elseif isCollected and showYellowD then
+							elseif isCollected and hasOtherTransmogSources then
 								colorType = "BLUE (other source)"
 							elseif isCollected then
 								colorType = "NONE (fully collected)"
@@ -648,14 +650,16 @@ SlashCmdList["DOKI"] = function(msg)
 					if itemInfo and itemInfo.itemID then
 						totalItems = totalItems + 1
 						-- Test direct parsing
-						local isCollected, showYellowD, showPurple = DOKI:ParseATTTooltipDirect(itemInfo.itemID, itemInfo.hyperlink)
+						local isCollected, hasOtherTransmogSources, isPartiallyCollected = DOKI:ParseATTTooltipDirect(
+							itemInfo.itemID,
+							itemInfo.hyperlink)
 						if isCollected ~= nil then
 							attDataFound = attDataFound + 1
-							if not isCollected and not showPurple then
+							if not isCollected and not isPartiallyCollected then
 								needsOrangeIndicator = needsOrangeIndicator + 1
-							elseif showPurple then
+							elseif isPartiallyCollected then
 								needsPinkIndicator = needsPinkIndicator + 1
-							elseif isCollected and showYellowD then
+							elseif isCollected and hasOtherTransmogSources then
 								needsBlueIndicator = needsBlueIndicator + 1
 							end
 						end
@@ -976,15 +980,15 @@ SlashCmdList["DOKI"] = function(msg)
 		end
 
 		-- Step 2: Check collection status
-		local isCollected, showYellowD, showPurple = DOKI:IsItemCollected(itemID, nil)
+		local isCollected, hasOtherTransmogSources, isPartiallyCollected = DOKI:IsItemCollected(itemID, nil)
 		print(string.format("Step 2 - IsItemCollected: collected=%s, yellowD=%s, purple=%s",
-			tostring(isCollected), tostring(showYellowD), tostring(showPurple)))
+			tostring(isCollected), tostring(hasOtherTransmogSources), tostring(isPartiallyCollected)))
 		-- Step 3: Determine indicator
-		if isCollected and not showPurple then
+		if isCollected and not isPartiallyCollected then
 			print("RESULT: No indicator (item fully collected)")
-		elseif showPurple then
+		elseif isPartiallyCollected then
 			print("RESULT: PINK indicator (partial collection)")
-		elseif showYellowD then
+		elseif hasOtherTransmogSources then
 			print("RESULT: BLUE indicator (special case)")
 		elseif not isCollected then
 			print("RESULT: ORANGE indicator (not collected)")

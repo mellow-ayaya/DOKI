@@ -249,7 +249,7 @@ function DOKI:IsItemCollected(itemID, itemLink)
 
 	-- ATT MODE: ONLY use ATT data, ignore items ATT doesn't know about
 	if self.db and self.db.attMode then
-		local attStatus, attShowYellowD, attShowPurple = self:GetATTCollectionStatus(itemID, itemLink)
+		local attStatus, atthasOtherTransmogSources, attisPartiallyCollected = self:GetATTCollectionStatus(itemID, itemLink)
 		if attStatus == "NO_ATT_DATA" then
 			-- ATT has no data for this item - treat as "not relevant" (no indicator)
 			if self.db and self.db.debugMode then
@@ -262,9 +262,9 @@ function DOKI:IsItemCollected(itemID, itemLink)
 			if self.db and self.db.debugMode then
 				local statusText = attStatus and "COLLECTED" or "NOT COLLECTED"
 				local indicatorText = ""
-				if attShowPurple then
+				if attisPartiallyCollected then
 					indicatorText = " (show purple indicator)"
-				elseif attShowYellowD then
+				elseif atthasOtherTransmogSources then
 					indicatorText = " (show blue indicator)"
 				end
 
@@ -273,10 +273,10 @@ function DOKI:IsItemCollected(itemID, itemLink)
 			end
 
 			-- Handle purple indicators for fractional items
-			if attShowPurple then
-				return false, false, true           -- Not collected, don't show yellow D, show purple
+			if attisPartiallyCollected then
+				return false, false, true                       -- Not collected, don't show yellow D, show purple
 			else
-				return attStatus, attShowYellowD, false -- Normal ATT result, don't show purple
+				return attStatus, atthasOtherTransmogSources, false -- Normal ATT result, don't show purple
 			end
 		else
 			-- ATT is still processing this item - return "collected" temporarily
@@ -293,8 +293,8 @@ function DOKI:IsItemCollected(itemID, itemLink)
 	-- Handle ensembles first
 	local itemName = C_Item.GetItemInfo(itemID)
 	if self:IsEnsembleItem(itemID, itemName) then
-		local isCollected, showYellowD, showPurple = self:IsEnsembleCollected(itemID, itemLink)
-		return isCollected, showYellowD, showPurple
+		local isCollected, hasOtherTransmogSources, isPartiallyCollected = self:IsEnsembleCollected(itemID, itemLink)
+		return isCollected, hasOtherTransmogSources, isPartiallyCollected
 	end
 
 	-- Handle caged pets (battlepet links) next
@@ -330,39 +330,39 @@ function DOKI:IsItemCollected(itemID, itemLink)
 		return true, false, false -- Treat as "collected" temporarily
 	end
 
-	local isCollected, showYellowD, showPurple = false, false, false
+	local isCollected, hasOtherTransmogSources, isPartiallyCollected = false, false, false
 	-- Check mounts - FIXED FOR WAR WITHIN
 	if classID == 15 and subClassID == 5 then
 		isCollected = self:IsMountCollectedWarWithin(itemID)
-		showYellowD = false
-		showPurple = false
+		hasOtherTransmogSources = false
+		isPartiallyCollected = false
 		-- Check pets - FIXED FOR WAR WITHIN
 	elseif classID == 15 and subClassID == 2 then
 		isCollected = self:IsPetCollectedWarWithin(itemID)
-		showYellowD = false
-		showPurple = false
+		hasOtherTransmogSources = false
+		isPartiallyCollected = false
 		-- Check toys
 	elseif C_ToyBox and C_ToyBox.GetToyInfo(itemID) then
 		isCollected = PlayerHasToy(itemID)
-		showYellowD = false
-		showPurple = false
+		hasOtherTransmogSources = false
+		isPartiallyCollected = false
 		-- Check transmog
 	elseif classID == 2 or classID == 4 then
 		if self.db and self.db.smartMode then
-			isCollected, showYellowD = self:IsTransmogCollectedSmart(itemID, itemLink)
+			isCollected, hasOtherTransmogSources = self:IsTransmogCollectedSmart(itemID, itemLink)
 		else
-			isCollected, showYellowD = self:IsTransmogCollected(itemID, itemLink)
+			isCollected, hasOtherTransmogSources = self:IsTransmogCollected(itemID, itemLink)
 		end
 
-		showPurple = false -- Transmog items don't use purple indicators (that's only for ATT fractional)
+		isPartiallyCollected = false -- Transmog items don't use purple indicators (that's only for ATT fractional)
 	end
 
 	-- Only cache the result if we got valid data
 	if classID and subClassID then
-		self:SetCachedCollectionStatus(itemID, itemLink, isCollected, showYellowD, showPurple)
+		self:SetCachedCollectionStatus(itemID, itemLink, isCollected, hasOtherTransmogSources, isPartiallyCollected)
 	end
 
-	return isCollected, showYellowD, showPurple
+	return isCollected, hasOtherTransmogSources, isPartiallyCollected
 end
 
 -- FIXED: Enhanced mount collection with proper data loading fallback
@@ -471,15 +471,15 @@ function DOKI:IsTransmogCollected(itemID, itemLink)
 	local hasThisVariant = C_TransmogCollection.PlayerHasTransmogItemModifiedAppearance(itemModifiedAppearanceID)
 	if hasThisVariant then return true, false end
 
-	local showYellowD = false
+	local hasOtherTransmogSources = false
 	if itemAppearanceID then
 		local hasOtherSources = self:HasOtherTransmogSources(itemAppearanceID, itemModifiedAppearanceID)
 		if hasOtherSources then
-			showYellowD = true
+			hasOtherTransmogSources = true
 		end
 	end
 
-	return false, showYellowD
+	return false, hasOtherTransmogSources
 end
 
 function DOKI:IsTransmogCollectedSmart(itemID, itemLink)
@@ -902,7 +902,7 @@ function DOKI:TraceItemDetection(itemID, itemLink)
 		print("   Not in cache - checking APIs...")
 	end
 
-	local isCollected, showYellowD, showPurple = false, false, false
+	local isCollected, hasOtherTransmogSources, isPartiallyCollected = false, false, false
 	if classID == 15 and subClassID == 5 then
 		-- Mount check
 		print("   Checking mount status...")
@@ -954,10 +954,10 @@ function DOKI:TraceItemDetection(itemID, itemLink)
 		end
 
 		if smartMode then
-			isCollected, showYellowD = self:IsTransmogCollectedSmart(itemID, itemLink)
+			isCollected, hasOtherTransmogSources = self:IsTransmogCollectedSmart(itemID, itemLink)
 			print("    Using smart mode logic...")
 		else
-			isCollected, showYellowD = self:IsTransmogCollected(itemID, itemLink)
+			isCollected, hasOtherTransmogSources = self:IsTransmogCollected(itemID, itemLink)
 			print("    Using basic transmog logic...")
 		end
 
@@ -997,7 +997,7 @@ function DOKI:TraceItemDetection(itemID, itemLink)
 		end
 
 		print(string.format("    Final Result: %s", isCollected and "COLLECTED" or "NOT COLLECTED"))
-		print(string.format("    Show Yellow D: %s", showYellowD and "YES" or "NO"))
+		print(string.format("    Show Yellow D: %s", hasOtherTransmogSources and "YES" or "NO"))
 	end
 
 	print("")
@@ -1005,15 +1005,15 @@ function DOKI:TraceItemDetection(itemID, itemLink)
 	print("|cffff69b4DOKI|r 3. FINAL DECISION:")
 	print(string.format("  Collectible: %s", isCollectible and "YES" or "NO"))
 	print(string.format("  Collected: %s", isCollected and "YES" or "NO"))
-	print(string.format("  Show Yellow D: %s", showYellowD and "YES" or "NO"))
-	print(string.format("  Show Purple: %s", showPurple and "YES" or "NO"))
-	local needsIndicator = isCollectible and (not isCollected or showPurple)
+	print(string.format("  Show Yellow D: %s", hasOtherTransmogSources and "YES" or "NO"))
+	print(string.format("  Show Purple: %s", isPartiallyCollected and "YES" or "NO"))
+	local needsIndicator = isCollectible and (not isCollected or isPartiallyCollected)
 	print(string.format("   NEEDS INDICATOR: %s", needsIndicator and "YES" or "NO"))
 	if needsIndicator then
 		local color = "ORANGE (uncollected)"
-		if showPurple then
+		if isPartiallyCollected then
 			color = "PURPLE (fractional)"
-		elseif showYellowD then
+		elseif hasOtherTransmogSources then
 			color = "BLUE (has other sources)"
 		end
 

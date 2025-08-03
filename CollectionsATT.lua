@@ -51,10 +51,10 @@ function DOKI:GetATTCollectionStatus(itemID, itemLink)
 	end
 
 	-- Parse with validated data - use enhanced parsing
-	local isCollected, showYellowD, showPurple = self:ParseATTTooltipDirectEnhanced(itemID, itemLink)
+	local isCollected, hasOtherTransmogSources, isPartiallyCollected = self:ParseATTTooltipDirectEnhanced(itemID, itemLink)
 	-- Cache the result
 	if isCollected ~= nil then
-		self:SetCachedATTStatus(itemID, itemLink, isCollected, showYellowD, showPurple)
+		self:SetCachedATTStatus(itemID, itemLink, isCollected, hasOtherTransmogSources, isPartiallyCollected)
 	else
 		self:SetCachedATTStatus(itemID, itemLink, nil, nil, nil)
 	end
@@ -62,7 +62,7 @@ function DOKI:GetATTCollectionStatus(itemID, itemLink)
 	if isCollected == nil then
 		return "NO_ATT_DATA", nil, nil
 	else
-		return isCollected, showYellowD, showPurple
+		return isCollected, hasOtherTransmogSources, isPartiallyCollected
 	end
 end
 
@@ -80,25 +80,25 @@ function DOKI:ParseATTTooltipDirectEnhanced(itemID, itemLink)
 
 	tooltip:Show()
 	-- Wait for ATT to inject data, then parse
-	local attStatus, showYellowD, showPurple
+	local attStatus, hasOtherTransmogSources, isPartiallyCollected
 	C_Timer.After(0.2, function()
-		attStatus, showYellowD, showPurple = DOKI:ParseATTTooltipFromGameTooltipEnhanced(itemID)
+		attStatus, hasOtherTransmogSources, isPartiallyCollected = DOKI:ParseATTTooltipFromGameTooltipEnhanced(itemID)
 		tooltip:Hide()
 		tooltip:ClearLines()
 	end)
 	-- Also try immediate parsing (may not get ATT data due to timing)
-	attStatus, showYellowD, showPurple = self:ParseATTTooltipFromGameTooltipEnhanced(itemID)
+	attStatus, hasOtherTransmogSources, isPartiallyCollected = self:ParseATTTooltipFromGameTooltipEnhanced(itemID)
 	tooltip:Hide()
 	tooltip:ClearLines()
-	return attStatus, showYellowD, showPurple
+	return attStatus, hasOtherTransmogSources, isPartiallyCollected
 end
 
 -- ===== ENHANCED TOOLTIP PARSING WITH TEXT RECOGNITION =====
 function DOKI:ParseATTTooltipFromGameTooltipEnhanced(itemID)
 	local tooltip = GameTooltip
 	local attStatus = nil
-	local showYellowD = false
-	local showPurple = false
+	local hasOtherTransmogSources = false
+	local isPartiallyCollected = false
 	-- Scan ALL tooltip lines for ATT data
 	for i = 1, tooltip:NumLines() do
 		-- Check both left and right lines
@@ -118,22 +118,23 @@ function DOKI:ParseATTTooltipFromGameTooltipEnhanced(itemID)
 					if current and total and percentage then
 						if percentage >= 100 or current >= total then
 							attStatus = true
-							showYellowD = false
-							showPurple = false
+							hasOtherTransmogSources = false
+							isPartiallyCollected = false
 						elseif percentage == 0 or current == 0 then
 							attStatus = false
-							showYellowD = false
-							showPurple = false
+							hasOtherTransmogSources = false
+							isPartiallyCollected = false
 						else
 							-- Partial collection - show pink indicator
 							attStatus = false
-							showYellowD = false
-							showPurple = true
+							hasOtherTransmogSources = false
+							isPartiallyCollected = true
 						end
 
 						if self.db and self.db.debugMode then
 							print(string.format("|cffff69b4DOKI|r Found ATT percentage: %d/%d (%.1f%%) -> %s",
-								current, total, percentage, attStatus and "COLLECTED" or (showPurple and "PARTIAL" or "NOT COLLECTED")))
+								current, total, percentage,
+								attStatus and "COLLECTED" or (isPartiallyCollected and "PARTIAL" or "NOT COLLECTED")))
 						end
 
 						break
@@ -148,22 +149,23 @@ function DOKI:ParseATTTooltipFromGameTooltipEnhanced(itemID)
 					if parenCurrent and parenTotal then
 						if parenCurrent >= parenTotal and parenTotal > 0 then
 							attStatus = true
-							showYellowD = false
-							showPurple = false
+							hasOtherTransmogSources = false
+							isPartiallyCollected = false
 						elseif parenCurrent == 0 then
 							attStatus = false
-							showYellowD = false
-							showPurple = false
+							hasOtherTransmogSources = false
+							isPartiallyCollected = false
 						else
 							-- Partial collection
 							attStatus = false
-							showYellowD = false
-							showPurple = true
+							hasOtherTransmogSources = false
+							isPartiallyCollected = true
 						end
 
 						if self.db and self.db.debugMode then
 							print(string.format("|cffff69b4DOKI|r Found ATT fraction: (%d/%d) -> %s",
-								parenCurrent, parenTotal, attStatus and "COLLECTED" or (showPurple and "PARTIAL" or "NOT COLLECTED")))
+								parenCurrent, parenTotal,
+								attStatus and "COLLECTED" or (isPartiallyCollected and "PARTIAL" or "NOT COLLECTED")))
 						end
 
 						break
@@ -174,8 +176,8 @@ function DOKI:ParseATTTooltipFromGameTooltipEnhanced(itemID)
 				-- ❌ for not collected
 				if string.find(text, "❌") or string.find(text, "✗") or string.find(text, "✕") then
 					attStatus = false
-					showYellowD = false
-					showPurple = false
+					hasOtherTransmogSources = false
+					isPartiallyCollected = false
 					if self.db and self.db.debugMode then
 						print("|cffff69b4DOKI|r Found ATT X symbol -> NOT COLLECTED")
 					end
@@ -186,8 +188,8 @@ function DOKI:ParseATTTooltipFromGameTooltipEnhanced(itemID)
 				-- ✅ for collected
 				if string.find(text, "✅") or string.find(text, "✓") or string.find(text, "☑") then
 					attStatus = true
-					showYellowD = false
-					showPurple = false
+					hasOtherTransmogSources = false
+					isPartiallyCollected = false
 					if self.db and self.db.debugMode then
 						print("|cffff69b4DOKI|r Found ATT checkmark -> COLLECTED")
 					end
@@ -206,11 +208,11 @@ function DOKI:ParseATTTooltipFromGameTooltipEnhanced(itemID)
 							tot = tonumber(tot)
 							if curr and tot then
 								attStatus = (curr >= tot)
-								showYellowD = false
-								showPurple = (curr > 0 and curr < tot)
+								hasOtherTransmogSources = false
+								isPartiallyCollected = (curr > 0 and curr < tot)
 								if self.db and self.db.debugMode then
 									print(string.format("|cffff69b4DOKI|r Found diamond currency: %d/%d -> %s",
-										curr, tot, attStatus and "COLLECTED" or (showPurple and "PARTIAL" or "NOT COLLECTED")))
+										curr, tot, attStatus and "COLLECTED" or (isPartiallyCollected and "PARTIAL" or "NOT COLLECTED")))
 								end
 
 								break
@@ -218,8 +220,8 @@ function DOKI:ParseATTTooltipFromGameTooltipEnhanced(itemID)
 						else
 							-- Diamond + "Collected" but no numbers - assume collected
 							attStatus = true
-							showYellowD = false
-							showPurple = false
+							hasOtherTransmogSources = false
+							isPartiallyCollected = false
 							if self.db and self.db.debugMode then
 								print("|cffff69b4DOKI|r Found diamond + 'Collected' (no numbers) -> COLLECTED")
 							end
@@ -238,8 +240,8 @@ function DOKI:ParseATTTooltipFromGameTooltipEnhanced(itemID)
 						-- Check for "Not Collected" (but not "Catalyst Collected" or similar)
 						if string.find(text, "Not Collected") and not string.find(text, "Catalyst") then
 							attStatus = false
-							showYellowD = false
-							showPurple = false
+							hasOtherTransmogSources = false
+							isPartiallyCollected = false
 							if self.db and self.db.debugMode then
 								print(string.format("|cffff69b4DOKI|r Found ATT 'Not Collected' text (fallback) -> NOT COLLECTED"))
 							end
@@ -250,8 +252,8 @@ function DOKI:ParseATTTooltipFromGameTooltipEnhanced(itemID)
 						-- Check for standalone "Collected" (but be very careful about context)
 						if text == "Collected" or (string.find(text, "^Collected$") or string.find(text, "^Collected%s*$")) then
 							attStatus = true
-							showYellowD = false
-							showPurple = false
+							hasOtherTransmogSources = false
+							isPartiallyCollected = false
 							if self.db and self.db.debugMode then
 								print(string.format("|cffff69b4DOKI|r Found ATT standalone 'Collected' text (fallback) -> COLLECTED"))
 							end
@@ -275,20 +277,20 @@ function DOKI:ParseATTTooltipFromGameTooltipEnhanced(itemID)
 		end
 	end
 
-	return attStatus, showYellowD, showPurple
+	return attStatus, hasOtherTransmogSources, isPartiallyCollected
 end
 
 -- ===== NEW: ATT COLLECTION STATUS WITH AUTOMATIC RETRY =====
 function DOKI:GetATTCollectionStatusWithRetry(itemID, itemLink, callback)
 	-- Try immediate parsing first
-	local result, showYellowD, showPurple = self:GetATTCollectionStatus(itemID, itemLink)
+	local result, hasOtherTransmogSources, isPartiallyCollected = self:GetATTCollectionStatus(itemID, itemLink)
 	if result ~= nil and result ~= "NO_ATT_DATA" then
 		-- Got valid result immediately
 		if callback then
-			callback(result, showYellowD, showPurple)
+			callback(result, hasOtherTransmogSources, isPartiallyCollected)
 		end
 
-		return result, showYellowD, showPurple
+		return result, hasOtherTransmogSources, isPartiallyCollected
 	end
 
 	-- No immediate result - request item data and retry
@@ -321,8 +323,8 @@ end
 function DOKI:ParseATTTooltipFromGameTooltip(itemID)
 	local tooltip = GameTooltip
 	local attStatus = nil
-	local showYellowD = false
-	local showPurple = false
+	local hasOtherTransmogSources = false
+	local isPartiallyCollected = false
 	-- Scan ALL tooltip lines for ATT data
 	for i = 1, tooltip:NumLines() do
 		-- Check both left and right lines
@@ -340,22 +342,23 @@ function DOKI:ParseATTTooltipFromGameTooltip(itemID)
 					percentage = tonumber(percentage)
 					if percentage >= 100 or current >= total then
 						attStatus = true
-						showYellowD = false
-						showPurple = false
+						hasOtherTransmogSources = false
+						isPartiallyCollected = false
 					elseif percentage == 0 or current == 0 then
 						attStatus = false
-						showYellowD = false
-						showPurple = false
+						hasOtherTransmogSources = false
+						isPartiallyCollected = false
 					else
 						-- Partial collection - show pink indicator
 						attStatus = false
-						showYellowD = false
-						showPurple = true
+						hasOtherTransmogSources = false
+						isPartiallyCollected = true
 					end
 
 					if self.db and self.db.debugMode then
 						print(string.format("|cffff69b4DOKI|r Found ATT percentage: %d/%d (%.1f%%) -> %s",
-							current, total, percentage, attStatus and "COLLECTED" or (showPurple and "PARTIAL" or "NOT COLLECTED")))
+							current, total, percentage,
+							attStatus and "COLLECTED" or (isPartiallyCollected and "PARTIAL" or "NOT COLLECTED")))
 					end
 
 					break
@@ -368,22 +371,23 @@ function DOKI:ParseATTTooltipFromGameTooltip(itemID)
 					parenTotal = tonumber(parenTotal)
 					if parenCurrent >= parenTotal and parenTotal > 0 then
 						attStatus = true
-						showYellowD = false
-						showPurple = false
+						hasOtherTransmogSources = false
+						isPartiallyCollected = false
 					elseif parenCurrent == 0 then
 						attStatus = false
-						showYellowD = false
-						showPurple = false
+						hasOtherTransmogSources = false
+						isPartiallyCollected = false
 					else
 						-- Partial collection
 						attStatus = false
-						showYellowD = false
-						showPurple = true
+						hasOtherTransmogSources = false
+						isPartiallyCollected = true
 					end
 
 					if self.db and self.db.debugMode then
 						print(string.format("|cffff69b4DOKI|r Found ATT fraction: (%d/%d) -> %s",
-							parenCurrent, parenTotal, attStatus and "COLLECTED" or (showPurple and "PARTIAL" or "NOT COLLECTED")))
+							parenCurrent, parenTotal,
+							attStatus and "COLLECTED" or (isPartiallyCollected and "PARTIAL" or "NOT COLLECTED")))
 					end
 
 					break
@@ -393,8 +397,8 @@ function DOKI:ParseATTTooltipFromGameTooltip(itemID)
 				-- ❌ for not collected
 				if string.find(text, "❌") or string.find(text, "✗") or string.find(text, "✕") then
 					attStatus = false
-					showYellowD = false
-					showPurple = false
+					hasOtherTransmogSources = false
+					isPartiallyCollected = false
 					if self.db and self.db.debugMode then
 						print("|cffff69b4DOKI|r Found ATT X symbol -> NOT COLLECTED")
 					end
@@ -405,8 +409,8 @@ function DOKI:ParseATTTooltipFromGameTooltip(itemID)
 				-- ✅ for collected
 				if string.find(text, "✅") or string.find(text, "✓") or string.find(text, "☑") then
 					attStatus = true
-					showYellowD = false
-					showPurple = false
+					hasOtherTransmogSources = false
+					isPartiallyCollected = false
 					if self.db and self.db.debugMode then
 						print("|cffff69b4DOKI|r Found ATT checkmark -> COLLECTED")
 					end
@@ -424,11 +428,11 @@ function DOKI:ParseATTTooltipFromGameTooltip(itemID)
 							curr = tonumber(curr)
 							tot = tonumber(tot)
 							attStatus = (curr >= tot)
-							showYellowD = false
-							showPurple = (curr > 0 and curr < tot)
+							hasOtherTransmogSources = false
+							isPartiallyCollected = (curr > 0 and curr < tot)
 							if self.db and self.db.debugMode then
 								print(string.format("|cffff69b4DOKI|r Found diamond currency: %d/%d -> %s",
-									curr, tot, attStatus and "COLLECTED" or (showPurple and "PARTIAL" or "NOT COLLECTED")))
+									curr, tot, attStatus and "COLLECTED" or (isPartiallyCollected and "PARTIAL" or "NOT COLLECTED")))
 							end
 
 							break
@@ -450,7 +454,7 @@ function DOKI:ParseATTTooltipFromGameTooltip(itemID)
 		end
 	end
 
-	return attStatus, showYellowD, showPurple
+	return attStatus, hasOtherTransmogSources, isPartiallyCollected
 end
 
 -- ===== ATT CACHE MANAGEMENT =====
@@ -462,15 +466,15 @@ function DOKI:GetCachedATTStatus(itemID, itemLink)
 			return "NO_ATT_DATA", nil, nil
 		end
 
-		return cached.isCollected, cached.showYellowD, cached.showPurple
+		return cached.isCollected, cached.hasOtherTransmogSources, cached.isPartiallyCollected
 	end
 
 	return nil, nil, nil
 end
 
-function DOKI:SetCachedATTStatus(itemID, itemLink, isCollected, showYellowD, showPurple)
+function DOKI:SetCachedATTStatus(itemID, itemLink, isCollected, hasOtherTransmogSources, isPartiallyCollected)
 	local cacheKey = "ATT_" .. (itemLink or tostring(itemID))
-	if isCollected == nil and showYellowD == nil and showPurple == nil then
+	if isCollected == nil and hasOtherTransmogSources == nil and isPartiallyCollected == nil then
 		self.collectionCache[cacheKey] = {
 			isATTResult = true,
 			noATTData = true,
@@ -479,8 +483,8 @@ function DOKI:SetCachedATTStatus(itemID, itemLink, isCollected, showYellowD, sho
 	else
 		self.collectionCache[cacheKey] = {
 			isCollected = isCollected,
-			showYellowD = showYellowD,
-			showPurple = showPurple,
+			hasOtherTransmogSources = hasOtherTransmogSources,
+			isPartiallyCollected = isPartiallyCollected,
 			isATTResult = true,
 			noATTData = false,
 			timestamp = GetTime(),
@@ -532,15 +536,15 @@ function DOKI:TestFixedATTParsing()
 		tooltip:Show()
 		-- Test with 0.2s delay
 		C_Timer.After(0.2, function()
-			local isCollected, showYellowD, showPurple = DOKI:ParseATTTooltipFromGameTooltip(item.id)
+			local isCollected, hasOtherTransmogSources, isPartiallyCollected = DOKI:ParseATTTooltipFromGameTooltip(item.id)
 			tooltip:Hide()
 			if isCollected ~= nil then
 				local result = "✓ SUCCESS: "
-				if isCollected and not showPurple then
+				if isCollected and not isPartiallyCollected then
 					result = result .. "COLLECTED (no indicator)"
-				elseif showPurple then
+				elseif isPartiallyCollected then
 					result = result .. "PARTIAL (PINK indicator)"
-				elseif showYellowD then
+				elseif hasOtherTransmogSources then
 					result = result .. "OTHER SOURCE (BLUE indicator)"
 				else
 					result = result .. "NOT COLLECTED (ORANGE indicator)"

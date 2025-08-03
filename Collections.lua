@@ -176,18 +176,18 @@ function DOKI:GetCachedCollectionStatus(itemID, itemLink)
 	local cacheKey = itemLink or tostring(itemID)
 	local cached = self.collectionCache[cacheKey]
 	if cached and (GetTime() - cached.timestamp < 30) then
-		return cached.isCollected, cached.showYellowD, cached.showPurple or false
+		return cached.isCollected, cached.hasOtherTransmogSources, cached.isPartiallyCollected or false
 	end
 
 	return nil, nil, nil
 end
 
-function DOKI:SetCachedCollectionStatus(itemID, itemLink, isCollected, showYellowD, showPurple)
+function DOKI:SetCachedCollectionStatus(itemID, itemLink, isCollected, hasOtherTransmogSources, isPartiallyCollected)
 	local cacheKey = itemLink or tostring(itemID)
 	self.collectionCache[cacheKey] = {
 		isCollected = isCollected,
-		showYellowD = showYellowD,
-		showPurple = showPurple or false,
+		hasOtherTransmogSources = hasOtherTransmogSources,
+		isPartiallyCollected = isPartiallyCollected or false,
 		timestamp = GetTime(),
 	}
 end
@@ -903,15 +903,15 @@ function DOKI:ScanMerchantFrames()
 				local itemID, itemLink = self:GetItemFromMerchantButton(button, i)
 				-- Skip empty slots entirely for indicator creation
 				if itemID and itemID ~= "EMPTY_SLOT" and self:IsCollectibleItem(itemID, itemLink) then
-					local isCollected, showYellowD, showPurple = self:IsItemCollected(itemID, itemLink)
+					local isCollected, hasOtherTransmogSources, isPartiallyCollected = self:IsItemCollected(itemID, itemLink)
 					-- Only create indicator if NOT collected OR if it needs purple indicator
-					if not isCollected or showPurple then
+					if not isCollected or isPartiallyCollected then
 						local itemData = {
 							itemID = itemID,
 							itemLink = itemLink,
 							isCollected = isCollected,
-							showYellowD = showYellowD,
-							showPurple = showPurple,
+							hasOtherTransmogSources = hasOtherTransmogSources,
+							isPartiallyCollected = isPartiallyCollected,
 							frameType = "merchant",
 						}
 						-- Try to create indicator
@@ -920,7 +920,7 @@ function DOKI:ScanMerchantFrames()
 							indicatorCount = indicatorCount + 1
 							if self.db.debugMode then
 								local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
-								local colorType = showPurple and "PURPLE" or (showYellowD and "BLUE" or "ORANGE")
+								local colorType = isPartiallyCollected and "PURPLE" or (hasOtherTransmogSources and "BLUE" or "ORANGE")
 								print(string.format("|cffff69b4DOKI|r Created %s indicator for %s (ID: %d) on %s",
 									colorType, itemName, itemID, buttonName))
 							end
@@ -1089,12 +1089,13 @@ function DOKI:ScanBagFrames()
 	for button, itemData in pairs(allBagItems) do
 		-- FIXED: Check if item is collectible before processing (same logic as merchant scanning)
 		if self:IsCollectibleItem(itemData.itemID, itemData.itemLink) then
-			local isCollected, showYellowD, showPurple = self:IsItemCollected(itemData.itemID, itemData.itemLink)
+			local isCollected, hasOtherTransmogSources, isPartiallyCollected = self:IsItemCollected(itemData.itemID,
+				itemData.itemLink)
 			itemData.isCollected = isCollected
-			itemData.showYellowD = showYellowD
-			itemData.showPurple = showPurple
+			itemData.hasOtherTransmogSources = hasOtherTransmogSources
+			itemData.isPartiallyCollected = isPartiallyCollected
 			-- Only create indicator if NOT collected OR if it needs purple indicator
-			if not isCollected or showPurple then
+			if not isCollected or isPartiallyCollected then
 				indicatorCount = indicatorCount + self:CreateUniversalIndicator(button, itemData)
 			elseif self.db and self.db.debugMode then
 				local itemName = C_Item.GetItemInfo(itemData.itemID) or "Unknown"
@@ -1408,7 +1409,7 @@ function DOKI:DebugFoundFrames()
 		local extraInfo = ""
 		if frameInfo.itemData.petSpeciesID then
 			extraInfo = string.format(" [Pet Species: %d]", frameInfo.itemData.petSpeciesID)
-		elseif frameInfo.itemData.showPurple then
+		elseif frameInfo.itemData.isPartiallyCollected then
 			extraInfo = " [Purple Indicator]"
 		end
 
@@ -1450,8 +1451,8 @@ function DOKI:DebugBattlepetSnapshot()
 				regularItemCount = regularItemCount + 1
 				-- Check if this would get a purple indicator from ATT
 				if self.db and self.db.attMode then
-					local _, _, showPurple = self:GetATTCollectionStatus(itemData.itemID, itemData.itemLink)
-					if showPurple then
+					local _, _, isPartiallyCollected = self:GetATTCollectionStatus(itemData.itemID, itemData.itemLink)
+					if isPartiallyCollected then
 						purpleIndicatorCount = purpleIndicatorCount + 1
 						local itemName = C_Item.GetItemInfo(itemData.itemID) or "Unknown"
 						print(string.format("  Purple Indicator: %s -> %s (ID: %d)",

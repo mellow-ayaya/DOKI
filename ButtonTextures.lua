@@ -402,7 +402,7 @@ function DOKI:ProcessSurgicalUpdate()
 		-- Only add new indicator if the new item exists and needs an indicator
 		if change.newItemData.hasItem and not change.newItemData.isEmpty then
 			local itemData = self:GetItemDataForSurgicalUpdate(change.newItemData.itemID, change.newItemData.itemLink)
-			if itemData and (not itemData.isCollected or itemData.showPurple) then
+			if itemData and (not itemData.isCollected or itemData.isPartiallyCollected) then
 				if self:AddButtonIndicator(change.button, itemData) then
 					updateCount = updateCount + 1
 				end
@@ -424,7 +424,7 @@ function DOKI:ProcessSurgicalUpdate()
 		-- Only add indicator if the new item exists and needs an indicator
 		if change.newItemData.hasItem and not change.newItemData.isEmpty then
 			local itemData = self:GetItemDataForSurgicalUpdate(change.newItemData.itemID, change.newItemData.itemLink)
-			if itemData and (not itemData.isCollected or itemData.showPurple) then
+			if itemData and (not itemData.isCollected or itemData.isPartiallyCollected) then
 				if self:AddButtonIndicator(change.button, itemData) then
 					updateCount = updateCount + 1
 					if self.db and self.db.debugMode then
@@ -489,8 +489,8 @@ function DOKI:GetItemDataForSurgicalUpdate(itemID, itemLink)
 				itemID = itemID,
 				itemLink = itemLink,
 				isCollected = isCollected,
-				showYellowD = false,
-				showPurple = false,
+				hasOtherTransmogSources = false,
+				isPartiallyCollected = false,
 				frameType = "surgical",
 				petSpeciesID = petSpeciesID,
 			}
@@ -504,8 +504,8 @@ function DOKI:GetItemDataForSurgicalUpdate(itemID, itemLink)
 			itemID = itemID,
 			itemLink = itemLink,
 			isCollected = isCollected,
-			showYellowD = false,
-			showPurple = false,
+			hasOtherTransmogSources = false,
+			isPartiallyCollected = false,
 			frameType = "surgical",
 			isEnsemble = true,
 		}
@@ -513,13 +513,13 @@ function DOKI:GetItemDataForSurgicalUpdate(itemID, itemLink)
 
 	if not self:IsCollectibleItem(itemID, itemLink) then return nil end
 
-	local isCollected, showYellowD, showPurple = self:IsItemCollected(itemID, itemLink)
+	local isCollected, hasOtherTransmogSources, isPartiallyCollected = self:IsItemCollected(itemID, itemLink)
 	return {
 		itemID = itemID,
 		itemLink = itemLink,
 		isCollected = isCollected,
-		showYellowD = showYellowD,
-		showPurple = showPurple,
+		hasOtherTransmogSources = hasOtherTransmogSources,
+		isPartiallyCollected = isPartiallyCollected,
 		frameType = "surgical",
 	}
 end
@@ -529,7 +529,7 @@ function DOKI:AddButtonIndicator(button, itemData)
 	if not button or not itemData then return false end
 
 	-- FIXED: Don't add indicators for collected items unless they need purple indicator
-	if itemData.isCollected and not itemData.showPurple then return false end
+	if itemData.isCollected and not itemData.isPartiallyCollected then return false end
 
 	local success, isVisible = pcall(button.IsVisible, button)
 	if not success or not isVisible then return false end
@@ -538,9 +538,9 @@ function DOKI:AddButtonIndicator(button, itemData)
 	if not textureData then return false end
 
 	-- Set color based on indicator type
-	if itemData.showPurple then
+	if itemData.isPartiallyCollected then
 		textureData:SetColor(1.0, 0.4, 0.7)   -- Purple for fractional items
-	elseif itemData.showYellowD then
+	elseif itemData.hasOtherTransmogSources then
 		textureData:SetColor(0.082, 0.671, 1.0) -- Blue for other sources
 	else
 		textureData:SetColor(1.0, 0.573, 0.2) -- Orange for uncollected
@@ -574,7 +574,7 @@ function DOKI:AddButtonIndicator(button, itemData)
 			extraInfo = string.format(" [Battlepet Species: %d]", itemData.petSpeciesID)
 		elseif itemData.isEnsemble then
 			extraInfo = " [Ensemble]"
-		elseif itemData.showPurple then
+		elseif itemData.isPartiallyCollected then
 			extraInfo = " [Purple]"
 		end
 
@@ -583,7 +583,8 @@ function DOKI:AddButtonIndicator(button, itemData)
 			extraInfo = extraInfo .. " [Merchant]"
 		end
 
-		local colorType = itemData.showPurple and "PURPLE" or (itemData.showYellowD and "BLUE" or "ORANGE")
+		local colorType = itemData.isPartiallyCollected and "PURPLE" or
+		(itemData.hasOtherTransmogSources and "BLUE" or "ORANGE")
 		print(string.format("|cffff69b4DOKI|r Added %s indicator for %s (ID: %d) on %s%s",
 			colorType, itemName, itemData.itemID, buttonName, extraInfo))
 	end
@@ -960,8 +961,8 @@ function DOKI:TestButtonTextureCreation()
 			itemID = 12345,
 			itemLink = nil,
 			isCollected = false,
-			showYellowD = false,
-			showPurple = false,
+			hasOtherTransmogSources = false,
+			isPartiallyCollected = false,
 			frameType = "test",
 		}
 		local success = self:AddButtonIndicator(testButton, testData)
