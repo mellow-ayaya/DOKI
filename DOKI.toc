@@ -2,7 +2,7 @@
 ## Title: DOKI - Do I Know It?
 ## Author: mellow_ayaya
 ## Version: 0.0.1
-
+## IconTexture: Interface\AddOns\DOKI\Media\icon.tga
 ## Notes: Shows collection status on item icons for mounts, pets, toys, and transmog
 ## SavedVariables: DOKI_DB
 
