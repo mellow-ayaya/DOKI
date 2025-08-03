@@ -540,26 +540,26 @@ function DOKI:CompareMerchantState(state1, state2)
 	if not state1 or not state2 then return false end
 
 	-- Quick count comparison
-	local count1, count2 = 0, 0
-	for _ in pairs(state1) do count1 = count1 + 1 end
+	local previousStateItemCount, currentStateItemCount = 0, 0
+	for _ in pairs(state1) do previousStateItemCount = previousStateItemCount + 1 end
 
-	for _ in pairs(state2) do count2 = count2 + 1 end
+	for _ in pairs(state2) do currentStateItemCount = currentStateItemCount + 1 end
 
-	if count1 ~= count2 then return false end
+	if previousStateItemCount ~= currentStateItemCount then return false end
 
 	-- Compare items
-	for i, item1 in pairs(state1) do
-		local item2 = state2[i]
-		if not item2 then return false end
+	for i, previousStateItem in pairs(state1) do
+		local currentStateItem = state2[i]
+		if not currentStateItem then return false end
 
 		-- Handle table structures properly
-		if type(item1) == "table" and type(item2) == "table" then
-			if item1.name ~= item2.name or item1.texture ~= item2.texture or item1.price ~= item2.price then
+		if type(previousStateItem) == "table" and type(currentStateItem) == "table" then
+			if previousStateItem.name ~= currentStateItem.name or previousStateItem.texture ~= currentStateItem.texture or previousStateItem.price ~= currentStateItem.price then
 				return false
 			end
 		else
 			-- Fallback for non-table data
-			if item1 ~= item2 then return false end
+			if previousStateItem ~= currentStateItem then return false end
 		end
 	end
 

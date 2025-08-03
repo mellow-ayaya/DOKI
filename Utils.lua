@@ -612,9 +612,9 @@ function DOKI:GetClassRestrictionsForSource(sourceID, appearanceID)
 
 	-- Fallback to GetSourceInfo
 	if not linkedItemID then
-		local slotIDRetrievalSuccess, sourceInfo2 = pcall(C_TransmogCollection.GetSourceInfo, sourceID)
-		if slotIDRetrievalSuccess and sourceInfo2 and sourceInfo2.itemID then
-			linkedItemID = sourceInfo2.itemID
+		local slotIDRetrievalSuccess, fallbackSourceInfo = pcall(C_TransmogCollection.GetSourceInfo, sourceID)
+		if slotIDRetrievalSuccess and fallbackSourceInfo and fallbackSourceInfo.itemID then
+			linkedItemID = fallbackSourceInfo.itemID
 		end
 	end
 
