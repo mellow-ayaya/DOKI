@@ -1,4 +1,4 @@
--- DOKI Collections - ENHANCED: ATT Lazy Loading System to Eliminate FPS Drops
+-- DOKI Collections - ENHANCED: Surgical Update System (No Batching/Lazy Loading)
 local addonName, DOKI = ...
 -- Initialize collection-specific storage
 DOKI.foundFramesThisScan = {}
@@ -14,6 +14,11 @@ DOKI.merchantScrollDetector = {
 	lastMerchantState = nil,
 	merchantOpen = false,
 }
+-- Item loading system for ATT mode only
+DOKI.itemLoader = {
+	pendingItems = {}, -- [itemID] = { callbacks = {...}, bagID, slotID }
+	initialized = false,
+}
 -- Enhanced surgical update throttling with delayed cleanup
 DOKI.lastSurgicalUpdate = 0
 DOKI.surgicalUpdateThrottleTime = 0.1
@@ -21,256 +26,211 @@ DOKI.pendingSurgicalUpdate = false
 -- Enhanced scanning system variables
 DOKI.delayedScanTimer = nil
 DOKI.delayedScanCancelled = false
--- ===== ATT LAZY LOADING SYSTEM =====
-DOKI.attLazyLoader = {
-	-- Discovery system
-	discoveredItems = {}, -- [itemID] = { itemLink, lastSeen, priority }
-	discoveryEnabled = true,
+-- Initialize the item loading system (called from Core.lua)
+function DOKI:InitializeItemLoader()
+	if self.itemLoader.initialized then return end
 
-	-- Background processing
-	processingQueue = {}, -- Items to process in background
-	isProcessing = false,
-	processingTimer = nil,
-
-	-- Performance settings
-	itemsPerTick = 2,       -- Process 2 items every tick (very slow to avoid ATT spam)
-	tickInterval = 1.0,     -- 1 second between ticks
-	maxItemsPerSession = 50, -- Don't process more than 50 items per session
-
-	-- Session tracking
-	sessionItemsProcessed = 0,
-	lastActivityTime = 0,
-	idleThreshold = 5.0, -- 5 seconds of inactivity = idle
-
-	-- Statistics
-	stats = {
-		totalItemsDiscovered = 0,
-		totalItemsProcessed = 0,
-		cacheHits = 0,
-		cacheMisses = 0,
-		backgroundProcessingTime = 0,
-	},
-}
--- ===== ITEM DISCOVERY SYSTEM =====
-function DOKI:StartATTItemDiscovery()
-	if not self.db or not self.db.attMode then return end
-
-	if self.db.debugMode then
-		print("|cffff69b4DOKI|r Starting ATT lazy loading item discovery...")
+	self.itemLoader.initialized = true
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Item loader initialized with GET_ITEM_INFO_RECEIVED event")
 	end
-
-	self.attLazyLoader.discoveryEnabled = true
-	-- Initial discovery scan
-	self:DiscoverBagItems()
-	-- Set up periodic discovery (every 30 seconds)
-	if not self.attLazyLoader.discoveryTimer then
-		self.attLazyLoader.discoveryTimer = C_Timer.NewTicker(30, function()
-			if DOKI.db and DOKI.db.attMode and DOKI.attLazyLoader.discoveryEnabled then
-				DOKI:DiscoverBagItems()
-			end
-		end)
-	end
-
-	-- Set up background processing
-	self:StartBackgroundATTProcessing()
 end
 
-function DOKI:DiscoverBagItems()
-	if not self.attLazyLoader.discoveryEnabled then return end
+-- Handle the event when item data becomes available (called from Core.lua)
+function DOKI:OnItemInfoReceived(itemID, success)
+	local pending = self.itemLoader.pendingItems[itemID]
+	if not pending then return end
 
-	local currentTime = GetTime()
-	local discovered = 0
-	-- Scan all bags for items
-	for bagID = 0, NUM_BAG_SLOTS do
-		local numSlots = C_Container.GetContainerNumSlots(bagID)
-		if numSlots and numSlots > 0 then
-			for slotID = 1, numSlots do
-				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
-				if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
-					local itemID = itemInfo.itemID
-					local itemLink = itemInfo.hyperlink
-					-- Check if we already know about this item
-					local existing = self.attLazyLoader.discoveredItems[itemID]
-					if not existing then
-						-- New item discovered
-						self.attLazyLoader.discoveredItems[itemID] = {
-							itemLink = itemLink,
-							lastSeen = currentTime,
-							priority = self:CalculateItemPriority(itemID, itemLink),
-							discovered = currentTime,
-						}
-						discovered = discovered + 1
-						-- Add to processing queue if we don't have cached data
-						local cached = self:GetCachedATTStatus(itemID, itemLink)
-						if cached == nil then
-							self:AddToBackgroundQueue(itemID, itemLink)
-						end
-					else
-						-- Update last seen time
-						existing.lastSeen = currentTime
-					end
-				end
-			end
+	if self.db and self.db.debugMode then
+		local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+		print(string.format("|cffff69b4DOKI|r GET_ITEM_INFO_RECEIVED: %s (ID: %d, success: %s)",
+			itemName, itemID, tostring(success)))
+	end
+
+	-- Get the now-available item link
+	local itemLink = nil
+	if pending.bagID and pending.slotID then
+		itemLink = C_Container.GetContainerItemLink(pending.bagID, pending.slotID)
+	end
+
+	-- Validate that the itemLink is actually complete now
+	local isComplete = self:IsItemLinkComplete(itemLink)
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r ItemLink after event: %s (complete: %s)",
+			itemLink or "NIL", tostring(isComplete)))
+	end
+
+	-- Execute all callbacks for this item
+	for _, callback in ipairs(pending.callbacks) do
+		local success, result = pcall(callback, itemID, itemLink, isComplete)
+		if not success and self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r Callback error for item %d: %s", itemID, result))
 		end
 	end
 
-	if discovered > 0 then
-		self.attLazyLoader.stats.totalItemsDiscovered = self.attLazyLoader.stats.totalItemsDiscovered + discovered
-		if self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r ATT Discovery: Found %d new items", discovered))
-		end
-	end
+	-- Clean up
+	self.itemLoader.pendingItems[itemID] = nil
 end
 
-function DOKI:CalculateItemPriority(itemID, itemLink)
-	-- Higher priority = process sooner
-	local priority = 1
-	-- Boost priority for common collectible types
-	local _, _, _, _, _, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
-	if classID then
-		if classID == 15 then                  -- Mounts and Pets
-			priority = priority + 10
-		elseif classID == 2 or classID == 4 then -- Weapons and Armor (transmog)
-			priority = priority + 5
-		end
+-- Check if itemLink has complete content (not just correct length)
+function DOKI:IsItemLinkComplete(itemLink)
+	if not itemLink or itemLink == "" then
+		return false
 	end
 
-	-- Boost priority for toys
-	if C_ToyBox and C_ToyBox.GetToyInfo(itemID) then
-		priority = priority + 8
+	-- Check 1: Must be reasonable length
+	if string.len(itemLink) < 50 then
+		return false
 	end
 
-	-- Boost priority for ensembles
-	if self:IsEnsembleItem(itemID) then
-		priority = priority + 7
+	-- Check 2: Must contain actual item name, not just []
+	if string.find(itemLink, "%[%]") then
+		-- Contains [], which means item name is missing
+		return false
 	end
 
-	-- Boost priority for battlepets
-	if itemLink and string.find(itemLink, "battlepet:") then
-		priority = priority + 6
+	-- Check 3: Must have proper itemLink structure with actual name
+	local itemName = string.match(itemLink, "%[([^%]]+)%]")
+	if not itemName or itemName == "" then
+		return false
 	end
 
-	return priority
+	-- Check 4: Item name shouldn't be placeholder text
+	if itemName == "..." or itemName == "Loading" or string.len(itemName) < 3 then
+		return false
+	end
+
+	return true
 end
 
--- ===== BACKGROUND PROCESSING SYSTEM =====
-function DOKI:StartBackgroundATTProcessing()
-	if self.attLazyLoader.isProcessing then return end
-
-	self.attLazyLoader.isProcessing = true
-	self.attLazyLoader.sessionItemsProcessed = 0
-	if self.db.debugMode then
-		print("|cffff69b4DOKI|r Starting ATT background processing...")
+-- Smart item link getter with automatic loading (ATT mode only)
+function DOKI:GetItemLinkWhenReady(bagID, slotID, callback)
+	if not self.itemLoader.initialized then
+		self:InitializeItemLoader()
 	end
 
-	-- Start the processing timer
-	self.attLazyLoader.processingTimer = C_Timer.NewTicker(self.attLazyLoader.tickInterval, function()
-		DOKI:ProcessBackgroundATTTick()
-	end)
-end
-
-function DOKI:StopBackgroundATTProcessing()
-	if not self.attLazyLoader.isProcessing then return end
-
-	self.attLazyLoader.isProcessing = false
-	if self.attLazyLoader.processingTimer then
-		self.attLazyLoader.processingTimer:Cancel()
-		self.attLazyLoader.processingTimer = nil
-	end
-
-	if self.db.debugMode then
-		print("|cffff69b4DOKI|r Stopped ATT background processing")
-	end
-end
-
-function DOKI:AddToBackgroundQueue(itemID, itemLink)
-	-- Don't add duplicates
-	for _, queued in ipairs(self.attLazyLoader.processingQueue) do
-		if queued.itemID == itemID then return end
-	end
-
-	-- Add with priority
-	local priority = self:CalculateItemPriority(itemID, itemLink)
-	table.insert(self.attLazyLoader.processingQueue, {
-		itemID = itemID,
-		itemLink = itemLink,
-		priority = priority,
-		added = GetTime(),
-	})
-	-- Sort queue by priority (highest first)
-	table.sort(self.attLazyLoader.processingQueue, function(a, b)
-		return a.priority > b.priority
-	end)
-	if self.db.debugMode then
-		print(string.format("|cffff69b4DOKI|r Added item %d to background queue (priority %d, queue size: %d)",
-			itemID, priority, #self.attLazyLoader.processingQueue))
-	end
-end
-
-function DOKI:ProcessBackgroundATTTick()
-	-- Check if we should be processing
-	if not self.db or not self.db.attMode or not self.attLazyLoader.isProcessing then
-		self:StopBackgroundATTProcessing()
+	-- Try to get item info immediately
+	local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+	if not itemInfo or not itemInfo.itemID then
+		callback(nil, nil, false)
 		return
 	end
 
-	-- Check if player is idle enough
-	if not self:IsPlayerIdleForATTProcessing() then
-		if self.db.debugMode then
-			print("|cffff69b4DOKI|r Skipping ATT processing - player not idle")
+	local itemID = itemInfo.itemID
+	-- Try to get item link immediately
+	local itemLink = C_Container.GetContainerItemLink(bagID, slotID)
+	-- Check if we have COMPLETE data with actual content
+	if self:IsItemLinkComplete(itemLink) then
+		-- Data is ready, execute callback immediately
+		if self.db and self.db.debugMode then
+			local itemName = string.match(itemLink, "%[([^%]]+)%]") or "Unknown"
+			print(string.format("|cffff69b4DOKI|r Item data ready immediately: %s (%d chars)",
+				itemName, string.len(itemLink)))
 		end
 
+		callback(itemID, itemLink, true)
 		return
 	end
 
-	-- Check session limits
-	if self.attLazyLoader.sessionItemsProcessed >= self.attLazyLoader.maxItemsPerSession then
-		if self.db.debugMode then
-			print("|cffff69b4DOKI|r ATT processing session limit reached, pausing...")
-		end
-
-		-- Pause for 60 seconds then reset session
-		C_Timer.After(60, function()
-			if DOKI.attLazyLoader then
-				DOKI.attLazyLoader.sessionItemsProcessed = 0
-			end
-		end)
-		return
+	-- Data is not ready, need to request loading
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r Item data incomplete for ID %d (link: %s), requesting load...",
+			itemID, itemLink or "NIL"))
 	end
 
-	-- Process items from queue
-	local processed = 0
-	local startTime = GetTime()
-	for i = 1, self.attLazyLoader.itemsPerTick do
-		if #self.attLazyLoader.processingQueue == 0 then break end
-
-		local item = table.remove(self.attLazyLoader.processingQueue, 1)
-		if item then
-			-- Check if we already have cached data (might have been processed elsewhere)
-			local cached = self:GetCachedATTStatus(item.itemID, item.itemLink)
-			if cached == nil then
-				-- Process the item
-				local success = self:ProcessSingleATTItem(item.itemID, item.itemLink)
-				if success then
-					processed = processed + 1
-					self.attLazyLoader.sessionItemsProcessed = self.attLazyLoader.sessionItemsProcessed + 1
-					self.attLazyLoader.stats.totalItemsProcessed = self.attLazyLoader.stats.totalItemsProcessed + 1
-				end
-			end
-		end
+	-- Add to pending items
+	if not self.itemLoader.pendingItems[itemID] then
+		self.itemLoader.pendingItems[itemID] = {
+			callbacks = {},
+			bagID = bagID,
+			slotID = slotID,
+		}
 	end
 
-	local processingTime = GetTime() - startTime
-	self.attLazyLoader.stats.backgroundProcessingTime = self.attLazyLoader.stats.backgroundProcessingTime + processingTime
-	if processed > 0 and self.db.debugMode then
-		print(string.format("|cffff69b4DOKI|r ATT Background: Processed %d items in %.3fs (queue: %d remaining)",
-			processed, processingTime, #self.attLazyLoader.processingQueue))
+	table.insert(self.itemLoader.pendingItems[itemID].callbacks, callback)
+	-- Request the item data to be loaded
+	C_Item.RequestLoadItemDataByID(itemID)
+	-- Also try GetItemInfo to trigger additional loading
+	C_Item.GetItemInfo(itemID)
+end
+
+-- Cleanup function
+function DOKI:CleanupItemLoader()
+	self.itemLoader.pendingItems = {}
+	self.itemLoader.initialized = false
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Item loader cleaned up")
 	end
 end
 
-function DOKI:ProcessSingleATTItem(itemID, itemLink)
-	if not itemID then return false end
+-- ===== ENHANCED ATT COLLECTION STATUS WITH ITEM LOADING =====
+function DOKI:GetATTCollectionStatus(itemID, itemLink)
+	if not itemID then return nil, nil, nil end
 
+	-- Check cache first
+	local cachedCollected, cachedYellowD, cachedPurple = self:GetCachedATTStatus(itemID, itemLink)
+	if cachedCollected == "NO_ATT_DATA" then
+		return "NO_ATT_DATA", nil, nil
+	elseif cachedCollected ~= nil then
+		return cachedCollected, cachedYellowD, cachedPurple
+	end
+
+	-- ENHANCED: Check if item data is loaded
+	local itemName = C_Item.GetItemInfo(itemID)
+	if not itemName or itemName == "" then
+		-- Item data not loaded - request it and return "still processing"
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r ATT: Item %d data not loaded, requesting...", itemID))
+		end
+
+		C_Item.RequestLoadItemDataByID(itemID)
+		-- Return nil so IsItemCollected treats as "still processing"
+		return nil, nil, nil
+	end
+
+	-- ENHANCED: Check if we have complete itemLink data for ATT processing
+	if itemLink and not self:IsItemLinkComplete(itemLink) then
+		-- ItemLink is incomplete - try fallback
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r ATT: ItemLink incomplete for ID %d, using fallback...", itemID))
+		end
+
+		-- Try to get complete itemLink via GetItemInfo as fallback
+		local _, fallbackItemLink = C_Item.GetItemInfo(itemID)
+		if fallbackItemLink and self:IsItemLinkComplete(fallbackItemLink) then
+			if self.db and self.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r ATT: Using fallback itemLink from GetItemInfo"))
+			end
+
+			itemLink = fallbackItemLink
+		else
+			-- No complete itemLink available, return "still processing" status
+			if self.db and self.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r ATT: No complete itemLink available for ID %d", itemID))
+			end
+
+			return nil, nil, nil -- This will be treated as "still processing" by IsItemCollected
+		end
+	end
+
+	-- Parse with validated data - use enhanced parsing
+	local isCollected, showYellowD, showPurple = self:ParseATTTooltipDirectEnhanced(itemID, itemLink)
+	-- Cache the result
+	if isCollected ~= nil then
+		self:SetCachedATTStatus(itemID, itemLink, isCollected, showYellowD, showPurple)
+	else
+		self:SetCachedATTStatus(itemID, itemLink, nil, nil, nil)
+	end
+
+	if isCollected == nil then
+		return "NO_ATT_DATA", nil, nil
+	else
+		return isCollected, showYellowD, showPurple
+	end
+end
+
+-- ===== ENHANCED ATT TOOLTIP PARSING =====
+function DOKI:ParseATTTooltipDirectEnhanced(itemID, itemLink)
 	local tooltip = GameTooltip
 	tooltip:Hide()
 	tooltip:ClearLines()
@@ -281,42 +241,244 @@ function DOKI:ProcessSingleATTItem(itemID, itemLink)
 		tooltip:SetItemByID(itemID)
 	end
 
-	-- CRITICAL: Show tooltip so ATT can inject data
 	tooltip:Show()
-	-- Use the 0.2s delay observed in testing
+	-- Wait for ATT to inject data, then parse
+	local attStatus, showYellowD, showPurple
 	C_Timer.After(0.2, function()
-		local attStatus, showYellowD, showPurple = DOKI:ParseATTTooltipFromGameTooltip(itemID)
-		-- Cache the result
-		if attStatus ~= nil then
-			DOKI:SetCachedATTStatus(itemID, itemLink, attStatus, showYellowD, showPurple)
-		else
-			DOKI:SetCachedATTStatus(itemID, itemLink, nil, nil, nil)
-		end
-
-		-- Clean up
+		attStatus, showYellowD, showPurple = DOKI:ParseATTTooltipFromGameTooltipEnhanced(itemID)
 		tooltip:Hide()
 		tooltip:ClearLines()
-		if DOKI.db and DOKI.db.debugMode then
-			local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
-			if attStatus ~= nil then
-				local statusText = attStatus and "COLLECTED" or "NOT COLLECTED"
-				local colorText = ""
-				if showPurple then
-					colorText = " (PINK indicator)"
-				elseif showYellowD then
-					colorText = " (BLUE indicator)"
-				elseif not attStatus then
-					colorText = " (ORANGE indicator)"
+	end)
+	-- Also try immediate parsing (may not get ATT data due to timing)
+	attStatus, showYellowD, showPurple = self:ParseATTTooltipFromGameTooltipEnhanced(itemID)
+	tooltip:Hide()
+	tooltip:ClearLines()
+	return attStatus, showYellowD, showPurple
+end
+
+-- ===== ENHANCED TOOLTIP PARSING WITH TEXT RECOGNITION =====
+function DOKI:ParseATTTooltipFromGameTooltipEnhanced(itemID)
+	local tooltip = GameTooltip
+	local attStatus = nil
+	local showYellowD = false
+	local showPurple = false
+	-- Scan ALL tooltip lines for ATT data
+	for i = 1, tooltip:NumLines() do
+		-- Check both left and right lines
+		local leftLine = _G["GameTooltipTextLeft" .. i]
+		local rightLine = _G["GameTooltipTextRight" .. i]
+		-- Check right side first (where status usually appears)
+		if rightLine and rightLine.GetText then
+			local success, text = pcall(rightLine.GetText, rightLine)
+			if success and text and string.len(text) > 0 then
+				-- PRIORITY 1: Look for percentage patterns (most reliable)
+				-- Pattern: "2 / 3 (66.66%)" or "Currency Collected 2 / 2 (100.00%)"
+				local current, total, percentage = string.match(text, "(%d+)%s*/%s*(%d+)%s*%(([%d%.]+)%%%)")
+				if current and total and percentage then
+					current = tonumber(current)
+					total = tonumber(total)
+					percentage = tonumber(percentage)
+					if current and total and percentage then
+						if percentage >= 100 or current >= total then
+							attStatus = true
+							showYellowD = false
+							showPurple = false
+						elseif percentage == 0 or current == 0 then
+							attStatus = false
+							showYellowD = false
+							showPurple = false
+						else
+							-- Partial collection - show pink indicator
+							attStatus = false
+							showYellowD = false
+							showPurple = true
+						end
+
+						if self.db and self.db.debugMode then
+							print(string.format("|cffff69b4DOKI|r Found ATT percentage: %d/%d (%.1f%%) -> %s",
+								current, total, percentage, attStatus and "COLLECTED" or (showPurple and "PARTIAL" or "NOT COLLECTED")))
+						end
+
+						break
+					end
 				end
 
-				print(string.format("|cffff69b4DOKI|r Background: %s -> %s%s",
-					itemName, statusText, colorText))
-			else
-				print(string.format("|cffff69b4DOKI|r Background: %s -> NO ATT DATA", itemName))
+				-- PRIORITY 2: Look for simple fractions without percentage like "(0/1)" or "(2/3)"
+				local parenCurrent, parenTotal = string.match(text, "%((%d+)/(%d+)%)")
+				if parenCurrent and parenTotal then
+					parenCurrent = tonumber(parenCurrent)
+					parenTotal = tonumber(parenTotal)
+					if parenCurrent and parenTotal then
+						if parenCurrent >= parenTotal and parenTotal > 0 then
+							attStatus = true
+							showYellowD = false
+							showPurple = false
+						elseif parenCurrent == 0 then
+							attStatus = false
+							showYellowD = false
+							showPurple = false
+						else
+							-- Partial collection
+							attStatus = false
+							showYellowD = false
+							showPurple = true
+						end
+
+						if self.db and self.db.debugMode then
+							print(string.format("|cffff69b4DOKI|r Found ATT fraction: (%d/%d) -> %s",
+								parenCurrent, parenTotal, attStatus and "COLLECTED" or (showPurple and "PARTIAL" or "NOT COLLECTED")))
+						end
+
+						break
+					end
+				end
+
+				-- PRIORITY 3: Unicode symbol detection (locale-independent) - YOUR ORIGINAL APPROACH
+				-- ❌ for not collected
+				if string.find(text, "❌") or string.find(text, "✗") or string.find(text, "✕") then
+					attStatus = false
+					showYellowD = false
+					showPurple = false
+					if self.db and self.db.debugMode then
+						print("|cffff69b4DOKI|r Found ATT X symbol -> NOT COLLECTED")
+					end
+
+					break
+				end
+
+				-- ✅ for collected
+				if string.find(text, "✅") or string.find(text, "✓") or string.find(text, "☑") then
+					attStatus = true
+					showYellowD = false
+					showPurple = false
+					if self.db and self.db.debugMode then
+						print("|cffff69b4DOKI|r Found ATT checkmark -> COLLECTED")
+					end
+
+					break
+				end
+
+				-- PRIORITY 4: 💎 Diamond symbol with enhanced parsing (your original approach)
+				if string.find(text, "💎") or string.find(text, "♦") then
+					-- This is likely a currency/reagent item, look for the status
+					if string.find(text, "Collected") then
+						-- Look for the numbers in this line with safe pattern
+						local curr, tot = string.match(text, "(%d+)%s*/%s*(%d+)")
+						if curr and tot then
+							curr = tonumber(curr)
+							tot = tonumber(tot)
+							if curr and tot then
+								attStatus = (curr >= tot)
+								showYellowD = false
+								showPurple = (curr > 0 and curr < tot)
+								if self.db and self.db.debugMode then
+									print(string.format("|cffff69b4DOKI|r Found diamond currency: %d/%d -> %s",
+										curr, tot, attStatus and "COLLECTED" or (showPurple and "PARTIAL" or "NOT COLLECTED")))
+								end
+
+								break
+							end
+						else
+							-- Diamond + "Collected" but no numbers - assume collected
+							attStatus = true
+							showYellowD = false
+							showPurple = false
+							if self.db and self.db.debugMode then
+								print("|cffff69b4DOKI|r Found diamond + 'Collected' (no numbers) -> COLLECTED")
+							end
+
+							break
+						end
+					end
+				end
+
+				-- PRIORITY 5: Text-based fallback (ONLY if no symbols found)
+				-- This handles cases like item 159478 that show text but no symbols
+				if attStatus == nil then
+					-- Be very specific about text patterns to avoid false positives
+					if string.find(text, "❌") == nil and string.find(text, "✅") == nil and string.find(text, "💎") == nil then
+						-- No symbols found, check text patterns carefully
+						-- Check for "Not Collected" (but not "Catalyst Collected" or similar)
+						if string.find(text, "Not Collected") and not string.find(text, "Catalyst") then
+							attStatus = false
+							showYellowD = false
+							showPurple = false
+							if self.db and self.db.debugMode then
+								print(string.format("|cffff69b4DOKI|r Found ATT 'Not Collected' text (fallback) -> NOT COLLECTED"))
+							end
+
+							break
+						end
+
+						-- Check for standalone "Collected" (but be very careful about context)
+						if text == "Collected" or (string.find(text, "^Collected$") or string.find(text, "^Collected%s*$")) then
+							attStatus = true
+							showYellowD = false
+							showPurple = false
+							if self.db and self.db.debugMode then
+								print(string.format("|cffff69b4DOKI|r Found ATT standalone 'Collected' text (fallback) -> COLLECTED"))
+							end
+
+							break
+						end
+					end
+				end
 			end
 		end
+
+		-- Check left side for ATT path indicators
+		if leftLine and leftLine.GetText then
+			local success, text = pcall(leftLine.GetText, leftLine)
+			if success and text and string.len(text) > 0 then
+				-- If we find ATT path but no status yet, we know ATT is processing this item
+				if string.find(text, "ATT >") and attStatus == nil then
+					-- Continue scanning - ATT data is present
+				end
+			end
+		end
+	end
+
+	return attStatus, showYellowD, showPurple
+end
+
+-- ===== NEW: ATT COLLECTION STATUS WITH AUTOMATIC RETRY =====
+function DOKI:GetATTCollectionStatusWithRetry(itemID, itemLink, callback)
+	-- Try immediate parsing first
+	local result, showYellowD, showPurple = self:GetATTCollectionStatus(itemID, itemLink)
+	if result ~= nil and result ~= "NO_ATT_DATA" then
+		-- Got valid result immediately
+		if callback then
+			callback(result, showYellowD, showPurple)
+		end
+
+		return result, showYellowD, showPurple
+	end
+
+	-- No immediate result - request item data and retry
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r ATT: No immediate result for item %d, requesting data...", itemID))
+	end
+
+	C_Item.RequestLoadItemDataByID(itemID)
+	-- Set up retry after item loads
+	C_Timer.After(0.3, function()
+		local retryResult, retryYellowD, retryPurple = DOKI:GetATTCollectionStatus(itemID, itemLink)
+		if DOKI.db and DOKI.db.debugMode then
+			if retryResult == "NO_ATT_DATA" then
+				print(string.format("|cffff69b4DOKI|r ATT: Retry failed for item %d - still no data", itemID))
+			elseif retryResult ~= nil then
+				print(string.format("|cffff69b4DOKI|r ATT: Retry success for item %d - result: %s", itemID, tostring(retryResult)))
+			else
+				print(string.format("|cffff69b4DOKI|r ATT: Retry incomplete for item %d - still processing", itemID))
+			end
+		end
+
+		if callback then
+			callback(retryResult, retryYellowD, retryPurple)
+		end
 	end)
-	return true
+	-- Return temporary "still processing" status
+	return nil, nil, nil
 end
 
 function DOKI:ParseATTTooltipFromGameTooltip(itemID)
@@ -391,7 +553,6 @@ function DOKI:ParseATTTooltipFromGameTooltip(itemID)
 				end
 
 				-- Unicode symbol detection (locale-independent)
-				-- Note: These are the actual symbols from your screenshots
 				-- ❌ for not collected
 				if string.find(text, "❌") or string.find(text, "✗") or string.find(text, "✕") then
 					attStatus = false
@@ -417,7 +578,6 @@ function DOKI:ParseATTTooltipFromGameTooltip(itemID)
 				end
 
 				-- 💎 Diamond symbol typically indicates currency/reagent items
-				-- If we see diamond + "Currency" or "Collected", parse accordingly
 				if string.find(text, "💎") or string.find(text, "♦") then
 					-- This is likely a currency/reagent item, look for the status
 					if string.find(text, "Collected") then
@@ -454,135 +614,6 @@ function DOKI:ParseATTTooltipFromGameTooltip(itemID)
 	end
 
 	return attStatus, showYellowD, showPurple
-end
-
-function DOKI:IsPlayerIdleForATTProcessing()
-	local currentTime = GetTime()
-	-- Don't process during combat
-	if InCombatLockdown() then
-		return false
-	end
-
-	-- Don't process if bags are open (player is actively using them)
-	if self:IsElvUIBagVisible() or
-			(ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown()) then
-		self.attLazyLoader.lastActivityTime = currentTime
-		return false
-	end
-
-	-- Check for any individual bag frames
-	for bagID = 0, NUM_BAG_SLOTS do
-		local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
-		if containerFrame and containerFrame:IsVisible() then
-			self.attLazyLoader.lastActivityTime = currentTime
-			return false
-		end
-	end
-
-	-- Don't process if merchant is open
-	if MerchantFrame and MerchantFrame:IsVisible() then
-		self.attLazyLoader.lastActivityTime = currentTime
-		return false
-	end
-
-	-- Check if enough idle time has passed
-	local idleTime = currentTime - self.attLazyLoader.lastActivityTime
-	return idleTime >= self.attLazyLoader.idleThreshold
-end
-
--- ===== LAZY LOADING MANAGEMENT =====
-function DOKI:GetATTLazyLoadingStats()
-	return {
-		discoveredItems = self:TableCount(self.attLazyLoader.discoveredItems),
-		queueSize = #self.attLazyLoader.processingQueue,
-		isProcessing = self.attLazyLoader.isProcessing,
-		sessionItemsProcessed = self.attLazyLoader.sessionItemsProcessed,
-		maxItemsPerSession = self.attLazyLoader.maxItemsPerSession,
-		itemsPerTick = self.attLazyLoader.itemsPerTick,
-		tickInterval = self.attLazyLoader.tickInterval,
-		stats = self.attLazyLoader.stats,
-	}
-end
-
-function DOKI:SetATTLazyLoadingSettings(itemsPerTick, tickInterval, maxItemsPerSession)
-	if itemsPerTick then
-		self.attLazyLoader.itemsPerTick = math.max(1, math.min(10, itemsPerTick))
-	end
-
-	if tickInterval then
-		self.attLazyLoader.tickInterval = math.max(0.5, math.min(5.0, tickInterval))
-	end
-
-	if maxItemsPerSession then
-		self.attLazyLoader.maxItemsPerSession = math.max(10, math.min(200, maxItemsPerSession))
-	end
-
-	-- Restart processing with new settings
-	if self.attLazyLoader.isProcessing then
-		self:StopBackgroundATTProcessing()
-		self:StartBackgroundATTProcessing()
-	end
-end
-
-function DOKI:ClearATTLazyLoadingData()
-	-- Stop processing
-	self:StopBackgroundATTProcessing()
-	-- Clear discovery data
-	self.attLazyLoader.discoveredItems = {}
-	self.attLazyLoader.processingQueue = {}
-	-- Clear ATT cache
-	if self.collectionCache then
-		for key, cached in pairs(self.collectionCache) do
-			if cached.isATTResult then
-				self.collectionCache[key] = nil
-			end
-		end
-	end
-
-	-- Reset stats
-	self.attLazyLoader.stats = {
-		totalItemsDiscovered = 0,
-		totalItemsProcessed = 0,
-		cacheHits = 0,
-		cacheMisses = 0,
-		backgroundProcessingTime = 0,
-	}
-	print("|cffff69b4DOKI|r ATT lazy loading data cleared")
-end
-
--- ===== CLEANUP WITH LAZY LOADING =====
-function DOKI:CleanupCollectionSystem()
-	-- Stop lazy loading
-	if self.attLazyLoader and self.attLazyLoader.isProcessing then
-		self:StopBackgroundATTProcessing()
-	end
-
-	-- Stop discovery
-	if self.attLazyLoader and self.attLazyLoader.discoveryTimer then
-		self.attLazyLoader.discoveryTimer:Cancel()
-		self.attLazyLoader.discoveryTimer = nil
-	end
-
-	-- Clear data
-	if self.attLazyLoader then
-		self.attLazyLoader.discoveredItems = {}
-		self.attLazyLoader.processingQueue = {}
-		self.attLazyLoader.discoveryEnabled = false
-	end
-
-	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r ATT lazy loading system cleaned up")
-	end
-end
-
--- Utility function
-function DOKI:TableCount(tbl)
-	local count = 0
-	for _ in pairs(tbl) do
-		count = count + 1
-	end
-
-	return count
 end
 
 -- ===== CACHE MANAGEMENT WITH PURPLE SUPPORT AND ATT "NO DATA" TRACKING =====
@@ -648,108 +679,6 @@ function DOKI:SetCachedATTStatus(itemID, itemLink, isCollected, showYellowD, sho
 	end
 end
 
--- ===== ENHANCED ATT BATCH PROCESSING SYSTEM =====
-function DOKI:ProcessATTBatchQueue()
-	-- DISABLED: This system was causing individual item processing
-	-- Now using direct processing with immediate caching
-	self.attBatchProcessing = false
-	self.attBatchQueue = {}
-	return
-end
-
-function DOKI:ProcessATTBatchChunk()
-	-- DISABLED: This was the source of the "1 items queued" spam
-	return
-end
-
--- ===== ENHANCED ATT COLLECTION STATUS WITH LAZY LOADING =====
-function DOKI:GetATTCollectionStatus(itemID, itemLink)
-	if not itemID then return nil, nil, nil end
-
-	-- Check cache first (this is now the primary path)
-	local cachedCollected, cachedYellowD, cachedPurple = self:GetCachedATTStatus(itemID, itemLink)
-	if cachedCollected == "NO_ATT_DATA" then
-		self.attLazyLoader.stats.cacheHits = self.attLazyLoader.stats.cacheHits + 1
-		return "NO_ATT_DATA", nil, nil
-	elseif cachedCollected ~= nil then
-		self.attLazyLoader.stats.cacheHits = self.attLazyLoader.stats.cacheHits + 1
-		return cachedCollected, cachedYellowD, cachedPurple
-	end
-
-	-- Cache miss - add to discovery and queue for background processing
-	self.attLazyLoader.stats.cacheMisses = self.attLazyLoader.stats.cacheMisses + 1
-	-- Discover this item
-	if not self.attLazyLoader.discoveredItems[itemID] then
-		self.attLazyLoader.discoveredItems[itemID] = {
-			itemLink = itemLink,
-			lastSeen = GetTime(),
-			priority = self:CalculateItemPriority(itemID, itemLink),
-			discovered = GetTime(),
-		}
-		self.attLazyLoader.stats.totalItemsDiscovered = self.attLazyLoader.stats.totalItemsDiscovered + 1
-	end
-
-	-- Add to background processing queue
-	self:AddToBackgroundQueue(itemID, itemLink)
-	-- For immediate needs (like when bags are open), fall back to real-time parsing
-	-- But only if we're in a critical path (bags open)
-	if self:IsElvUIBagVisible() or
-			(ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown()) or
-			self:AnyBagFrameVisible() then
-		if self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Cache miss during bag use - using fallback parsing for item %d", itemID))
-		end
-
-		-- Use the original direct parsing as fallback
-		local isCollected, showYellowD, showPurple = self:ParseATTTooltipDirect(itemID, itemLink)
-		if isCollected ~= nil then
-			self:SetCachedATTStatus(itemID, itemLink, isCollected, showYellowD, showPurple)
-		else
-			self:SetCachedATTStatus(itemID, itemLink, nil, nil, nil)
-		end
-
-		if isCollected == nil then
-			return "NO_ATT_DATA", nil, nil
-		else
-			return isCollected, showYellowD, showPurple
-		end
-	end
-
-	-- Not in critical path - return "no data" for now, will be processed in background
-	return "NO_ATT_DATA", nil, nil
-end
-
-function DOKI:AnyBagFrameVisible()
-	for bagID = 0, NUM_BAG_SLOTS do
-		local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
-		if containerFrame and containerFrame:IsVisible() then
-			return true
-		end
-	end
-
-	return false
-end
-
--- ===== ENHANCED ATT TOOLTIP PARSING WITH 0/number vs >0/number DISTINCTION =====
-function DOKI:ParseATTTooltipDirect(itemID, itemLink)
-	local tooltip = GameTooltip
-	tooltip:Hide()
-	tooltip:ClearLines()
-	tooltip:SetOwner(UIParent, "ANCHOR_NONE")
-	if itemLink then
-		tooltip:SetHyperlink(itemLink)
-	else
-		tooltip:SetItemByID(itemID)
-	end
-
-	tooltip:Show()
-	-- Try immediate parsing (may not get ATT data due to timing)
-	local attStatus, showYellowD, showPurple = self:ParseATTTooltipFromGameTooltip(itemID)
-	tooltip:Hide()
-	tooltip:ClearLines()
-	return attStatus, showYellowD, showPurple
-end
-
 function DOKI:TestFixedATTParsing()
 	if not self.db or not self.db.attMode then
 		print("|cffff69b4DOKI|r ATT mode is disabled. Enable with /doki att")
@@ -760,7 +689,6 @@ function DOKI:TestFixedATTParsing()
 	-- Test with known items
 	local testItems = {
 		{ id = 32458, name = "Ashes of Al'ar" }, -- Mount (should show currency format)
-		-- Add first item from bags
 	}
 	-- Add first collectible from bags
 	for bagID = 0, NUM_BAG_SLOTS do
@@ -816,20 +744,6 @@ function DOKI:TestFixedATTParsing()
 	end
 
 	print("\nFixed parsing test complete!")
-end
-
--- ===== CLEAR ATT BATCH QUEUE =====
-function DOKI:ClearATTBatchQueue()
-	self.attBatchQueue = {}
-	self.attBatchProcessing = false
-	if self.attBatchTimer then
-		self.attBatchTimer:Cancel()
-		self.attBatchTimer = nil
-	end
-
-	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r ATT batch queue cleared")
-	end
 end
 
 -- ===== ENSEMBLE DETECTION SYSTEM =====
@@ -917,7 +831,7 @@ end
 function DOKI:IsEnsembleCollected(itemID, itemLink)
 	if not itemID then return false, false, false end
 
-	-- Check cache first (following your existing pattern)
+	-- Check cache first
 	local cachedCollected, cachedYellowD, cachedPurple = self:GetCachedCollectionStatus(itemID, itemLink)
 	if cachedCollected ~= nil then
 		return cachedCollected, cachedYellowD, cachedPurple
@@ -932,7 +846,7 @@ end
 function DOKI:CheckEnsembleByTooltip(itemID, itemLink)
 	if not itemID then return false end
 
-	-- Create unique tooltip name to avoid conflicts (following your existing pattern)
+	-- Create unique tooltip name to avoid conflicts
 	local tooltipName = "DOKIEnsembleTooltip" .. itemID
 	local tooltip = CreateFrame("GameTooltip", tooltipName, nil, "GameTooltipTemplate")
 	tooltip:SetOwner(UIParent, "ANCHOR_NONE")
@@ -1141,8 +1055,7 @@ function DOKI:OnMerchantScrollPageChange()
 		print("|cffff69b4DOKI|r Merchant page changed via scroll - updating indicators")
 	end
 
-	-- FIXED: Don't rely on API state comparison since GetMerchantNumItems()
-	-- returns ALL items, not just visible ones. Always update on scroll.
+	-- Always update on scroll
 	C_Timer.After(0.1, function()
 		if self.db and self.db.enabled and MerchantFrame and MerchantFrame:IsVisible() then
 			-- Force a surgical update to detect button changes
@@ -1158,7 +1071,6 @@ function DOKI:GetCurrentMerchantState()
 	local state = {}
 	local numItems = GetMerchantNumItems()
 	for i = 1, numItems do
-		-- FIXED: Use new War Within API
 		local itemInfo = C_MerchantFrame.GetItemInfo(i)
 		if itemInfo and itemInfo.name then -- Item exists
 			state[i] = {
@@ -1193,7 +1105,7 @@ function DOKI:CompareMerchantState(state1, state2)
 		local item2 = state2[i]
 		if not item2 then return false end
 
-		-- FIXED: Handle table structures properly
+		-- Handle table structures properly
 		if type(item1) == "table" and type(item2) == "table" then
 			if item1.name ~= item2.name or item1.texture ~= item2.texture or item1.price ~= item2.price then
 				return false
@@ -1208,7 +1120,6 @@ function DOKI:CompareMerchantState(state1, state2)
 end
 
 -- ===== ENHANCED DELAYED CLEANUP SCAN SYSTEM =====
--- ADDED: Schedule a delayed cleanup scan with auto-cancellation
 function DOKI:ScheduleDelayedCleanupScan()
 	-- Cancel any existing delayed scan
 	self:CancelDelayedScan()
@@ -1272,7 +1183,6 @@ function DOKI:ScheduleDelayedCleanupScan()
 	end)
 end
 
--- ADDED: Cancel any pending delayed cleanup scan
 function DOKI:CancelDelayedScan()
 	if self.delayedScanTimer then
 		self.delayedScanTimer:Cancel()
@@ -1358,7 +1268,7 @@ function DOKI:SurgicalUpdate(isImmediate)
 	if not self.db or not self.db.enabled then return 0 end
 
 	local currentTime = GetTime()
-	-- ADDED: Cancel any pending delayed scan since we're doing a real update now
+	-- Cancel any pending delayed scan since we're doing a real update now
 	self:CancelDelayedScan()
 	-- Throttling check
 	if currentTime - self.lastSurgicalUpdate < self.surgicalUpdateThrottleTime then
@@ -1395,7 +1305,7 @@ function DOKI:SurgicalUpdate(isImmediate)
 
 	local updateDuration = GetTime() - startTime
 	self:TrackUpdatePerformance(updateDuration, isImmediate)
-	-- ADDED: Schedule delayed cleanup scan for item movement edge cases
+	-- Schedule delayed cleanup scan for item movement edge cases
 	-- Only schedule if this was an immediate update (triggered by item movement)
 	if isImmediate and changeCount >= 0 then -- Even if 0 changes, movement might have edge cases
 		self:ScheduleDelayedCleanupScan()
@@ -1415,11 +1325,10 @@ function DOKI:SurgicalUpdate(isImmediate)
 	return changeCount
 end
 
--- ENHANCED: Immediate surgical update trigger with delayed scan cancellation
 function DOKI:TriggerImmediateSurgicalUpdate()
 	if not self.db or not self.db.enabled then return end
 
-	-- ADDED: Cancel any pending delayed scan since we're doing an immediate update
+	-- Cancel any pending delayed scan since we're doing an immediate update
 	self:CancelDelayedScan()
 	-- Only trigger if relevant UI is visible
 	local anyUIVisible = false
@@ -1459,11 +1368,10 @@ function DOKI:TriggerImmediateSurgicalUpdate()
 	end
 end
 
--- FIXED: Enhanced full scan with delayed rescan scheduling
 function DOKI:FullItemScan(withDelay)
 	if not self.db or not self.db.enabled then return 0 end
 
-	-- FIXED: Add slight delay for battlepet caging timing issues
+	-- Add slight delay for battlepet caging timing issues
 	if withDelay then
 		C_Timer.After(0.15, function()
 			if self.db and self.db.enabled then
@@ -1480,9 +1388,9 @@ function DOKI:FullItemScan(withDelay)
 	local startTime = GetTime()
 	local indicatorCount = 0
 	self.foundFramesThisScan = {}
-	-- Use enhanced scanning for bags (with ATT pre-processing when enabled)
+	-- Use standard scanning for bags
 	indicatorCount = indicatorCount + self:ScanBagFrames()
-	-- Keep original merchant scanning (usually fewer items)
+	-- Keep original merchant scanning
 	indicatorCount = indicatorCount + self:ScanMerchantFrames()
 	-- Update snapshot after full scan
 	if self.CreateButtonSnapshot then
@@ -1491,7 +1399,7 @@ function DOKI:FullItemScan(withDelay)
 
 	local scanDuration = GetTime() - startTime
 	self:TrackUpdatePerformance(scanDuration, false)
-	-- ADDED: Schedule delayed rescan to catch items that may have failed to load
+	-- Schedule delayed rescan to catch items that may have failed to load
 	if indicatorCount > 0 or self.foundFramesThisScan and #self.foundFramesThisScan > 0 then
 		self:ScheduleDelayedFullRescan()
 	end
@@ -1503,25 +1411,6 @@ function DOKI:FullItemScan(withDelay)
 	end
 
 	return indicatorCount
-end
-
-function DOKI:SetATTPerformanceSettings(batchSize, batchDelay)
-	if batchSize then
-		self.attPerformanceSettings.batchSize = math.max(1, math.min(50, batchSize))
-	end
-
-	if batchDelay then
-		self.attPerformanceSettings.batchDelay = math.max(0.01, math.min(0.2, batchDelay))
-	end
-
-	if self.db and self.db.debugMode then
-		print(string.format("|cffff69b4DOKI|r Updated ATT performance settings: batch size %d, delay %.0fms",
-			self.attPerformanceSettings.batchSize, self.attPerformanceSettings.batchDelay * 1000))
-	end
-end
-
-function DOKI:GetATTPerformanceSettings()
-	return self.attPerformanceSettings.batchSize, self.attPerformanceSettings.batchDelay
 end
 
 -- Helper function to get item info directly from merchant button
@@ -1536,8 +1425,6 @@ function DOKI:GetItemFromMerchantButton(button, slotIndex)
 		end
 	end
 
-	-- FIXED: Don't use API fallback - if button doesn't have direct item data, it's empty
-	-- The API returns all items regardless of what page is visible, so we can't rely on it
 	-- Check if button is visible but has no item
 	if button:IsVisible() then
 		return "EMPTY_SLOT", nil
@@ -1546,7 +1433,7 @@ function DOKI:GetItemFromMerchantButton(button, slotIndex)
 	return nil, nil
 end
 
--- ===== FIXED MERCHANT FRAME SCANNING =====
+-- ===== MERCHANT FRAME SCANNING =====
 function DOKI:ScanMerchantFrames()
 	local indicatorCount = 0
 	if not (MerchantFrame and MerchantFrame:IsVisible()) then
@@ -1568,7 +1455,7 @@ function DOKI:ScanMerchantFrames()
 			if button and button:IsVisible() then
 				-- Get item directly from the button
 				local itemID, itemLink = self:GetItemFromMerchantButton(button, i)
-				-- FIXED: Skip empty slots entirely for indicator creation
+				-- Skip empty slots entirely for indicator creation
 				if itemID and itemID ~= "EMPTY_SLOT" and self:IsCollectibleItem(itemID, itemLink) then
 					local isCollected, showYellowD, showPurple = self:IsItemCollected(itemID, itemLink)
 					-- Only create indicator if NOT collected OR if it needs purple indicator
@@ -1629,30 +1516,10 @@ function DOKI:ScanMerchantFrames()
 	return indicatorCount
 end
 
--- ===== ENHANCED SCANNING WITH LAZY LOADING =====
+-- ===== BAG FRAME SCANNING =====
 function DOKI:ScanBagFrames()
 	if not self.db or not self.db.enabled then return 0 end
 
-	local indicatorCount = 0
-	-- ATT MODE: Use preloaded data when possible
-	if self.db.attMode then
-		if self.db.debugMode then
-			print("|cffff69b4DOKI|r ATT mode: Using lazy-loaded data for bag scanning...")
-		end
-
-		-- Trigger item discovery for current bags
-		self:DiscoverBagItems()
-		-- Use the existing scanning logic, but now GetATTCollectionStatus will primarily use cache
-		indicatorCount = self:ScanBagFramesWithATT()
-	else
-		-- Non-ATT mode uses original logic
-		indicatorCount = self:ScanBagFramesOriginal()
-	end
-
-	return indicatorCount
-end
-
-function DOKI:ScanBagFramesWithATT()
 	local indicatorCount = 0
 	-- Collect all bag items first
 	local allBagItems = {}
@@ -1695,7 +1562,7 @@ function DOKI:ScanBagFramesWithATT()
 	-- Scan Blizzard bags
 	local scannedBlizzardBags = false
 	if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
-		-- Combined bags logic (same as before)
+		-- Combined bags logic
 		for bagID = 0, NUM_BAG_SLOTS do
 			local numSlots = C_Container.GetContainerNumSlots(bagID)
 			if numSlots and numSlots > 0 then
@@ -1772,7 +1639,7 @@ function DOKI:ScanBagFramesWithATT()
 		end
 	end
 
-	-- Create indicators for all items (now using cached data)
+	-- Create indicators for all items
 	for button, itemData in pairs(allBagItems) do
 		local isCollected, showYellowD, showPurple = self:IsItemCollected(itemData.itemID, itemData.itemLink)
 		itemData.isCollected = isCollected
@@ -1781,58 +1648,6 @@ function DOKI:ScanBagFramesWithATT()
 		indicatorCount = indicatorCount + self:CreateUniversalIndicator(button, itemData)
 	end
 
-	return indicatorCount
-end
-
-function DOKI:ScanBagFramesOriginal()
-	-- Original non-ATT scanning logic (same as before)
-	local indicatorCount = 0
-	-- Scan ElvUI bags if visible
-	if ElvUI and self:IsElvUIBagVisible() then
-		local E = ElvUI[1]
-		if E then
-			local B = E:GetModule("Bags", true)
-			if B and (B.BagFrame and B.BagFrame:IsShown()) then
-				for bagID = 0, NUM_BAG_SLOTS do
-					local numSlots = C_Container.GetContainerNumSlots(bagID)
-					if numSlots and numSlots > 0 then
-						for slotID = 1, numSlots do
-							local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
-							if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
-								if self:IsCollectibleItem(itemInfo.itemID, itemInfo.hyperlink) then
-									local possibleNames = {
-										string.format("ElvUI_ContainerFrameBag%dSlot%dHash", bagID, slotID),
-										string.format("ElvUI_ContainerFrameBag%dSlot%d", bagID, slotID),
-										string.format("ElvUI_ContainerFrameBag%dSlot%dCenter", bagID, slotID),
-									}
-									for _, elvUIButtonName in ipairs(possibleNames) do
-										local elvUIButton = _G[elvUIButtonName]
-										if elvUIButton and elvUIButton:IsVisible() then
-											local isCollected, showYellowD, showPurple = self:IsItemCollected(itemInfo.itemID,
-												itemInfo.hyperlink)
-											local itemData = {
-												itemID = itemInfo.itemID,
-												itemLink = itemInfo.hyperlink,
-												isCollected = isCollected,
-												showYellowD = showYellowD,
-												showPurple = showPurple,
-												frameType = "bag",
-											}
-											indicatorCount = indicatorCount + self:CreateUniversalIndicator(elvUIButton, itemData)
-											break
-										end
-									end
-								end
-							end
-						end
-					end
-				end
-			end
-		end
-	end
-
-	-- Similar logic for Blizzard bags...
-	-- (keeping original code for non-ATT mode)
 	return indicatorCount
 end
 
@@ -1929,7 +1744,7 @@ function DOKI:SetupMinimalEventSystem()
 		"COMPANION_UNLEARNED",                -- Mount/pet unlearning (confirmed in Blizzard code)
 		"TRANSMOG_COLLECTION_UPDATED",        -- When transmog is collected
 		"TOYS_UPDATED",                       -- When toys are learned
-		-- ADDED: Enhanced merchant selling detection
+		-- Enhanced merchant selling detection
 		"MERCHANT_CONFIRM_TRADE_TIMER_REMOVAL", -- When selling items
 		"UI_INFO_MESSAGE",                    -- For sell confirmations
 	}
@@ -1940,7 +1755,7 @@ function DOKI:SetupMinimalEventSystem()
 	self.eventFrame:SetScript("OnEvent", function(self, event, ...)
 		if not (DOKI.db and DOKI.db.enabled) then return end
 
-		-- ENHANCED: Cancel delayed scans for most events since they trigger normal scanning
+		-- Cancel delayed scans for most events since they trigger normal scanning
 		local cancelDelayedScan = true
 		if event == "MERCHANT_SHOW" then
 			DOKI.merchantScrollDetector.merchantOpen = true
@@ -1977,7 +1792,7 @@ function DOKI:SetupMinimalEventSystem()
 			end
 		elseif event == "ITEM_UNLOCKED" then
 			-- Item movement detected - immediate response
-			cancelDelayedScan = false -- ENHANCED: Let immediate update handle delayed scan scheduling
+			cancelDelayedScan = false -- Let immediate update handle delayed scan scheduling
 			C_Timer.After(0.02, function()
 				if DOKI.db and DOKI.db.enabled then
 					DOKI:TriggerImmediateSurgicalUpdate()
@@ -1985,14 +1800,14 @@ function DOKI:SetupMinimalEventSystem()
 			end)
 		elseif event == "ITEM_LOCK_CHANGED" or event == "CURSOR_CHANGED" then
 			-- Item pickup/drop detected - very immediate response
-			cancelDelayedScan = false -- ENHANCED: Let immediate update handle delayed scan scheduling
+			cancelDelayedScan = false -- Let immediate update handle delayed scan scheduling
 			C_Timer.After(0.01, function()
 				if DOKI.db and DOKI.db.enabled then
 					DOKI:TriggerImmediateSurgicalUpdate()
 				end
 			end)
 		elseif event == "MERCHANT_CONFIRM_TRADE_TIMER_REMOVAL" or event == "UI_INFO_MESSAGE" then
-			-- ADDED: Enhanced detection for merchant selling
+			-- Enhanced detection for merchant selling
 			if DOKI.db and DOKI.db.debugMode then
 				print("|cffff69b4DOKI|r Merchant sell event detected - forcing update")
 			end
@@ -2007,8 +1822,6 @@ function DOKI:SetupMinimalEventSystem()
 				event == "COMPANION_LEARNED" or event == "COMPANION_UNLEARNED" then
 			-- Collection changed - clear cache and FORCE FULL SCAN WITH DELAY for battlepets
 			DOKI:ClearCollectionCache()
-			-- ENHANCED: Also clear ATT cache for pets/mounts since collection status changed
-			DOKI:ClearATTBatchQueue()
 			C_Timer.After(0.05, function()
 				if DOKI.db and DOKI.db.enabled then
 					-- Use withDelay=true for potential battlepet timing issues
@@ -2018,8 +1831,6 @@ function DOKI:SetupMinimalEventSystem()
 		elseif event == "TRANSMOG_COLLECTION_UPDATED" or event == "TOYS_UPDATED" then
 			-- Transmog/toy collection changed - clear cache and FORCE FULL SCAN
 			DOKI:ClearCollectionCache()
-			-- ENHANCED: Also clear ATT cache since collection status changed
-			DOKI:ClearATTBatchQueue()
 			C_Timer.After(0.05, function()
 				if DOKI.db and DOKI.db.enabled then
 					-- Force full scan to re-evaluate all visible items
@@ -2044,7 +1855,7 @@ function DOKI:SetupMinimalEventSystem()
 			end
 
 			if shouldUpdate then
-				cancelDelayedScan = false -- ENHANCED: Let immediate update handle delayed scan scheduling
+				cancelDelayedScan = false -- Let immediate update handle delayed scan scheduling
 				local delay = (event == "BAG_UPDATE_DELAYED") and 0.1 or 0.05
 				C_Timer.After(delay, function()
 					if DOKI.db and DOKI.db.enabled then
@@ -2054,7 +1865,7 @@ function DOKI:SetupMinimalEventSystem()
 			end
 		end
 
-		-- ENHANCED: Cancel delayed scan for events that trigger normal scanning
+		-- Cancel delayed scan for events that trigger normal scanning
 		if cancelDelayedScan then
 			DOKI:CancelDelayedScan()
 		end
@@ -2064,7 +1875,30 @@ function DOKI:SetupMinimalEventSystem()
 	end
 end
 
--- ===== ENHANCED INITIALIZATION WITH DELAYED SCAN SUPPORT =====
+-- ===== CLEANUP SYSTEM =====
+function DOKI:CleanupCollectionSystem()
+	-- Stop delayed scans
+	if self.delayedScanTimer then
+		self.delayedScanTimer:Cancel()
+		self.delayedScanTimer = nil
+	end
+
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Collection system cleaned up")
+	end
+end
+
+-- Utility function
+function DOKI:TableCount(tbl)
+	local count = 0
+	for _ in pairs(tbl) do
+		count = count + 1
+	end
+
+	return count
+end
+
+-- ===== INITIALIZATION =====
 function DOKI:InitializeUniversalScanning()
 	if self.surgicalTimer then
 		self.surgicalTimer:Cancel()
@@ -2074,11 +1908,6 @@ function DOKI:InitializeUniversalScanning()
 	self.pendingSurgicalUpdate = false
 	-- Initialize ensemble detection
 	self:InitializeEnsembleDetection()
-	-- Start ATT lazy loading if in ATT mode
-	if self.db and self.db.attMode then
-		self:StartATTItemDiscovery()
-	end
-
 	-- Enhanced surgical update timer
 	self.surgicalTimer = C_Timer.NewTicker(0.2, function()
 		if self.db and self.db.enabled then
@@ -2106,11 +1935,11 @@ function DOKI:InitializeUniversalScanning()
 	self:SetupMinimalEventSystem()
 	self:FullItemScan()
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Enhanced surgical system initialized with ATT lazy loading")
-		print("  |cff00ff00•|r ATT Lazy Loading: Background processing during idle time")
-		print("  |cff00ff00•|r Item Discovery: Automatic detection of bag contents")
-		print("  |cff00ff00•|r Smart Caching: Persistent ATT results with instant access")
-		print("  |cff00ff00•|r Performance: Eliminates FPS drops when opening bags")
+		print("|cffff69b4DOKI|r Enhanced surgical system initialized")
+		print("  |cff00ff00•|r Direct ATT parsing for immediate results")
+		print("  |cff00ff00•|r Standard collection detection")
+		print("  |cff00ff00•|r Smart caching for performance")
+		print("  |cff00ff00•|r Surgical updates for responsive UI")
 	end
 end
 
@@ -2141,7 +1970,6 @@ function DOKI:DebugFoundFrames()
 	print("|cffff69b4DOKI|r === END FOUND FRAMES DEBUG ===")
 end
 
--- ADDED: Debug function to help identify battlepet surgical update issues
 function DOKI:DebugBattlepetSnapshot()
 	if not self.CreateButtonSnapshot then
 		print("|cffff69b4DOKI|r ButtonTextures system not available")
@@ -2188,4 +2016,255 @@ function DOKI:DebugBattlepetSnapshot()
 		regularItemCount + battlepetCount + ensembleCount, regularItemCount, battlepetCount, ensembleCount,
 		purpleIndicatorCount))
 	print("|cffff69b4DOKI|r === END SNAPSHOT DEBUG ===")
+end
+
+-- ===== ATT DEBUGGING FUNCTIONS =====
+-- Comprehensive debugging for items returning NO_ATT_DATA
+function DOKI:DebugATTMissingData(itemID)
+	itemID = itemID or 159478
+	print(string.format("|cffff69b4DOKI|r === DEBUGGING ATT MISSING DATA FOR ITEM %d ===", itemID))
+	-- Step 1: Basic item info
+	local itemName, itemLink, itemRarity, itemLevel, itemMinLevel, itemType, itemSubType, itemStackCount,
+	itemEquipLoc, itemTexture, sellPrice, classID, subClassID = C_Item.GetItemInfo(itemID)
+	print(string.format("Item Info:"))
+	print(string.format("  Name: %s", itemName or "UNKNOWN"))
+	print(string.format("  Link: %s", itemLink or "UNKNOWN"))
+	print(string.format("  Type: %s / %s", itemType or "UNKNOWN", itemSubType or "UNKNOWN"))
+	print(string.format("  Class/Subclass: %d/%d", classID or -1, subClassID or -1))
+	print(string.format("  Rarity: %d", itemRarity or -1))
+	-- Step 2: Check if DOKI thinks it's collectible
+	local isCollectible = self:IsCollectibleItem(itemID, itemLink)
+	print(string.format("DOKI thinks collectible: %s", tostring(isCollectible)))
+	-- Step 3: Check ATT availability
+	local app = _G["AllTheThings"]
+	if not app then
+		print("❌ AllTheThings addon not found!")
+		return
+	end
+
+	print("✅ AllTheThings addon found")
+	-- Step 4: Test ATT search functions
+	print("\n=== TESTING ATT SEARCH METHODS ===")
+	-- Method 1: Basic item search
+	if app.SearchForLink then
+		print("Testing SearchForLink...")
+		local searchCmd = "item:" .. itemID
+		print(string.format("  Search command: %s", searchCmd))
+		app.SetSkipLevel(1)
+		local success, result = pcall(app.GetCachedSearchResults, app.SearchForLink, searchCmd)
+		app.SetSkipLevel(0)
+		if success then
+			if result then
+				print("  ✅ SearchForLink returned data")
+				print(string.format("    Result type: %s", type(result)))
+				if type(result) == "table" then
+					print(string.format("    Fields: %s", table.concat(self:GetTableKeys(result), ", ")))
+					if result.text then
+						print(string.format("    Text: %s", result.text))
+					end
+
+					if result.collected ~= nil then
+						print(string.format("    Collected: %s", tostring(result.collected)))
+					end
+
+					if result.progress and result.total then
+						print(string.format("    Progress: %s/%s", tostring(result.progress), tostring(result.total)))
+					end
+				end
+			else
+				print("  ❌ SearchForLink returned nil")
+			end
+		else
+			print(string.format("  ❌ SearchForLink failed: %s", tostring(result)))
+		end
+	else
+		print("❌ SearchForLink function not available")
+	end
+
+	-- Method 2: Check ATT's item database directly
+	print("\nTesting direct database lookup...")
+	if app.SearchForField then
+		local success, results = pcall(app.SearchForField, "itemID", itemID)
+		if success and results then
+			print(string.format("  ✅ Found %d entries in ATT database", #results))
+			for i, entry in ipairs(results) do
+				if i <= 3 then -- Show first 3 entries
+					print(string.format("    Entry %d: %s", i, entry.text or "No text"))
+				end
+			end
+		else
+			print("  ❌ Item not found in ATT database")
+		end
+	end
+
+	-- Method 3: Test tooltip method
+	print("\n=== TESTING TOOLTIP METHOD ===")
+	if itemLink then
+		local tooltip = GameTooltip
+		tooltip:Hide()
+		tooltip:ClearLines()
+		tooltip:SetOwner(UIParent, "ANCHOR_NONE")
+		tooltip:SetHyperlink(itemLink)
+		tooltip:Show()
+		-- Wait for ATT to inject data
+		C_Timer.After(0.3, function()
+			print("Tooltip parsing after ATT injection:")
+			local foundATTData = false
+			for i = 1, tooltip:NumLines() do
+				local leftLine = _G["GameTooltipTextLeft" .. i]
+				local rightLine = _G["GameTooltipTextRight" .. i]
+				if leftLine then
+					local leftText = leftLine:GetText()
+					if leftText and (string.find(leftText, "ATT") or string.find(leftText, "AllTheThings")) then
+						print(string.format("  Left %d: %s", i, leftText))
+						foundATTData = true
+					end
+				end
+
+				if rightLine then
+					local rightText = rightLine:GetText()
+					if rightText and string.len(rightText) > 0 then
+						print(string.format("  Right %d: %s", i, rightText))
+						foundATTData = true
+					end
+				end
+			end
+
+			if not foundATTData then
+				print("  ❌ No ATT data found in tooltip")
+			else
+				print("  ✅ ATT data found in tooltip")
+			end
+
+			tooltip:Hide()
+			tooltip:ClearLines()
+		end)
+	else
+		print("❌ No item link available for tooltip test")
+	end
+
+	-- Step 5: Test with different item formats
+	print("\n=== TESTING DIFFERENT ITEM FORMATS ===")
+	local testFormats = {
+		string.format("item:%d", itemID),
+		itemLink,
+		itemName,
+	}
+	for i, format in ipairs(testFormats) do
+		if format then
+			print(string.format("Testing format %d: %s", i, format))
+			if app.SearchForLink then
+				app.SetSkipLevel(1)
+				local success, result = pcall(app.GetCachedSearchResults, app.SearchForLink, format)
+				app.SetSkipLevel(0)
+				if success and result then
+					print("  ✅ Found data with this format")
+				else
+					print("  ❌ No data with this format")
+				end
+			end
+		end
+	end
+
+	print("|cffff69b4DOKI|r === END ATT DEBUG ===")
+end
+
+-- Helper function to get table keys
+function DOKI:GetTableKeys(tbl)
+	local keys = {}
+	for key, _ in pairs(tbl) do
+		table.insert(keys, tostring(key))
+	end
+
+	return keys
+end
+
+-- Quick test for specific items that should have ATT data
+function DOKI:TestKnownATTItems()
+	print("|cffff69b4DOKI|r === TESTING KNOWN ATT ITEMS ===")
+	-- Test items that should definitely be in ATT
+	local knownItems = {
+		{ id = 32458, name = "Ashes of Al'ar" },              -- Mount
+		{ id = 71665, name = "Flametalon of Alysrazor" },     -- Mount
+		{ id = 19902, name = "Red Qiraji Resonating Crystal" }, -- Mount
+		{ id = 159478, name = "Your problem item" },          -- Your problematic item
+	}
+	for _, item in ipairs(knownItems) do
+		print(string.format("\nTesting: %s (ID: %d)", item.name, item.id))
+		local attStatus = self:GetATTCollectionStatus(item.id, nil)
+		if attStatus == "NO_ATT_DATA" then
+			print("  ❌ NO ATT DATA")
+		elseif attStatus == nil then
+			print("  ⚠ Still processing")
+		else
+			print(string.format("  ✅ ATT Result: %s", tostring(attStatus)))
+		end
+	end
+
+	print("|cffff69b4DOKI|r === END KNOWN ITEMS TEST ===")
+end
+
+-- Test function using the proper loading system
+function DOKI:TestProperItemLoading(targetItemID)
+	targetItemID = targetItemID or 211017
+	print(string.format("|cffff69b4DOKI|r === TESTING PROPER ITEM LOADING FOR ITEM %d ===", targetItemID))
+	for bagID = 0, NUM_BAG_SLOTS do
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			for slotID = 1, numSlots do
+				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+				if itemInfo and itemInfo.itemID == targetItemID then
+					print(string.format("Found item in bag %d slot %d", bagID, slotID))
+					-- Test immediate vs loaded data
+					print("=== IMMEDIATE CHECK ===")
+					local immediateLink = C_Container.GetContainerItemLink(bagID, slotID)
+					local immediateComplete = self:IsItemLinkComplete(immediateLink)
+					print(string.format("Immediate link: %s", immediateLink or "NIL"))
+					print(string.format("Immediate length: %d", string.len(immediateLink or "")))
+					print(string.format("Immediate complete: %s", tostring(immediateComplete)))
+					if immediateLink then
+						local itemName = string.match(immediateLink, "%[([^%]]+)%]") or "MISSING"
+						print(string.format("Extracted name: '%s'", itemName))
+					end
+
+					-- Test proper loading system
+					print("\n=== PROPER LOADING SYSTEM ===")
+					self:GetItemLinkWhenReady(bagID, slotID, function(itemID, itemLink, success)
+						print(string.format("Loaded ItemID: %d", itemID or 0))
+						print(string.format("Loaded link: %s", itemLink or "NIL"))
+						print(string.format("Loaded length: %d", string.len(itemLink or "")))
+						print(string.format("Loading success: %s", tostring(success)))
+						if itemLink then
+							local loadedName = string.match(itemLink, "%[([^%]]+)%]") or "MISSING"
+							print(string.format("Loaded name: '%s'", loadedName))
+							local isLoadedComplete = self:IsItemLinkComplete(itemLink)
+							print(string.format("Loaded complete: %s", tostring(isLoadedComplete)))
+						end
+
+						-- Test ATT integration only if we have complete data
+						if success and itemLink and self:IsItemLinkComplete(itemLink) then
+							print("\n=== ATT CATALYST TEST ===")
+							local result = self:GetATTCollectionStatus(itemID, itemLink)
+							print(string.format("ATT result: %s", tostring(result)))
+							-- Check for bonus IDs
+							local bonusIDs = string.match(itemLink, "item:%d+:[^:]*:([^:]*)")
+							if bonusIDs and bonusIDs ~= "" then
+								print(string.format("✓ Bonus IDs: %s", bonusIDs))
+							else
+								print("⚠ No bonus IDs found")
+							end
+						else
+							print("\n=== ATT TEST SKIPPED ===")
+							print("Reason: ItemLink is still incomplete")
+						end
+
+						print("|cffff69b4DOKI|r === PROPER LOADING TEST COMPLETE ===")
+					end)
+					return
+				end
+			end
+		end
+	end
+
+	print(string.format("Item %d not found in bags", targetItemID))
 end

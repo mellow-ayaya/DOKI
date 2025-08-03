@@ -263,7 +263,7 @@ function DOKI:IsItemCollected(itemID, itemLink)
 				local statusText = attStatus and "COLLECTED" or "NOT COLLECTED"
 				local indicatorText = ""
 				if attShowPurple then
-					indicatorText = " (show pink indicator)"
+					indicatorText = " (show purple indicator)"
 				elseif attShowYellowD then
 					indicatorText = " (show blue indicator)"
 				end
@@ -279,7 +279,7 @@ function DOKI:IsItemCollected(itemID, itemLink)
 				return attStatus, attShowYellowD, false -- Normal ATT result, don't show purple
 			end
 		else
-			-- ATT is still processing this item - return "collected" temporarily to avoid false indicators
+			-- ATT is still processing this item - return "collected" temporarily
 			if self.db and self.db.debugMode then
 				print(string.format("|cffff69b4DOKI|r ATT mode: Item %d still being processed, returning temporary 'collected'",
 					itemID))
@@ -290,14 +290,14 @@ function DOKI:IsItemCollected(itemID, itemLink)
 	end
 
 	-- EXISTING LOGIC: Only for non-ATT mode
-	-- ADDED: Handle ensembles first
+	-- Handle ensembles first
 	local itemName = C_Item.GetItemInfo(itemID)
 	if self:IsEnsembleItem(itemID, itemName) then
 		local isCollected, showYellowD, showPurple = self:IsEnsembleCollected(itemID, itemLink)
 		return isCollected, showYellowD, showPurple
 	end
 
-	-- ADDED: Handle caged pets (battlepet links) next
+	-- Handle caged pets (battlepet links) next
 	local petSpeciesID = self:GetPetSpeciesFromBattlePetLink(itemLink)
 	if petSpeciesID then
 		local isCollected = self:IsPetSpeciesCollected(petSpeciesID)
@@ -357,7 +357,7 @@ function DOKI:IsItemCollected(itemID, itemLink)
 		showPurple = false -- Transmog items don't use purple indicators (that's only for ATT fractional)
 	end
 
-	-- FIXED: Only cache the result if we got valid data
+	-- Only cache the result if we got valid data
 	if classID and subClassID then
 		self:SetCachedCollectionStatus(itemID, itemLink, isCollected, showYellowD, showPurple)
 	end
