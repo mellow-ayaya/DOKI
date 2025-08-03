@@ -5,11 +5,11 @@ function DOKI:GetATTCollectionStatus(itemID, itemLink)
 	if not itemID then return nil, nil, nil end
 
 	-- Check cache first
-	local cachedCollected, cachedYellowD, cachedPurple = self:GetCachedATTStatus(itemID, itemLink)
+	local cachedCollected, cachedHasOtherSources, cachedIsPartiallyCollected = self:GetCachedATTStatus(itemID, itemLink)
 	if cachedCollected == "NO_ATT_DATA" then
 		return "NO_ATT_DATA", nil, nil
 	elseif cachedCollected ~= nil then
-		return cachedCollected, cachedYellowD, cachedPurple
+		return cachedCollected, cachedHasOtherSources, cachedIsPartiallyCollected
 	end
 
 	-- ENHANCED: Check if item data is loaded

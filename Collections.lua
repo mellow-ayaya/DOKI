@@ -278,9 +278,10 @@ function DOKI:IsEnsembleCollected(itemID, itemLink)
 	if not itemID then return false, false, false end
 
 	-- Check cache first
-	local cachedCollected, cachedYellowD, cachedPurple = self:GetCachedCollectionStatus(itemID, itemLink)
+	local cachedCollected, cachedHasOtherSources, cachedIsPartiallyCollected = self:GetCachedCollectionStatus(itemID,
+		itemLink)
 	if cachedCollected ~= nil then
-		return cachedCollected, cachedYellowD, cachedPurple
+		return cachedCollected, cachedHasOtherSources, cachedIsPartiallyCollected
 	end
 
 	local isCollected = self:CheckEnsembleByTooltip(itemID, itemLink)

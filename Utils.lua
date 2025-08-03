@@ -309,9 +309,10 @@ function DOKI:IsItemCollected(itemID, itemLink)
 	if not itemID then return false, false, false end
 
 	-- Check cache first
-	local cachedCollected, cachedYellowD, cachedPurple = self:GetCachedCollectionStatus(itemID, itemLink)
+	local cachedCollected, cachedHasOtherSources, cachedIsPartiallyCollected = self:GetCachedCollectionStatus(itemID,
+		itemLink)
 	if cachedCollected ~= nil then
-		return cachedCollected, cachedYellowD, cachedPurple
+		return cachedCollected, cachedHasOtherSources, cachedIsPartiallyCollected
 	end
 
 	local _, itemType, itemSubType, itemEquipLoc, icon, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
@@ -892,12 +893,13 @@ function DOKI:TraceItemDetection(itemID, itemLink)
 	-- Step 2: Check collection status
 	print("|cffff69b4DOKI|r 2. COLLECTION STATUS CHECK:")
 	-- Check cache first
-	local cachedCollected, cachedYellowD, cachedPurple = self:GetCachedCollectionStatus(itemID, itemLink)
+	local cachedCollected, cachedHasOtherSources, cachedIsPartiallyCollected = self:GetCachedCollectionStatus(itemID,
+		itemLink)
 	if cachedCollected ~= nil then
 		print("   Found in cache:")
 		print(string.format("    Collected: %s", cachedCollected and "YES" or "NO"))
-		print(string.format("    Show Yellow D: %s", cachedYellowD and "YES" or "NO"))
-		print(string.format("    Show Purple: %s", cachedPurple and "YES" or "NO"))
+		print(string.format("    Show Yellow D: %s", cachedHasOtherSources and "YES" or "NO"))
+		print(string.format("    Show Purple: %s", cachedIsPartiallyCollected and "YES" or "NO"))
 	else
 		print("   Not in cache - checking APIs...")
 	end
