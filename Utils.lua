@@ -77,35 +77,6 @@ function DOKI:RequestItemDataWithRetry(itemID, itemLink, callback, attempt)
 	end)
 end
 
--- ADDED: Schedule a delayed full rescan to catch items that failed to load initially
-function DOKI:ScheduleDelayedFullRescan()
-	if self.delayedRescanTimer then
-		self.delayedRescanTimer:Cancel()
-	end
-
-	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Scheduling delayed full rescan in 2 seconds...")
-	end
-
-	self.delayedRescanTimer = C_Timer.NewTimer(2.0, function()
-		if DOKI.db and DOKI.db.enabled then
-			if DOKI.db and DOKI.db.debugMode then
-				print("|cffff69b4DOKI|r Running delayed full rescan to catch missed items...")
-			end
-
-			-- Clear cache to force fresh checks
-			DOKI:ClearCollectionCache()
-			-- Do a full scan
-			local count = DOKI:FullItemScan()
-			if DOKI.db and DOKI.db.debugMode then
-				print(string.format("|cffff69b4DOKI|r Delayed rescan complete: %d indicators", count))
-			end
-		end
-
-		DOKI.delayedRescanTimer = nil
-	end)
-end
-
 -- ===== UTILITY FUNCTIONS =====
 function DOKI:GetItemID(itemLink)
 	if not itemLink then return nil end

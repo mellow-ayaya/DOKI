@@ -8,7 +8,7 @@ DOKI.indicatorTexturePath = "Interface\\AddOns\\DOKI\\Media\\uncollected"
 DOKI.lastButtonSnapshot = {}
 DOKI.buttonItemMap = {}
 -- Chunked surgical update state
-DOKI.chunkedSurgicalState = nil
+DOKI.dedicatedSurgicalState = nil
 -- ===== TEXTURE CREATION =====
 function DOKI:ValidateTexture()
 	if not self.textureValidated then
@@ -307,133 +307,367 @@ end
 -- ===== ENHANCED SURGICAL UPDATE PROCESSING WITH RAPID-SALE SAFEGUARDS =====
 function DOKI:ProcessSurgicalUpdate()
 	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - ProcessSurgicalUpdate called", GetTime()))
-	-- Check if we're already running a chunked surgical update
-	if self.chunkedSurgicalState then
-		print("|cff00ff00SURGICAL DEBUG|r - Already running chunked surgical, skipping")
+	-- Check if we're already running a dedicated surgical update
+	if self.dedicatedSurgicalState then
+		print("|cff00ff00SURGICAL DEBUG|r - Already running dedicated surgical, skipping")
 		return 0
 	end
 
-	-- Start chunked surgical update
-	return self:StartChunkedSurgicalUpdate()
+	-- Start dedicated surgical update (separate from full scans)
+	return self:StartDedicatedSurgicalUpdate()
 end
 
--- Start chunked surgical update
-function DOKI:StartChunkedSurgicalUpdate()
-	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - StartChunkedSurgicalUpdate called", GetTime()))
-	-- Cancel any existing chunked surgical update
-	self:CancelChunkedSurgicalUpdate()
-	-- Initialize surgical state
-	self.chunkedSurgicalState = {
-		phase = "snapshot", -- "snapshot", "compare", "complete"
-		bagID = 0,
-		scanType = "elvui", -- "elvui", "combined", "individual", "merchant"
-		currentSnapshot = {},
+-- Dedicated surgical update (separate from full scans)
+function DOKI:StartDedicatedSurgicalUpdate()
+	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - StartDedicatedSurgicalUpdate called", GetTime()))
+	-- Step 1: Quick scan to detect which bags have changes
+	local changedBags = self:DetectChangedBags()
+	if #changedBags == 0 then
+		print("|cff00ff00SURGICAL DEBUG|r - No bags changed, skipping surgical update")
+		return 0
+	end
+
+	print(string.format("|cff00ff00SURGICAL DEBUG|r - Detected changes in %d bags: %s",
+		#changedBags, table.concat(changedBags, ", ")))
+	-- Step 2: Choose strategy based on number of changed bags
+	if #changedBags <= 2 then
+		-- Small change: immediate surgical update on affected bags only
+		print("|cff00ff00SURGICAL DEBUG|r - Using IMMEDIATE SURGICAL strategy (≤2 bags changed)")
+		return self:ImmediateSurgicalUpdate(changedBags)
+	else
+		-- Large change: progressive surgical (separate from full scan)
+		print("|cff00ff00SURGICAL DEBUG|r - Using PROGRESSIVE SURGICAL strategy (>2 bags changed)")
+		return self:StartProgressiveSurgicalUpdate(changedBags)
+	end
+end
+
+-- Progressive surgical update (for large surgical changes only)
+function DOKI:StartProgressiveSurgicalUpdate(changedBags)
+	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - StartProgressiveSurgicalUpdate called", GetTime()))
+	-- Initialize dedicated surgical state
+	self.dedicatedSurgicalState = {
+		mode = "progressive_surgical",
+		changedBags = changedBags,
+		currentBagIndex = 1,
+		indicatorCount = 0,
 		startTime = GetTime(),
-		changes = {
-			removed = {},
-			added = {},
-			changed = {},
-		},
 	}
-	print("|cff00ff00SURGICAL DEBUG|r - Starting chunked surgical snapshot creation")
-	-- Start immediately with first chunk
-	self:ProcessNextSurgicalChunk()
-	return 0 -- Will return actual count when complete
+	print("|cff00ff00SURGICAL DEBUG|r - Starting progressive surgical processing")
+	self:ProcessNextSurgicalBag()
+	return 0
 end
 
--- Process one chunk of the surgical update
-function DOKI:ProcessNextSurgicalChunk()
-	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - ProcessNextSurgicalChunk called", GetTime()))
-	if not self.chunkedSurgicalState then
-		print("|cff00ff00SURGICAL DEBUG|r - ABORTED: no surgical state")
+-- Process next bag in progressive surgical
+function DOKI:ProcessNextSurgicalBag()
+	local state = self.dedicatedSurgicalState
+	if not state then
+		print("|cff00ff00SURGICAL DEBUG|r - ProcessNextSurgicalBag called but no state!")
 		return
 	end
 
-	local state = self.chunkedSurgicalState
-	print(string.format("|cff00ff00SURGICAL DEBUG|r - Phase: %s, BagID: %d, ScanType: %s",
-		state.phase, state.bagID, state.scanType))
-	-- Check if UI is still visible (cancel if closed)
-	if not self:IsAnyRelevantUIVisible() then
-		print("|cff00ff00SURGICAL DEBUG|r - CANCELLED: UI no longer visible")
-		self:CancelChunkedSurgicalUpdate()
+	if state.currentBagIndex > #state.changedBags then
+		print("|cff00ff00SURGICAL DEBUG|r - Progressive surgical processing complete")
+		self:CompleteDedicatedSurgical()
 		return
 	end
 
-	if state.phase == "snapshot" then
-		self:ProcessSurgicalSnapshotChunk()
-	elseif state.phase == "compare" then
-		self:ProcessSurgicalComparePhase()
-	elseif state.phase == "complete" then
-		self:CompleteSurgicalUpdate()
-	end
-end
-
--- Process one bag worth of snapshot creation
-function DOKI:ProcessSurgicalSnapshotChunk()
-	local state = self.chunkedSurgicalState
-	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - Creating snapshot for bag %d (%s)",
-		GetTime(), state.bagID, state.scanType))
-	-- Process current bag based on scan type (same logic as chunked scan)
-	if state.scanType == "elvui" then
-		print("|cff00ff00SURGICAL DEBUG|r - Processing ElvUI snapshot")
-		self:CreateElvUISnapshotChunk(state.bagID, state.currentSnapshot)
-		state.bagID = state.bagID + 1
-		if state.bagID > NUM_BAG_SLOTS then
-			print("|cff00ff00SURGICAL DEBUG|r - ElvUI snapshot complete, moving to combined")
-			state.scanType = "combined"
-			state.bagID = 0
-		end
-	elseif state.scanType == "combined" then
-		print("|cff00ff00SURGICAL DEBUG|r - Processing combined snapshot")
-		self:CreateCombinedSnapshotChunk(state.bagID, state.currentSnapshot)
-		state.bagID = state.bagID + 1
-		if state.bagID > NUM_BAG_SLOTS then
-			print("|cff00ff00SURGICAL DEBUG|r - Combined snapshot complete, moving to individual")
-			state.scanType = "individual"
-			state.bagID = 0
-		end
-	elseif state.scanType == "individual" then
-		print("|cff00ff00SURGICAL DEBUG|r - Processing individual snapshot")
-		self:CreateIndividualSnapshotChunk(state.bagID, state.currentSnapshot)
-		state.bagID = state.bagID + 1
-		if state.bagID > NUM_BAG_SLOTS then
-			print("|cff00ff00SURGICAL DEBUG|r - Individual snapshot complete, moving to merchant")
-			state.scanType = "merchant"
-			state.bagID = 0
-		end
-	elseif state.scanType == "merchant" then
-		print("|cff00ff00SURGICAL DEBUG|r - Processing merchant snapshot")
-		self:CreateMerchantSnapshotChunk(state.currentSnapshot)
-		print("|cff00ff00SURGICAL DEBUG|r - Snapshot creation complete, moving to compare")
-		state.phase = "compare"
-	end
-
-	-- Schedule next chunk with same delays as full scan
-	if state.phase == "snapshot" then
+	local bagIdentifier = state.changedBags[state.currentBagIndex]
+	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - Processing surgical bag: %s", GetTime(), bagIdentifier))
+	-- Process this bag immediately
+	local updateCount = self:ImmediateSurgicalUpdate({ bagIdentifier })
+	state.indicatorCount = state.indicatorCount + updateCount
+	state.currentBagIndex = state.currentBagIndex + 1
+	print(string.format("|cff00ff00SURGICAL DEBUG|r - Surgical bag processed: %d changes", updateCount))
+	-- Schedule next bag or complete
+	if state.currentBagIndex <= #state.changedBags then
 		local delay = self.db.attMode and self.CHUNKED_SCAN_DELAYS.ATT_MODE or self.CHUNKED_SCAN_DELAYS.STANDARD_MODE
-		print(string.format("|cff00ff00SURGICAL DEBUG|r - Scheduling next snapshot chunk in %.3fs (ATT mode: %s)",
-			delay, tostring(self.db.attMode)))
+		print(string.format("|cff00ff00SURGICAL DEBUG|r - Scheduling next surgical bag in %.3fs", delay))
 		C_Timer.After(delay, function()
-			if DOKI.chunkedSurgicalState then
-				print("|cff00ff00SURGICAL DEBUG|r - Snapshot timer fired, calling ProcessNextSurgicalChunk")
-				DOKI:ProcessNextSurgicalChunk()
-			else
-				print("|cff00ff00SURGICAL DEBUG|r - Snapshot timer fired but surgical state is gone!")
+			if DOKI.dedicatedSurgicalState then
+				DOKI:ProcessNextSurgicalBag()
 			end
 		end)
 	else
-		print("|cff00ff00SURGICAL DEBUG|r - Moving to next surgical phase immediately")
-		self:ProcessNextSurgicalChunk()
+		self:CompleteDedicatedSurgical()
 	end
 end
 
--- Process the comparison phase (immediate - this is fast)
-function DOKI:ProcessSurgicalComparePhase()
-	local state = self.chunkedSurgicalState
-	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - Starting surgical comparison", GetTime()))
-	local currentSnapshot = state.currentSnapshot
-	local changes = state.changes
-	-- Enhanced comparison logic (same as original but with more debugging)
+-- Complete dedicated surgical
+function DOKI:CompleteDedicatedSurgical()
+	local state = self.dedicatedSurgicalState
+	if not state then return 0 end
+
+	local duration = GetTime() - state.startTime
+	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - Dedicated surgical complete: %d changes in %.3fs",
+		GetTime(), state.indicatorCount, duration))
+	local indicatorCount = state.indicatorCount
+	self.dedicatedSurgicalState = nil
+	return indicatorCount
+end
+
+-- Cancel dedicated surgical
+function DOKI:CancelDedicatedSurgical()
+	if self.dedicatedSurgicalState then
+		print("|cff00ff00SURGICAL DEBUG|r - Dedicated surgical cancelled")
+		self.dedicatedSurgicalState = nil
+	end
+end
+
+-- Main smart surgical update - decides strategy based on changes
+function DOKI:SmartSurgicalUpdate()
+	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - SmartSurgicalUpdate called", GetTime()))
+	-- Step 1: Quick scan to detect which bags have changes
+	local changedBags = self:DetectChangedBags()
+	if #changedBags == 0 then
+		print("|cff00ff00SURGICAL DEBUG|r - No bags changed, skipping update")
+		return 0
+	end
+
+	print(string.format("|cff00ff00SURGICAL DEBUG|r - Detected changes in %d bags: %s",
+		#changedBags, table.concat(changedBags, ", ")))
+	-- Step 2: Choose strategy based on number of changed bags
+	if #changedBags <= 2 then
+		-- Small change: immediate surgical update on affected bags only
+		print("|cff00ff00SURGICAL DEBUG|r - Using IMMEDIATE strategy (≤2 bags changed)")
+		return self:ImmediateSurgicalUpdate(changedBags)
+	else
+		-- Large change: progressive chunked scan with immediate indicator application
+		print("|cff00ff00SURGICAL DEBUG|r - Using PROGRESSIVE strategy (>2 bags changed)")
+		return self:StartProgressiveChunkedSurgical()
+	end
+end
+
+-- Detect which bags have changes (fast comparison)
+function DOKI:DetectChangedBags()
+	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - DetectChangedBags called", GetTime()))
+	local changedBags = {}
+	local currentState = self:GetCurrentUIVisibilityState()
+	-- If no previous snapshot exists, consider all visible UI as changed
+	if not self.lastButtonSnapshot then
+		print("|cff00ff00SURGICAL DEBUG|r - No previous snapshot, marking all visible UI as changed")
+		if currentState.elvui then
+			for bagID = 0, NUM_BAG_SLOTS do
+				table.insert(changedBags, "elvui_" .. bagID)
+			end
+		end
+
+		if currentState.combined then
+			for bagID = 0, NUM_BAG_SLOTS do
+				table.insert(changedBags, "combined_" .. bagID)
+			end
+		end
+
+		if currentState.individual then
+			for bagID = 0, NUM_BAG_SLOTS do
+				table.insert(changedBags, "individual_" .. bagID)
+			end
+		end
+
+		if currentState.merchant then
+			table.insert(changedBags, "merchant")
+		end
+
+		return changedBags
+	end
+
+	-- Fast bag-by-bag comparison
+	-- Check ElvUI bags
+	if currentState.elvui then
+		for bagID = 0, NUM_BAG_SLOTS do
+			if self:HasBagChanged("elvui", bagID) then
+				table.insert(changedBags, "elvui_" .. bagID)
+				print(string.format("|cff00ff00SURGICAL DEBUG|r - ElvUI bag %d changed", bagID))
+			end
+		end
+	end
+
+	-- Check combined bags
+	if currentState.combined then
+		for bagID = 0, NUM_BAG_SLOTS do
+			if self:HasBagChanged("combined", bagID) then
+				table.insert(changedBags, "combined_" .. bagID)
+				print(string.format("|cff00ff00SURGICAL DEBUG|r - Combined bag %d changed", bagID))
+			end
+		end
+	end
+
+	-- Check individual bags
+	if currentState.individual then
+		for bagID = 0, NUM_BAG_SLOTS do
+			if self:HasBagChanged("individual", bagID) then
+				table.insert(changedBags, "individual_" .. bagID)
+				print(string.format("|cff00ff00SURGICAL DEBUG|r - Individual bag %d changed", bagID))
+			end
+		end
+	end
+
+	-- Check merchant
+	if currentState.merchant then
+		if self:HasBagChanged("merchant", 0) then
+			table.insert(changedBags, "merchant")
+			print("|cff00ff00SURGICAL DEBUG|r - Merchant changed")
+		end
+	end
+
+	return changedBags
+end
+
+-- Check if a specific bag has changes (fast comparison)
+function DOKI:HasBagChanged(scanType, bagID)
+	-- Quick item count and basic hash comparison
+	local currentItems = self:GetBagItemSummary(scanType, bagID)
+	local lastSnapshot = self.lastButtonSnapshot or {}
+	-- Count items from this bag in last snapshot
+	local lastItems = {}
+	for button, itemData in pairs(lastSnapshot) do
+		-- Match buttons from this specific bag
+		if self:IsButtonFromBag(button, scanType, bagID) then
+			if itemData.hasItem then
+				lastItems[itemData.itemID] = (lastItems[itemData.itemID] or 0) + 1
+			end
+		end
+	end
+
+	-- Simple comparison: different item counts means changed
+	if self:TableCount(currentItems) ~= self:TableCount(lastItems) then
+		return true
+	end
+
+	-- Compare item IDs and counts
+	for itemID, count in pairs(currentItems) do
+		if (lastItems[itemID] or 0) ~= count then
+			return true
+		end
+	end
+
+	for itemID, count in pairs(lastItems) do
+		if (currentItems[itemID] or 0) ~= count then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- Get summary of items in a bag (for change detection)
+function DOKI:GetBagItemSummary(scanType, bagID)
+	local items = {}
+	if scanType == "merchant" then
+		-- Merchant summary
+		for i = 1, 12 do
+			local possibleButtonNames = {
+				string.format("MerchantItem%dItemButton", i),
+				string.format("MerchantItem%d", i),
+			}
+			for _, buttonName in ipairs(possibleButtonNames) do
+				local button = _G[buttonName]
+				if button and button:IsVisible() then
+					local itemID, itemLink = self:GetItemFromMerchantButton(button, i)
+					if itemID and itemID ~= "EMPTY_SLOT" then
+						items[itemID] = (items[itemID] or 0) + 1
+					end
+
+					break
+				end
+			end
+		end
+	else
+		-- Bag summary
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			for slotID = 1, numSlots do
+				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+				if itemInfo and itemInfo.itemID then
+					items[itemInfo.itemID] = (items[itemInfo.itemID] or 0) + 1
+				end
+			end
+		end
+	end
+
+	return items
+end
+
+-- Check if button belongs to specific bag
+function DOKI:IsButtonFromBag(button, scanType, bagID)
+	local success, buttonName = pcall(button.GetName, button)
+	if not success or not buttonName then
+		return false
+	end
+
+	if scanType == "elvui" then
+		return string.find(buttonName, string.format("ElvUI_ContainerFrameBag%d", bagID)) ~= nil
+	elseif scanType == "individual" then
+		return string.find(buttonName, string.format("ContainerFrame%d", bagID + 1)) ~= nil
+	elseif scanType == "combined" then
+		-- For combined bags, check if button belongs to this bagID (more complex)
+		if button.GetBagID then
+			local bagIDRetrievalSuccess, buttonBagID = pcall(button.GetBagID, button)
+			return bagIDRetrievalSuccess and buttonBagID == bagID
+		end
+	elseif scanType == "merchant" then
+		return string.find(buttonName, "Merchant") ~= nil
+	end
+
+	return false
+end
+
+-- Immediate surgical update for specific bags (instant)
+function DOKI:ImmediateSurgicalUpdate(changedBagList)
+	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - ImmediateSurgicalUpdate for bags: %s",
+		GetTime(), table.concat(changedBagList, ", ")))
+	local startTime = GetTime()
+	local updateCount = 0
+	-- Create snapshot only for changed bags
+	local partialSnapshot = {}
+	for _, bagIdentifier in ipairs(changedBagList) do
+		local scanType, bagID = self:ParseBagIdentifier(bagIdentifier)
+		if scanType == "elvui" then
+			self:CreateElvUISnapshotChunk(bagID, partialSnapshot)
+		elseif scanType == "combined" then
+			self:CreateCombinedSnapshotChunk(bagID, partialSnapshot)
+		elseif scanType == "individual" then
+			self:CreateIndividualSnapshotChunk(bagID, partialSnapshot)
+		elseif scanType == "merchant" then
+			self:CreateMerchantSnapshotChunk(partialSnapshot)
+		end
+	end
+
+	-- Compare and apply changes for these bags only
+	local changes = self:ComparePartialSnapshots(partialSnapshot, changedBagList)
+	updateCount = self:ApplyImmediateChanges(changes)
+	-- Update only the changed portions of the snapshot
+	if not self.lastButtonSnapshot then
+		self.lastButtonSnapshot = {}
+	end
+
+	for button, itemData in pairs(partialSnapshot) do
+		self.lastButtonSnapshot[button] = itemData
+	end
+
+	local duration = GetTime() - startTime
+	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - Immediate surgical complete: %d changes in %.3fs",
+		GetTime(), updateCount, duration))
+	return updateCount
+end
+
+-- Parse bag identifier (e.g., "elvui_2" -> "elvui", 2)
+function DOKI:ParseBagIdentifier(bagIdentifier)
+	if bagIdentifier == "merchant" then
+		return "merchant", 0
+	end
+
+	local scanType, bagID = string.match(bagIdentifier, "([^_]+)_(%d+)")
+	return scanType, tonumber(bagID)
+end
+
+-- Compare partial snapshots (only for changed bags)
+function DOKI:ComparePartialSnapshots(partialSnapshot, changedBagList)
+	local changes = {
+		removed = {},
+		added = {},
+		changed = {},
+	}
+	-- Enhanced comparison logic (same itemsEqual function as before)
 	local function itemsEqual(oldItem, newItem)
 		if not oldItem and not newItem then return true end
 
@@ -458,68 +692,49 @@ function DOKI:ProcessSurgicalComparePhase()
 		return oldItem.hasItem == newItem.hasItem
 	end
 
-	-- Compare snapshots
-	local changeCount = 0
-	-- Find removed/changed items
-	for button, oldItemData in pairs(self.lastButtonSnapshot or {}) do
-		local newItemData = currentSnapshot[button]
-		if not newItemData then
-			table.insert(changes.removed, { button = button, oldItemData = oldItemData })
-			changeCount = changeCount + 1
-		elseif not itemsEqual(oldItemData, newItemData) then
-			table.insert(changes.changed, { button = button, oldItemData = oldItemData, newItemData = newItemData })
-			changeCount = changeCount + 1
-		end
-	end
-
-	-- Find added items
-	for button, newItemData in pairs(currentSnapshot) do
+	-- Only compare buttons from changed bags
+	for button, newItemData in pairs(partialSnapshot) do
 		local oldItemData = self.lastButtonSnapshot and self.lastButtonSnapshot[button]
 		if not oldItemData then
 			table.insert(changes.added, { button = button, newItemData = newItemData })
-			changeCount = changeCount + 1
+		elseif not itemsEqual(oldItemData, newItemData) then
+			table.insert(changes.changed, { button = button, oldItemData = oldItemData, newItemData = newItemData })
 		end
 	end
 
-	print(string.format("|cff00ff00SURGICAL DEBUG|r - Comparison complete: %d changes (%d removed, %d added, %d changed)",
-		changeCount, #changes.removed, #changes.added, #changes.changed))
-	state.phase = "complete"
-	self:ProcessNextSurgicalChunk()
-end
-
--- Complete the surgical update
-function DOKI:CompleteSurgicalUpdate()
-	local state = self.chunkedSurgicalState
-	if not state then
-		print("|cff00ff00SURGICAL DEBUG|r - CompleteSurgicalUpdate called but no state!")
-		return 0
-	end
-
-	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - Applying surgical changes", GetTime()))
-	local changes = state.changes
-	local updateCount = 0
-	-- Force cleanup of empty slots first (same as original)
-	local cleanedIndicators = 0
-	for button, textureData in pairs(self.buttonTextures or {}) do
-		if textureData.isActive then
-			local currentButtonData = state.currentSnapshot[button]
-			if currentButtonData and currentButtonData.isEmpty then
-				if self:RemoveButtonIndicator(button) then
-					cleanedIndicators = cleanedIndicators + 1
+	-- Check for removed items (only in changed bags)
+	if self.lastButtonSnapshot then
+		for button, oldItemData in pairs(self.lastButtonSnapshot) do
+			-- Only check buttons from changed bags
+			local isFromChangedBag = false
+			for _, bagIdentifier in ipairs(changedBagList) do
+				local scanType, bagID = self:ParseBagIdentifier(bagIdentifier)
+				if self:IsButtonFromBag(button, scanType, bagID) then
+					isFromChangedBag = true
+					break
 				end
+			end
+
+			if isFromChangedBag and not partialSnapshot[button] then
+				table.insert(changes.removed, { button = button, oldItemData = oldItemData })
 			end
 		end
 	end
 
-	-- Apply changes (same logic as original)
-	-- Remove indicators from buttons that lost items
+	return changes
+end
+
+-- Apply immediate changes (same logic as before)
+function DOKI:ApplyImmediateChanges(changes)
+	local updateCount = 0
+	-- Remove indicators
 	for _, change in ipairs(changes.removed) do
 		if self:RemoveButtonIndicator(change.button) then
 			updateCount = updateCount + 1
 		end
 	end
 
-	-- Update buttons that changed items
+	-- Update changed items
 	for _, change in ipairs(changes.changed) do
 		self:RemoveButtonIndicator(change.button)
 		if change.newItemData.hasItem and not change.newItemData.isEmpty then
@@ -532,7 +747,7 @@ function DOKI:CompleteSurgicalUpdate()
 		end
 	end
 
-	-- Add indicators to buttons that gained items
+	-- Add new indicators
 	for _, change in ipairs(changes.added) do
 		if change.newItemData.hasItem and not change.newItemData.isEmpty then
 			local itemData = self:GetItemDataForSurgicalUpdate(change.newItemData.itemID, change.newItemData.itemLink)
@@ -544,27 +759,159 @@ function DOKI:CompleteSurgicalUpdate()
 		end
 	end
 
-	-- Update snapshot
-	self.lastButtonSnapshot = state.currentSnapshot
-	local totalChanges = updateCount + cleanedIndicators
-	local surgicalDuration = GetTime() - state.startTime
-	print(string.format(
-		"|cff00ff00SURGICAL DEBUG|r %.3f - Chunked surgical complete: %d changes in %.3fs (%d updates, %d cleaned)",
-		GetTime(), totalChanges, surgicalDuration, updateCount, cleanedIndicators))
-	-- Clean up
-	self.chunkedSurgicalState = nil
-	return totalChanges
+	return updateCount
 end
 
--- Cancel chunked surgical update
-function DOKI:CancelChunkedSurgicalUpdate()
-	if self.chunkedSurgicalState then
-		print("|cff00ff00SURGICAL DEBUG|r - Chunked surgical update cancelled")
-		self.chunkedSurgicalState = nil
+-- Progressive chunked surgical with immediate indicator application
+function DOKI:StartProgressiveChunkedSurgical()
+	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - StartProgressiveChunkedSurgical called", GetTime()))
+	-- Cancel any existing smart surgical update
+	self:CancelSmartSurgicalUpdate()
+	-- Initialize smart surgical state
+	self.smartSurgicalState = {
+		mode = "progressive", -- "progressive" vs "immediate"
+		phase = "processing", -- "processing", "complete"
+		bagID = 0,
+		scanType = "elvui", -- "elvui", "combined", "individual", "merchant"
+		indicatorCount = 0,
+		startTime = GetTime(),
+	}
+	print("|cff00ff00SURGICAL DEBUG|r - Starting progressive surgical processing")
+	-- Start immediately with first chunk
+	self:ProcessNextProgressiveChunk()
+	return 0 -- Will return actual count when complete
+end
+
+-- Process one bag progressively (snapshot + compare + apply immediately)
+function DOKI:ProcessNextProgressiveChunk()
+	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - ProcessNextProgressiveChunk called", GetTime()))
+	if not self.smartSurgicalState then
+		print("|cff00ff00SURGICAL DEBUG|r - ABORTED: no smart surgical state")
+		return
+	end
+
+	local state = self.smartSurgicalState
+	print(string.format("|cff00ff00SURGICAL DEBUG|r - Processing bag %d (%s)", state.bagID, state.scanType))
+	-- Check if UI is still visible
+	if not self:IsAnyRelevantUIVisible() then
+		print("|cff00ff00SURGICAL DEBUG|r - CANCELLED: UI no longer visible")
+		self:CancelSmartSurgicalUpdate()
+		return
+	end
+
+	local indicatorCount = 0
+	-- Process current bag: snapshot + compare + apply immediately
+	if state.scanType == "elvui" then
+		indicatorCount = self:ProcessProgressiveBag("elvui", state.bagID)
+		state.bagID = state.bagID + 1
+		if state.bagID > NUM_BAG_SLOTS then
+			print("|cff00ff00SURGICAL DEBUG|r - ElvUI bags complete, moving to combined")
+			state.scanType = "combined"
+			state.bagID = 0
+		end
+	elseif state.scanType == "combined" then
+		indicatorCount = self:ProcessProgressiveBag("combined", state.bagID)
+		state.bagID = state.bagID + 1
+		if state.bagID > NUM_BAG_SLOTS then
+			print("|cff00ff00SURGICAL DEBUG|r - Combined bags complete, moving to individual")
+			state.scanType = "individual"
+			state.bagID = 0
+		end
+	elseif state.scanType == "individual" then
+		indicatorCount = self:ProcessProgressiveBag("individual", state.bagID)
+		state.bagID = state.bagID + 1
+		if state.bagID > NUM_BAG_SLOTS then
+			print("|cff00ff00SURGICAL DEBUG|r - Individual bags complete, moving to merchant")
+			state.scanType = "merchant"
+			state.bagID = 0
+		end
+	elseif state.scanType == "merchant" then
+		indicatorCount = self:ProcessProgressiveBag("merchant", 0)
+		print("|cff00ff00SURGICAL DEBUG|r - Progressive processing complete")
+		state.phase = "complete"
+	end
+
+	state.indicatorCount = state.indicatorCount + indicatorCount
+	print(string.format("|cff00ff00SURGICAL DEBUG|r - Bag processed: %d indicators (total: %d)",
+		indicatorCount, state.indicatorCount))
+	-- Schedule next chunk or complete
+	if state.phase == "processing" then
+		local delay = self.db.attMode and self.CHUNKED_SCAN_DELAYS.ATT_MODE or self.CHUNKED_SCAN_DELAYS.STANDARD_MODE
+		print(string.format("|cff00ff00SURGICAL DEBUG|r - Scheduling next progressive chunk in %.3fs (ATT mode: %s)",
+			delay, tostring(self.db.attMode)))
+		C_Timer.After(delay, function()
+			if DOKI.smartSurgicalState then
+				print("|cff00ff00SURGICAL DEBUG|r - Progressive timer fired, calling ProcessNextProgressiveChunk")
+				DOKI:ProcessNextProgressiveChunk()
+			else
+				print("|cff00ff00SURGICAL DEBUG|r - Progressive timer fired but surgical state is gone!")
+			end
+		end)
+	else
+		print("|cff00ff00SURGICAL DEBUG|r - Completing progressive surgical")
+		self:CompleteProgressiveSurgical()
 	end
 end
 
--- Create ElvUI snapshot chunk (extracted from CreateButtonSnapshot)
+-- Process one bag progressively: snapshot + compare + apply
+function DOKI:ProcessProgressiveBag(scanType, bagID)
+	-- Create snapshot for this bag only
+	local bagSnapshot = {}
+	if scanType == "elvui" then
+		self:CreateElvUISnapshotChunk(bagID, bagSnapshot)
+	elseif scanType == "combined" then
+		self:CreateCombinedSnapshotChunk(bagID, bagSnapshot)
+	elseif scanType == "individual" then
+		self:CreateIndividualSnapshotChunk(bagID, bagSnapshot)
+	elseif scanType == "merchant" then
+		self:CreateMerchantSnapshotChunk(bagSnapshot)
+	end
+
+	-- Compare this bag vs old snapshot
+	local changes = self:ComparePartialSnapshots(bagSnapshot, { scanType .. "_" .. bagID })
+	-- Apply changes immediately
+	local updateCount = self:ApplyImmediateChanges(changes)
+	-- Update snapshot for this bag
+	if not self.lastButtonSnapshot then
+		self.lastButtonSnapshot = {}
+	end
+
+	for button, itemData in pairs(bagSnapshot) do
+		self.lastButtonSnapshot[button] = itemData
+	end
+
+	print(string.format("|cff00ff00SURGICAL DEBUG|r - Progressive bag %s_%d: %d changes applied immediately",
+		scanType, bagID, updateCount))
+	return updateCount
+end
+
+-- Complete progressive surgical
+function DOKI:CompleteProgressiveSurgical()
+	local state = self.smartSurgicalState
+	if not state then
+		print("|cff00ff00SURGICAL DEBUG|r - CompleteProgressiveSurgical called but no state!")
+		return 0
+	end
+
+	local surgicalDuration = GetTime() - state.startTime
+	local indicatorCount = state.indicatorCount
+	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - Progressive surgical complete: %d indicators in %.3fs",
+		GetTime(), indicatorCount, surgicalDuration))
+	-- Clean up
+	self.smartSurgicalState = nil
+	return indicatorCount
+end
+
+-- Cancel smart surgical update
+function DOKI:CancelSmartSurgicalUpdate()
+	if self.smartSurgicalState then
+		print("|cff00ff00SURGICAL DEBUG|r - Smart surgical update cancelled")
+		self.smartSurgicalState = nil
+	end
+end
+
+-- Snapshot creation functions (same as previous artifact)
+-- Create ElvUI snapshot chunk
 function DOKI:CreateElvUISnapshotChunk(bagID, snapshot)
 	if not ElvUI or not self:IsElvUIBagVisible() then
 		return
@@ -614,7 +961,7 @@ function DOKI:CreateElvUISnapshotChunk(bagID, snapshot)
 	end
 end
 
--- Create combined snapshot chunk (extracted from CreateButtonSnapshot)
+-- Create combined snapshot chunk
 function DOKI:CreateCombinedSnapshotChunk(bagID, snapshot)
 	if not (ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown()) then
 		return
@@ -678,7 +1025,7 @@ function DOKI:CreateCombinedSnapshotChunk(bagID, snapshot)
 	end
 end
 
--- Create individual snapshot chunk (extracted from CreateButtonSnapshot)
+-- Create individual snapshot chunk
 function DOKI:CreateIndividualSnapshotChunk(bagID, snapshot)
 	local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
 	if not (containerFrame and containerFrame:IsVisible()) then
@@ -728,7 +1075,7 @@ function DOKI:CreateIndividualSnapshotChunk(bagID, snapshot)
 	end
 end
 
--- Create merchant snapshot chunk (extracted from CreateButtonSnapshot)
+-- Create merchant snapshot chunk
 function DOKI:CreateMerchantSnapshotChunk(snapshot)
 	if not (MerchantFrame and MerchantFrame:IsVisible()) then
 		return
@@ -1064,13 +1411,9 @@ end
 
 -- ENHANCED: Cleanup with delayed scan cancellation support
 function DOKI:CleanupButtonTextureSystem()
-	-- ADD THIS LINE AT THE TOP OF THE EXISTING FUNCTION:
-	self:CancelChunkedSurgicalUpdate()
-	-- ... rest of existing function stays the same ...
-	if self.CancelDelayedScan then
-		self:CancelDelayedScan()
-	end
-
+	-- Cancel dedicated surgical (instead of smart surgical)
+	self:CancelDedicatedSurgical()
+	-- REMOVED: No more delayed scan cleanup
 	self:ClearAllButtonIndicators()
 	for button, textureData in pairs(self.buttonTextures) do
 		self:ReleaseButtonTexture(button)
@@ -1087,7 +1430,7 @@ function DOKI:CleanupButtonTextureSystem()
 	self.lastButtonSnapshot = {}
 	self.buttonItemMap = {}
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Button texture system cleaned up with chunked surgical cancellation")
+		print("|cffff69b4DOKI|r Button texture system cleaned up (dedicated surgical)")
 	end
 end
 
