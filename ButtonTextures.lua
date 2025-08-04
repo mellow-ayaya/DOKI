@@ -7,6 +7,8 @@ DOKI.indicatorTexturePath = "Interface\\AddOns\\DOKI\\Media\\uncollected"
 -- FIXED: Enhanced surgical update tracking for proper empty slot detection
 DOKI.lastButtonSnapshot = {}
 DOKI.buttonItemMap = {}
+-- Chunked surgical update state
+DOKI.chunkedSurgicalState = nil
 -- ===== TEXTURE CREATION =====
 function DOKI:ValidateTexture()
 	if not self.textureValidated then
@@ -304,49 +306,146 @@ end
 
 -- ===== ENHANCED SURGICAL UPDATE PROCESSING WITH RAPID-SALE SAFEGUARDS =====
 function DOKI:ProcessSurgicalUpdate()
-	local currentSnapshot = self:CreateButtonSnapshot()
-	local changes = {
-		removed = {},
-		added = {},
-		changed = {},
-	}
-	-- ADDED: Force cleanup of any indicators on empty slots before comparison
-	local cleanedIndicators = 0
-	for button, textureData in pairs(self.buttonTextures or {}) do
-		if textureData.isActive then
-			-- Check if this button is now empty in current snapshot
-			local currentButtonData = currentSnapshot[button]
-			if currentButtonData and currentButtonData.isEmpty then
-				if self:RemoveButtonIndicator(button) then
-					cleanedIndicators = cleanedIndicators + 1
-					if self.db and self.db.debugMode then
-						print(string.format("|cffff69b4DOKI|r Force cleaned indicator from empty slot"))
-					end
-				end
-			end
-		end
+	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - ProcessSurgicalUpdate called", GetTime()))
+	-- Check if we're already running a chunked surgical update
+	if self.chunkedSurgicalState then
+		print("|cff00ff00SURGICAL DEBUG|r - Already running chunked surgical, skipping")
+		return 0
 	end
 
-	-- FIXED: Enhanced comparison that properly handles empty slots and item changes
+	-- Start chunked surgical update
+	return self:StartChunkedSurgicalUpdate()
+end
+
+-- Start chunked surgical update
+function DOKI:StartChunkedSurgicalUpdate()
+	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - StartChunkedSurgicalUpdate called", GetTime()))
+	-- Cancel any existing chunked surgical update
+	self:CancelChunkedSurgicalUpdate()
+	-- Initialize surgical state
+	self.chunkedSurgicalState = {
+		phase = "snapshot", -- "snapshot", "compare", "complete"
+		bagID = 0,
+		scanType = "elvui", -- "elvui", "combined", "individual", "merchant"
+		currentSnapshot = {},
+		startTime = GetTime(),
+		changes = {
+			removed = {},
+			added = {},
+			changed = {},
+		},
+	}
+	print("|cff00ff00SURGICAL DEBUG|r - Starting chunked surgical snapshot creation")
+	-- Start immediately with first chunk
+	self:ProcessNextSurgicalChunk()
+	return 0 -- Will return actual count when complete
+end
+
+-- Process one chunk of the surgical update
+function DOKI:ProcessNextSurgicalChunk()
+	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - ProcessNextSurgicalChunk called", GetTime()))
+	if not self.chunkedSurgicalState then
+		print("|cff00ff00SURGICAL DEBUG|r - ABORTED: no surgical state")
+		return
+	end
+
+	local state = self.chunkedSurgicalState
+	print(string.format("|cff00ff00SURGICAL DEBUG|r - Phase: %s, BagID: %d, ScanType: %s",
+		state.phase, state.bagID, state.scanType))
+	-- Check if UI is still visible (cancel if closed)
+	if not self:IsAnyRelevantUIVisible() then
+		print("|cff00ff00SURGICAL DEBUG|r - CANCELLED: UI no longer visible")
+		self:CancelChunkedSurgicalUpdate()
+		return
+	end
+
+	if state.phase == "snapshot" then
+		self:ProcessSurgicalSnapshotChunk()
+	elseif state.phase == "compare" then
+		self:ProcessSurgicalComparePhase()
+	elseif state.phase == "complete" then
+		self:CompleteSurgicalUpdate()
+	end
+end
+
+-- Process one bag worth of snapshot creation
+function DOKI:ProcessSurgicalSnapshotChunk()
+	local state = self.chunkedSurgicalState
+	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - Creating snapshot for bag %d (%s)",
+		GetTime(), state.bagID, state.scanType))
+	-- Process current bag based on scan type (same logic as chunked scan)
+	if state.scanType == "elvui" then
+		print("|cff00ff00SURGICAL DEBUG|r - Processing ElvUI snapshot")
+		self:CreateElvUISnapshotChunk(state.bagID, state.currentSnapshot)
+		state.bagID = state.bagID + 1
+		if state.bagID > NUM_BAG_SLOTS then
+			print("|cff00ff00SURGICAL DEBUG|r - ElvUI snapshot complete, moving to combined")
+			state.scanType = "combined"
+			state.bagID = 0
+		end
+	elseif state.scanType == "combined" then
+		print("|cff00ff00SURGICAL DEBUG|r - Processing combined snapshot")
+		self:CreateCombinedSnapshotChunk(state.bagID, state.currentSnapshot)
+		state.bagID = state.bagID + 1
+		if state.bagID > NUM_BAG_SLOTS then
+			print("|cff00ff00SURGICAL DEBUG|r - Combined snapshot complete, moving to individual")
+			state.scanType = "individual"
+			state.bagID = 0
+		end
+	elseif state.scanType == "individual" then
+		print("|cff00ff00SURGICAL DEBUG|r - Processing individual snapshot")
+		self:CreateIndividualSnapshotChunk(state.bagID, state.currentSnapshot)
+		state.bagID = state.bagID + 1
+		if state.bagID > NUM_BAG_SLOTS then
+			print("|cff00ff00SURGICAL DEBUG|r - Individual snapshot complete, moving to merchant")
+			state.scanType = "merchant"
+			state.bagID = 0
+		end
+	elseif state.scanType == "merchant" then
+		print("|cff00ff00SURGICAL DEBUG|r - Processing merchant snapshot")
+		self:CreateMerchantSnapshotChunk(state.currentSnapshot)
+		print("|cff00ff00SURGICAL DEBUG|r - Snapshot creation complete, moving to compare")
+		state.phase = "compare"
+	end
+
+	-- Schedule next chunk with same delays as full scan
+	if state.phase == "snapshot" then
+		local delay = self.db.attMode and self.CHUNKED_SCAN_DELAYS.ATT_MODE or self.CHUNKED_SCAN_DELAYS.STANDARD_MODE
+		print(string.format("|cff00ff00SURGICAL DEBUG|r - Scheduling next snapshot chunk in %.3fs (ATT mode: %s)",
+			delay, tostring(self.db.attMode)))
+		C_Timer.After(delay, function()
+			if DOKI.chunkedSurgicalState then
+				print("|cff00ff00SURGICAL DEBUG|r - Snapshot timer fired, calling ProcessNextSurgicalChunk")
+				DOKI:ProcessNextSurgicalChunk()
+			else
+				print("|cff00ff00SURGICAL DEBUG|r - Snapshot timer fired but surgical state is gone!")
+			end
+		end)
+	else
+		print("|cff00ff00SURGICAL DEBUG|r - Moving to next surgical phase immediately")
+		self:ProcessNextSurgicalChunk()
+	end
+end
+
+-- Process the comparison phase (immediate - this is fast)
+function DOKI:ProcessSurgicalComparePhase()
+	local state = self.chunkedSurgicalState
+	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - Starting surgical comparison", GetTime()))
+	local currentSnapshot = state.currentSnapshot
+	local changes = state.changes
+	-- Enhanced comparison logic (same as original but with more debugging)
 	local function itemsEqual(oldItem, newItem)
-		-- Both nil/empty
 		if not oldItem and not newItem then return true end
 
-		-- One nil, one not
 		if not oldItem or not newItem then return false end
 
-		-- Both marked as empty
 		if oldItem.isEmpty and newItem.isEmpty then return true end
 
-		-- One empty, one not
 		if oldItem.isEmpty ~= newItem.isEmpty then return false end
 
-		-- Both have items - compare them
 		if oldItem.hasItem and newItem.hasItem then
-			-- Different item IDs
 			if oldItem.itemID ~= newItem.itemID then return false end
 
-			-- For battlepets, also compare itemLinks (since same itemID can have different species)
 			if oldItem.itemLink and newItem.itemLink then
 				if string.find(oldItem.itemLink, "battlepet:") or string.find(newItem.itemLink, "battlepet:") then
 					return oldItem.itemLink == newItem.itemLink
@@ -356,50 +455,73 @@ function DOKI:ProcessSurgicalUpdate()
 			return true
 		end
 
-		-- One has item, one doesn't
 		return oldItem.hasItem == newItem.hasItem
 	end
 
-	-- FIXED: Better detection of buttons that lost items or changed items
+	-- Compare snapshots
+	local changeCount = 0
+	-- Find removed/changed items
 	for button, oldItemData in pairs(self.lastButtonSnapshot or {}) do
 		local newItemData = currentSnapshot[button]
 		if not newItemData then
-			-- Button disappeared entirely
 			table.insert(changes.removed, { button = button, oldItemData = oldItemData })
+			changeCount = changeCount + 1
 		elseif not itemsEqual(oldItemData, newItemData) then
-			-- Button content changed
 			table.insert(changes.changed, { button = button, oldItemData = oldItemData, newItemData = newItemData })
+			changeCount = changeCount + 1
 		end
 	end
 
-	-- FIXED: Better detection of buttons that gained items
+	-- Find added items
 	for button, newItemData in pairs(currentSnapshot) do
 		local oldItemData = self.lastButtonSnapshot and self.lastButtonSnapshot[button]
 		if not oldItemData then
-			-- New button appeared
 			table.insert(changes.added, { button = button, newItemData = newItemData })
+			changeCount = changeCount + 1
 		end
 	end
 
-	-- Apply surgical updates
+	print(string.format("|cff00ff00SURGICAL DEBUG|r - Comparison complete: %d changes (%d removed, %d added, %d changed)",
+		changeCount, #changes.removed, #changes.added, #changes.changed))
+	state.phase = "complete"
+	self:ProcessNextSurgicalChunk()
+end
+
+-- Complete the surgical update
+function DOKI:CompleteSurgicalUpdate()
+	local state = self.chunkedSurgicalState
+	if not state then
+		print("|cff00ff00SURGICAL DEBUG|r - CompleteSurgicalUpdate called but no state!")
+		return 0
+	end
+
+	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - Applying surgical changes", GetTime()))
+	local changes = state.changes
 	local updateCount = 0
-	-- Remove indicators from buttons that lost items or became empty
+	-- Force cleanup of empty slots first (same as original)
+	local cleanedIndicators = 0
+	for button, textureData in pairs(self.buttonTextures or {}) do
+		if textureData.isActive then
+			local currentButtonData = state.currentSnapshot[button]
+			if currentButtonData and currentButtonData.isEmpty then
+				if self:RemoveButtonIndicator(button) then
+					cleanedIndicators = cleanedIndicators + 1
+				end
+			end
+		end
+	end
+
+	-- Apply changes (same logic as original)
+	-- Remove indicators from buttons that lost items
 	for _, change in ipairs(changes.removed) do
 		if self:RemoveButtonIndicator(change.button) then
 			updateCount = updateCount + 1
-			if self.db and self.db.debugMode then
-				local extraInfo = self:GetItemDebugInfo(change.oldItemData)
-				print(string.format("|cffff69b4DOKI|r Removed indicator: button lost item %s%s",
-					tostring(change.oldItemData.itemID or "unknown"), extraInfo))
-			end
 		end
 	end
 
 	-- Update buttons that changed items
 	for _, change in ipairs(changes.changed) do
-		-- Always remove old indicator first
 		self:RemoveButtonIndicator(change.button)
-		-- Only add new indicator if the new item exists and needs an indicator
 		if change.newItemData.hasItem and not change.newItemData.isEmpty then
 			local itemData = self:GetItemDataForSurgicalUpdate(change.newItemData.itemID, change.newItemData.itemLink)
 			if itemData and (not itemData.isCollected or itemData.isPartiallyCollected) then
@@ -408,46 +530,249 @@ function DOKI:ProcessSurgicalUpdate()
 				end
 			end
 		end
-
-		if self.db and self.db.debugMode then
-			local oldExtra = self:GetItemDebugInfo(change.oldItemData)
-			local newExtra = self:GetItemDebugInfo(change.newItemData)
-			local oldItemID = change.oldItemData.itemID or (change.oldItemData.isEmpty and "empty" or "unknown")
-			local newItemID = change.newItemData.isEmpty and "empty" or (change.newItemData.itemID or "unknown")
-			print(string.format("|cffff69b4DOKI|r Changed indicator: %s%s -> %s%s",
-				tostring(oldItemID), oldExtra, tostring(newItemID), newExtra))
-		end
 	end
 
 	-- Add indicators to buttons that gained items
 	for _, change in ipairs(changes.added) do
-		-- Only add indicator if the new item exists and needs an indicator
 		if change.newItemData.hasItem and not change.newItemData.isEmpty then
 			local itemData = self:GetItemDataForSurgicalUpdate(change.newItemData.itemID, change.newItemData.itemLink)
 			if itemData and (not itemData.isCollected or itemData.isPartiallyCollected) then
 				if self:AddButtonIndicator(change.button, itemData) then
 					updateCount = updateCount + 1
-					if self.db and self.db.debugMode then
-						local extraInfo = self:GetItemDebugInfo(change.newItemData)
-						print(string.format("|cffff69b4DOKI|r Added indicator: button gained item %s%s",
-							tostring(change.newItemData.itemID), extraInfo))
-					end
 				end
 			end
 		end
 	end
 
 	-- Update snapshot
-	self.lastButtonSnapshot = currentSnapshot
-	-- ADDED: Always return total changes including forced cleanup
+	self.lastButtonSnapshot = state.currentSnapshot
 	local totalChanges = updateCount + cleanedIndicators
-	if self.db and self.db.debugMode and totalChanges > 0 then
-		print(string.format(
-			"|cffff69b4DOKI|r Surgical update: %d changes (%d removed, %d added, %d changed, %d force cleaned)",
-			totalChanges, #changes.removed, #changes.added, #changes.changed, cleanedIndicators))
+	local surgicalDuration = GetTime() - state.startTime
+	print(string.format(
+		"|cff00ff00SURGICAL DEBUG|r %.3f - Chunked surgical complete: %d changes in %.3fs (%d updates, %d cleaned)",
+		GetTime(), totalChanges, surgicalDuration, updateCount, cleanedIndicators))
+	-- Clean up
+	self.chunkedSurgicalState = nil
+	return totalChanges
+end
+
+-- Cancel chunked surgical update
+function DOKI:CancelChunkedSurgicalUpdate()
+	if self.chunkedSurgicalState then
+		print("|cff00ff00SURGICAL DEBUG|r - Chunked surgical update cancelled")
+		self.chunkedSurgicalState = nil
+	end
+end
+
+-- Create ElvUI snapshot chunk (extracted from CreateButtonSnapshot)
+function DOKI:CreateElvUISnapshotChunk(bagID, snapshot)
+	if not ElvUI or not self:IsElvUIBagVisible() then
+		return
 	end
 
-	return totalChanges
+	local function addToSnapshot(button, itemID, itemLink)
+		if button then
+			if itemID and itemID ~= "EMPTY_SLOT" then
+				snapshot[button] = {
+					itemID = itemID,
+					itemLink = itemLink,
+					hasItem = true,
+				}
+			else
+				snapshot[button] = {
+					itemID = nil,
+					itemLink = nil,
+					hasItem = false,
+					isEmpty = true,
+				}
+			end
+		end
+	end
+
+	local numSlots = C_Container.GetContainerNumSlots(bagID)
+	if numSlots and numSlots > 0 then
+		for slotID = 1, numSlots do
+			local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+			local possibleNames = {
+				string.format("ElvUI_ContainerFrameBag%dSlot%dHash", bagID, slotID),
+				string.format("ElvUI_ContainerFrameBag%dSlot%d", bagID, slotID),
+				string.format("ElvUI_ContainerFrameBag%dSlot%dCenter", bagID, slotID),
+			}
+			for _, buttonName in ipairs(possibleNames) do
+				local button = _G[buttonName]
+				if button and button:IsVisible() then
+					if itemInfo and itemInfo.itemID then
+						addToSnapshot(button, itemInfo.itemID, itemInfo.hyperlink)
+					else
+						addToSnapshot(button, nil, nil)
+					end
+
+					break
+				end
+			end
+		end
+	end
+end
+
+-- Create combined snapshot chunk (extracted from CreateButtonSnapshot)
+function DOKI:CreateCombinedSnapshotChunk(bagID, snapshot)
+	if not (ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown()) then
+		return
+	end
+
+	local function addToSnapshot(button, itemID, itemLink)
+		if button then
+			if itemID and itemID ~= "EMPTY_SLOT" then
+				snapshot[button] = {
+					itemID = itemID,
+					itemLink = itemLink,
+					hasItem = true,
+				}
+			else
+				snapshot[button] = {
+					itemID = nil,
+					itemLink = nil,
+					hasItem = false,
+					isEmpty = true,
+				}
+			end
+		end
+	end
+
+	local numSlots = C_Container.GetContainerNumSlots(bagID)
+	if numSlots and numSlots > 0 then
+		for slotID = 1, numSlots do
+			local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+			if itemInfo then
+				-- Find matching button
+				local button = nil
+				if ContainerFrameCombinedBags.EnumerateValidItems then
+					for _, itemButton in ContainerFrameCombinedBags:EnumerateValidItems() do
+						if itemButton and itemButton:IsVisible() then
+							local buttonBagID, buttonSlotID = nil, nil
+							if itemButton.GetBagID and itemButton.GetID then
+								local success1, bag = pcall(itemButton.GetBagID, itemButton)
+								local success2, slot = pcall(itemButton.GetID, itemButton)
+								if success1 and success2 then
+									buttonBagID, buttonSlotID = bag, slot
+								end
+							end
+
+							if buttonBagID == bagID and buttonSlotID == slotID then
+								button = itemButton
+								break
+							end
+						end
+					end
+				end
+
+				if button then
+					if itemInfo.itemID then
+						addToSnapshot(button, itemInfo.itemID, itemInfo.hyperlink)
+					else
+						addToSnapshot(button, nil, nil)
+					end
+				end
+			end
+		end
+	end
+end
+
+-- Create individual snapshot chunk (extracted from CreateButtonSnapshot)
+function DOKI:CreateIndividualSnapshotChunk(bagID, snapshot)
+	local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
+	if not (containerFrame and containerFrame:IsVisible()) then
+		return
+	end
+
+	local function addToSnapshot(button, itemID, itemLink)
+		if button then
+			if itemID and itemID ~= "EMPTY_SLOT" then
+				snapshot[button] = {
+					itemID = itemID,
+					itemLink = itemLink,
+					hasItem = true,
+				}
+			else
+				snapshot[button] = {
+					itemID = nil,
+					itemLink = nil,
+					hasItem = false,
+					isEmpty = true,
+				}
+			end
+		end
+	end
+
+	local numSlots = C_Container.GetContainerNumSlots(bagID)
+	if numSlots and numSlots > 0 then
+		for slotID = 1, numSlots do
+			local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+			local possibleNames = {
+				string.format("ContainerFrame%dItem%d", bagID + 1, slotID),
+				string.format("ContainerFrame%dItem%dButton", bagID + 1, slotID),
+			}
+			for _, buttonName in ipairs(possibleNames) do
+				local button = _G[buttonName]
+				if button and button:IsVisible() then
+					if itemInfo and itemInfo.itemID then
+						addToSnapshot(button, itemInfo.itemID, itemInfo.hyperlink)
+					else
+						addToSnapshot(button, nil, nil)
+					end
+
+					break
+				end
+			end
+		end
+	end
+end
+
+-- Create merchant snapshot chunk (extracted from CreateButtonSnapshot)
+function DOKI:CreateMerchantSnapshotChunk(snapshot)
+	if not (MerchantFrame and MerchantFrame:IsVisible()) then
+		return
+	end
+
+	local function addToSnapshot(button, itemID, itemLink)
+		if button then
+			if itemID and itemID ~= "EMPTY_SLOT" then
+				snapshot[button] = {
+					itemID = itemID,
+					itemLink = itemLink,
+					hasItem = true,
+				}
+			else
+				snapshot[button] = {
+					itemID = nil,
+					itemLink = nil,
+					hasItem = false,
+					isEmpty = true,
+				}
+			end
+		end
+	end
+
+	-- Scan merchant buttons
+	for i = 1, 12 do
+		local possibleButtonNames = {
+			string.format("MerchantItem%dItemButton", i),
+			string.format("MerchantItem%d", i),
+		}
+		for _, buttonName in ipairs(possibleButtonNames) do
+			local button = _G[buttonName]
+			if button and button:IsVisible() then
+				local itemID, itemLink = self:GetItemFromMerchantButton(button, i)
+				if itemID == "EMPTY_SLOT" or not itemID then
+					addToSnapshot(button, nil, nil)
+				else
+					addToSnapshot(button, itemID, itemLink)
+				end
+
+				break
+			end
+		end
+	end
 end
 
 -- ADDED: Helper function to get debug info for items
@@ -739,7 +1064,9 @@ end
 
 -- ENHANCED: Cleanup with delayed scan cancellation support
 function DOKI:CleanupButtonTextureSystem()
-	-- ADDED: Cancel any pending delayed scans during cleanup
+	-- ADD THIS LINE AT THE TOP OF THE EXISTING FUNCTION:
+	self:CancelChunkedSurgicalUpdate()
+	-- ... rest of existing function stays the same ...
 	if self.CancelDelayedScan then
 		self:CancelDelayedScan()
 	end
@@ -760,7 +1087,7 @@ function DOKI:CleanupButtonTextureSystem()
 	self.lastButtonSnapshot = {}
 	self.buttonItemMap = {}
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Button texture system cleaned up with delayed scan cancellation")
+		print("|cffff69b4DOKI|r Button texture system cleaned up with chunked surgical cancellation")
 	end
 end
 
