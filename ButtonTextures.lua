@@ -306,6 +306,12 @@ end
 
 -- ===== ENHANCED SURGICAL UPDATE PROCESSING WITH RAPID-SALE SAFEGUARDS =====
 function DOKI:ProcessSurgicalUpdate()
+	-- TESTING MODE: Skip automatic surgical updates
+	if self:IsInTestingMode() then
+		print("|cffff00ffTEST MODE|r Ignoring ProcessSurgicalUpdate (testing mode active)")
+		return 0
+	end
+
 	print(string.format("|cff00ff00SURGICAL DEBUG|r %.3f - ProcessSurgicalUpdate called", GetTime()))
 	-- Check if we're already running a dedicated surgical update
 	if self.dedicatedSurgicalState then

@@ -80,6 +80,91 @@ DOKI.lastUIVisibilityState = {
 	merchant = false,
 }
 DOKI.progressiveFullScanState = nil
+DOKI.testingMode = false
+-- Enter testing mode - disable all automatic systems
+function DOKI:EnterTestingMode()
+	print("|cffff00ffTEST MODE|r === ENTERING TESTING MODE ===")
+	-- Set testing mode flag
+	self.testingMode = true
+	-- Cancel all running scans
+	print("|cffff00ffTEST MODE|r Cancelling all running scans...")
+	self:CancelProgressiveFullScan()
+	if self.CancelDedicatedSurgical then
+		self:CancelDedicatedSurgical()
+	end
+
+	-- Cancel all timers
+	print("|cffff00ffTEST MODE|r Cancelling all timers...")
+	if self.safetyTimer then
+		self.safetyTimer:Cancel()
+		self.safetyTimer = nil
+	end
+
+	if self.surgicalTimer then
+		self.surgicalTimer:Cancel()
+		self.surgicalTimer = nil
+	end
+
+	-- Clear all indicators and state
+	print("|cffff00ffTEST MODE|r Clearing all state...")
+	if self.ClearAllButtonIndicators then
+		local cleared = self:ClearAllButtonIndicators()
+		print(string.format("|cffff00ffTEST MODE|r Cleared %d indicators", cleared))
+	end
+
+	-- Clear all snapshots and mappings
+	self.lastButtonSnapshot = {}
+	if self.buttonItemMap then
+		self.buttonItemMap = {}
+	end
+
+	-- Clear collection cache
+	self:ClearCollectionCache()
+	print("|cffff00ffTEST MODE|r Collection cache cleared")
+	-- Reset performance tracking
+	self.lastSurgicalUpdate = 0
+	self.pendingSurgicalUpdate = false
+	-- Clear scan state variables
+	self.progressiveFullScanState = nil
+	if self.dedicatedSurgicalState then
+		self.dedicatedSurgicalState = nil
+	end
+
+	if self.smartSurgicalState then
+		self.smartSurgicalState = nil
+	end
+
+	print("|cffff00ffTEST MODE|r === TESTING MODE ACTIVE ===")
+	print("|cffff00ffTEST MODE|r All automatic scanning disabled")
+	print("|cffff00ffTEST MODE|r All timers cancelled")
+	print("|cffff00ffTEST MODE|r All state cleared")
+	print("|cffff00ffTEST MODE|r Ready for clean testing")
+	print("|cffff00ffTEST MODE|r")
+	print("|cffff00ffTEST MODE|r Available test commands:")
+	print("|cffff00ffTEST MODE|r   /doki testminimal   - Full system test")
+	print("|cffff00ffTEST MODE|r   /doki testatt       - ATT parsing only")
+	print("|cffff00ffTEST MODE|r   /doki testindicators - Indicator creation only")
+	print("|cffff00ffTEST MODE|r")
+end
+
+-- Exit testing mode - re-enable automatic systems
+function DOKI:ExitTestingMode()
+	print("|cffff00ffTEST MODE|r === EXITING TESTING MODE ===")
+	-- Clear testing mode flag
+	self.testingMode = false
+	-- Re-initialize automatic systems
+	print("|cffff00ffTEST MODE|r Re-enabling automatic scanning...")
+	self:InitializeUniversalScanning()
+	print("|cffff00ffTEST MODE|r === TESTING MODE DISABLED ===")
+	print("|cffff00ffTEST MODE|r Automatic scanning re-enabled")
+	print("|cffff00ffTEST MODE|r Normal operation resumed")
+end
+
+-- Check if currently in testing mode
+function DOKI:IsInTestingMode()
+	return self.testingMode == true
+end
+
 -- ===== DEBOUNCING CORE FUNCTIONS =====
 function DOKI:DebounceEvent(eventName, callback, customDelay)
 	local delay = customDelay or DOKI.DEBOUNCE_DELAYS[eventName] or 0.05
@@ -165,13 +250,14 @@ end
 
 -- ===== ENHANCED EVENT SYSTEM WITH DEBOUNCING =====
 function DOKI:SetupDebouncedEventSystemWithUIDetection()
+	-- SETUP PHASE: Create frame and register events (happens once)
 	if self.eventFrame then
 		self.eventFrame:UnregisterAllEvents()
 	else
 		self.eventFrame = CreateFrame("Frame")
 	end
 
-	-- Events that should be debounced (rapid-fire events)
+	-- Define event categories (setup phase)
 	local debouncedEvents = {
 		"BAG_UPDATE",
 		"BAG_UPDATE_DELAYED",
@@ -179,7 +265,6 @@ function DOKI:SetupDebouncedEventSystemWithUIDetection()
 		"CURSOR_CHANGED",
 		"MERCHANT_UPDATE",
 	}
-	-- Events that should trigger immediate updates (collection changes)
 	local immediateEvents = {
 		"MERCHANT_SHOW",
 		"MERCHANT_CLOSED",
@@ -193,14 +278,13 @@ function DOKI:SetupDebouncedEventSystemWithUIDetection()
 		"MERCHANT_CONFIRM_TRADE_TIMER_REMOVAL",
 		"UI_INFO_MESSAGE",
 	}
-	-- NEW: Events that might indicate UI visibility changes
 	local uiVisibilityEvents = {
 		"ADDON_LOADED",
 		"PLAYER_ENTERING_WORLD",
 		"BAG_CONTAINER_UPDATE",
 		"BAG_SLOT_FLAGS_UPDATED",
 	}
-	-- Register all events
+	-- Register all events ONCE (setup phase)
 	for _, event in ipairs(debouncedEvents) do
 		self.eventFrame:RegisterEvent(event)
 	end
@@ -213,7 +297,15 @@ function DOKI:SetupDebouncedEventSystemWithUIDetection()
 		self.eventFrame:RegisterEvent(event)
 	end
 
+	-- Set up the event handler ONCE (setup phase)
 	self.eventFrame:SetScript("OnEvent", function(self, event, ...)
+		-- TESTING MODE: Skip all automatic event processing
+		if DOKI:IsInTestingMode() then
+			print(string.format("|cffff00ffTEST MODE|r Ignoring event: %s (testing mode active)", event))
+			return
+		end
+
+		-- Continue with normal event processing only if not in testing mode
 		if not (DOKI.db and DOKI.db.enabled) then return end
 
 		print(string.format("|cff00ffff UI DEBUG|r %.3f - Event received: %s", GetTime(), event))
@@ -224,7 +316,7 @@ function DOKI:SetupDebouncedEventSystemWithUIDetection()
 			return
 		end
 
-		-- Handle immediate events (same as before)
+		-- Handle immediate events
 		if event == "MERCHANT_SHOW" then
 			DOKI.merchantScrollDetector.merchantOpen = true
 			DOKI:InitializeMerchantScrollDetection()
@@ -261,7 +353,7 @@ function DOKI:SetupDebouncedEventSystemWithUIDetection()
 					DOKI:FullItemScan()
 				end
 			end, 0.1)
-			-- NEW: Handle potential UI visibility events
+			-- Handle potential UI visibility events
 		elseif tContains(uiVisibilityEvents, event) then
 			print("|cff00ffff UI DEBUG|r - Checking for UI visibility changes")
 			C_Timer.After(0.1, function() -- Small delay to let UI settle
@@ -277,12 +369,543 @@ function DOKI:SetupDebouncedEventSystemWithUIDetection()
 			end)
 		end
 	end)
+	-- Debug output (setup phase)
 	if self.db and self.db.debugMode then
 		print("|cffff69b4DOKI|r Enhanced event system with UI detection initialized")
 		print(string.format("  Debounced events: %d", #debouncedEvents))
 		print(string.format("  Immediate events: %d", #immediateEvents))
 		print(string.format("  UI visibility events: %d", #uiVisibilityEvents))
 	end
+end
+
+function DOKI:ParseBagSpec(bagSpec)
+	if not bagSpec or bagSpec == "" or bagSpec == "all" then
+		-- Scan all bags
+		local allBags = {}
+		for bagID = 0, NUM_BAG_SLOTS do
+			table.insert(allBags, bagID)
+		end
+
+		return allBags
+	end
+
+	-- Parse comma-separated list (e.g., "0,1,2")
+	local selectedBags = {}
+	for bagIDStr in string.gmatch(bagSpec, "([^,]+)") do
+		local bagID = tonumber(strtrim(bagIDStr))
+		if bagID and bagID >= 0 and bagID <= NUM_BAG_SLOTS then
+			table.insert(selectedBags, bagID)
+		else
+			print(string.format("|cffff00ffTEST|r Invalid bag ID: %s (must be 0-%d)", bagIDStr, NUM_BAG_SLOTS))
+		end
+	end
+
+	if #selectedBags == 0 then
+		print("|cffff00ffTEST|r No valid bags specified, using all bags")
+		return self:ParseBagSpec("all")
+	end
+
+	return selectedBags
+end
+
+-- Enhanced ATT parsing test with bag selection
+function DOKI:TestATTParsingOnlySelective(bagSpec)
+	local selectedBags = self:ParseBagSpec(bagSpec)
+	print("|cffff00ffTEST|r === SELECTIVE ATT PARSING TEST ===")
+	print(string.format("|cffff00ffTEST|r Testing bags: %s", table.concat(selectedBags, ", ")))
+	local startTime = GetTime()
+	local itemsProcessed = 0
+	local collectibleItems = 0
+	local activeBagSystem = self:GetActiveBagSystem()
+	if not activeBagSystem then
+		print("|cffff00ffTEST|r No bags visible")
+		return 0
+	end
+
+	print(string.format("|cffff00ffTEST|r Active bag system: %s", activeBagSystem))
+	-- Scan only selected bags
+	for _, bagID in ipairs(selectedBags) do
+		print(string.format("|cffff00ffTEST|r Scanning bag %d...", bagID))
+		local bagStartTime = GetTime()
+		local bagItems = 0
+		local bagCollectible = 0
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			print(string.format("|cffff00ffTEST|r   Bag %d has %d slots", bagID, numSlots))
+			for slotID = 1, numSlots do
+				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+				if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+					itemsProcessed = itemsProcessed + 1
+					bagItems = bagItems + 1
+					-- Only test ATT parsing (no button finding)
+					if self:IsCollectibleItem(itemInfo.itemID, itemInfo.hyperlink) then
+						collectibleItems = collectibleItems + 1
+						bagCollectible = bagCollectible + 1
+						local isCollected = self:IsItemCollected(itemInfo.itemID, itemInfo.hyperlink)
+						-- Do nothing with the result - just parse
+					end
+				end
+			end
+		end
+
+		local bagDuration = GetTime() - bagStartTime
+		print(string.format("|cffff00ffTEST|r   Bag %d: %d items (%d collectible) in %.3fs",
+			bagID, bagItems, bagCollectible, bagDuration))
+	end
+
+	local totalDuration = GetTime() - startTime
+	print(string.format("|cffff00ffTEST|r === SELECTIVE ATT TEST COMPLETE ==="))
+	print(string.format("|cffff00ffTEST|r %d items processed (%d collectible) in %.3fs",
+		itemsProcessed, collectibleItems, totalDuration))
+	print(string.format("|cffff00ffTEST|r Average: %.3fs per item",
+		collectibleItems > 0 and (totalDuration / collectibleItems) or 0))
+	return itemsProcessed
+end
+
+-- Enhanced indicator test with bag selection
+function DOKI:TestIndicatorCreationOnlySelective(bagSpec)
+	local selectedBags = self:ParseBagSpec(bagSpec)
+	print("|cffff00ffTEST|r === SELECTIVE INDICATOR CREATION TEST ===")
+	print(string.format("|cffff00ffTEST|r Testing bags: %s", table.concat(selectedBags, ", ")))
+	local startTime = GetTime()
+	local indicatorsCreated = 0
+	-- Clear existing first
+	if self.ClearAllButtonIndicators then
+		self:ClearAllButtonIndicators()
+	end
+
+	local activeBagSystem = self:GetActiveBagSystem()
+	if not activeBagSystem then
+		print("|cffff00ffTEST|r No bags visible")
+		return 0
+	end
+
+	print(string.format("|cffff00ffTEST|r Active bag system: %s", activeBagSystem))
+	-- Create indicators only on selected bags
+	for _, bagID in ipairs(selectedBags) do
+		print(string.format("|cffff00ffTEST|r Processing bag %d...", bagID))
+		local bagStartTime = GetTime()
+		local bagIndicators = 0
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			for slotID = 1, numSlots do
+				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+				if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+					local button = nil
+					if activeBagSystem == "elvui" then
+						button = self:FindElvUIButton(bagID, slotID)
+					elseif activeBagSystem == "combined" then
+						button = self:FindCombinedButton(bagID, slotID)
+					elseif activeBagSystem == "individual" then
+						button = self:FindIndividualButton(bagID, slotID)
+					end
+
+					if button then
+						-- Create test indicator (no collection checking)
+						local testItemData = {
+							itemID = itemInfo.itemID,
+							itemLink = itemInfo.hyperlink,
+							isCollected = false, -- Always create indicator
+							hasOtherTransmogSources = false,
+							isPartiallyCollected = false,
+							frameType = "test",
+						}
+						if self:CreateUniversalIndicator(button, testItemData) > 0 then
+							indicatorsCreated = indicatorsCreated + 1
+							bagIndicators = bagIndicators + 1
+						end
+					end
+				end
+			end
+		end
+
+		local bagDuration = GetTime() - bagStartTime
+		print(string.format("|cffff00ffTEST|r   Bag %d: %d indicators in %.3fs",
+			bagID, bagIndicators, bagDuration))
+	end
+
+	local totalDuration = GetTime() - startTime
+	print(string.format("|cffff00ffTEST|r === SELECTIVE INDICATOR TEST COMPLETE ==="))
+	print(string.format("|cffff00ffTEST|r %d indicators created in %.3fs", indicatorsCreated, totalDuration))
+	print(string.format("|cffff00ffTEST|r Average: %.3fs per indicator",
+		indicatorsCreated > 0 and (totalDuration / indicatorsCreated) or 0))
+	return indicatorsCreated
+end
+
+-- Enhanced minimal test with bag selection
+function DOKI:MinimalTestScanSelective(bagSpec)
+	local selectedBags = self:ParseBagSpec(bagSpec)
+	print("|cffff00ffTEST|r === SELECTIVE MINIMAL TEST ===")
+	print(string.format("|cffff00ffTEST|r Testing bags: %s", table.concat(selectedBags, ", ")))
+	local startTime = GetTime()
+	-- Clear existing indicators first
+	if self.ClearAllButtonIndicators then
+		self:ClearAllButtonIndicators()
+	end
+
+	local indicatorCount = 0
+	local itemsProcessed = 0
+	local activeBagSystem = self:GetActiveBagSystem()
+	if not activeBagSystem then
+		print("|cffff00ffTEST|r No bags visible")
+		return 0
+	end
+
+	print(string.format("|cffff00ffTEST|r Active bag system: %s", activeBagSystem))
+	-- Process only selected bags
+	for _, bagID in ipairs(selectedBags) do
+		print(string.format("|cffff00ffTEST|r Processing bag %d...", bagID))
+		local bagStartTime = GetTime()
+		local bagIndicators = 0
+		local bagItems = 0
+		if activeBagSystem == "elvui" then
+			bagIndicators, bagItems = self:MinimalScanElvUIBag(bagID)
+		elseif activeBagSystem == "combined" then
+			bagIndicators, bagItems = self:MinimalScanCombinedBag(bagID)
+		elseif activeBagSystem == "individual" then
+			bagIndicators, bagItems = self:MinimalScanIndividualBag(bagID)
+		end
+
+		indicatorCount = indicatorCount + bagIndicators
+		itemsProcessed = itemsProcessed + bagItems
+		local bagDuration = GetTime() - bagStartTime
+		print(string.format("|cffff00ffTEST|r   Bag %d: %d items, %d indicators in %.3fs",
+			bagID, bagItems, bagIndicators, bagDuration))
+	end
+
+	local totalDuration = GetTime() - startTime
+	print(string.format("|cffff00ffTEST|r === SELECTIVE MINIMAL TEST COMPLETE ==="))
+	print(string.format("|cffff00ffTEST|r %d items processed, %d indicators created in %.3fs",
+		itemsProcessed, indicatorCount, totalDuration))
+	print(string.format("|cffff00ffTEST|r Average: %.3fs per indicator",
+		indicatorCount > 0 and (totalDuration / indicatorCount) or 0))
+	return indicatorCount
+end
+
+-- Helper functions for single bag scanning
+function DOKI:MinimalScanElvUIBag(bagID)
+	local indicatorCount = 0
+	local itemsProcessed = 0
+	local numSlots = C_Container.GetContainerNumSlots(bagID)
+	if numSlots and numSlots > 0 then
+		for slotID = 1, numSlots do
+			local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+			if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+				itemsProcessed = itemsProcessed + 1
+				local button = self:FindElvUIButton(bagID, slotID)
+				if button then
+					if self:MinimalProcessItem(itemInfo.itemID, itemInfo.hyperlink, button) then
+						indicatorCount = indicatorCount + 1
+					end
+				end
+			end
+		end
+	end
+
+	return indicatorCount, itemsProcessed
+end
+
+function DOKI:MinimalScanCombinedBag(bagID)
+	local indicatorCount = 0
+	local itemsProcessed = 0
+	local numSlots = C_Container.GetContainerNumSlots(bagID)
+	if numSlots and numSlots > 0 then
+		for slotID = 1, numSlots do
+			local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+			if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+				itemsProcessed = itemsProcessed + 1
+				local button = self:FindCombinedButton(bagID, slotID)
+				if button then
+					if self:MinimalProcessItem(itemInfo.itemID, itemInfo.hyperlink, button) then
+						indicatorCount = indicatorCount + 1
+					end
+				end
+			end
+		end
+	end
+
+	return indicatorCount, itemsProcessed
+end
+
+function DOKI:MinimalScanIndividualBag(bagID)
+	local indicatorCount = 0
+	local itemsProcessed = 0
+	local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
+	if containerFrame and containerFrame:IsVisible() then
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			for slotID = 1, numSlots do
+				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+				if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+					itemsProcessed = itemsProcessed + 1
+					local button = self:FindIndividualButton(bagID, slotID)
+					if button then
+						if self:MinimalProcessItem(itemInfo.itemID, itemInfo.hyperlink, button) then
+							indicatorCount = indicatorCount + 1
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return indicatorCount, itemsProcessed
+end
+
+-- Test 1: Only itemLink generation (no tooltip work)
+function DOKI:TestItemLinkGenerationOnly(bagSpec)
+	local selectedBags = self:ParseBagSpec(bagSpec)
+	print("|cffff00ffTEST|r === ITEMLINK GENERATION TEST ===")
+	print(string.format("|cffff00ffTEST|r Testing bags: %s", table.concat(selectedBags, ", ")))
+	local startTime = GetTime()
+	local itemsProcessed = 0
+	local linksGenerated = 0
+	for _, bagID in ipairs(selectedBags) do
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			for slotID = 1, numSlots do
+				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+				if itemInfo and itemInfo.itemID then
+					itemsProcessed = itemsProcessed + 1
+					-- Test itemLink generation
+					local itemLink = itemInfo.hyperlink
+					if not itemLink then
+						-- Try to get it via API
+						itemLink = C_Container.GetContainerItemLink(bagID, slotID)
+					end
+
+					if not itemLink then
+						-- Try to generate via GetItemInfo
+						local _, generatedLink = C_Item.GetItemInfo(itemInfo.itemID)
+						itemLink = generatedLink
+					end
+
+					if itemLink then
+						linksGenerated = linksGenerated + 1
+						-- Check if collectible (no ATT parsing)
+						local isCollectible = self:IsCollectibleItem(itemInfo.itemID, itemLink)
+						-- Do nothing with result - just test link generation
+					end
+				end
+			end
+		end
+	end
+
+	local duration = GetTime() - startTime
+	print(string.format("|cffff00ffTEST|r ItemLink generation: %d items, %d links in %.3fs",
+		itemsProcessed, linksGenerated, duration))
+	return itemsProcessed
+end
+
+-- Test 2: Tooltip creation and cleanup (no item setting)
+function DOKI:TestTooltipCreationOnly(bagSpec)
+	local selectedBags = self:ParseBagSpec(bagSpec)
+	print("|cffff00ffTEST|r === TOOLTIP CREATION TEST ===")
+	print(string.format("|cffff00ffTEST|r Testing bags: %s", table.concat(selectedBags, ", ")))
+	local startTime = GetTime()
+	local tooltipsCreated = 0
+	for _, bagID in ipairs(selectedBags) do
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			for slotID = 1, numSlots do
+				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+				if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+					if self:IsCollectibleItem(itemInfo.itemID, itemInfo.hyperlink) then
+						tooltipsCreated = tooltipsCreated + 1
+						-- Test tooltip creation and cleanup only
+						local tooltip = GameTooltip
+						tooltip:Hide()
+						tooltip:ClearLines()
+						tooltip:SetOwner(UIParent, "ANCHOR_NONE")
+						-- Don't set the item - just create/cleanup
+						tooltip:Hide()
+						tooltip:ClearLines()
+					end
+				end
+			end
+		end
+	end
+
+	local duration = GetTime() - startTime
+	print(string.format("|cffff00ffTEST|r Tooltip creation: %d tooltips in %.3fs", tooltipsCreated, duration))
+	return tooltipsCreated
+end
+
+-- Test 3: Tooltip item setting (triggers ATT injection)
+function DOKI:TestTooltipItemSettingOnly(bagSpec)
+	local selectedBags = self:ParseBagSpec(bagSpec)
+	print("|cffff00ffTEST|r === TOOLTIP ITEM SETTING TEST ===")
+	print(string.format("|cffff00ffTEST|r Testing bags: %s", table.concat(selectedBags, ", ")))
+	local startTime = GetTime()
+	local tooltipsSet = 0
+	for _, bagID in ipairs(selectedBags) do
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			for slotID = 1, numSlots do
+				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+				if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+					if self:IsCollectibleItem(itemInfo.itemID, itemInfo.hyperlink) then
+						tooltipsSet = tooltipsSet + 1
+						-- Test tooltip item setting (this triggers ATT)
+						local tooltip = GameTooltip
+						tooltip:Hide()
+						tooltip:ClearLines()
+						tooltip:SetOwner(UIParent, "ANCHOR_NONE")
+						-- THIS IS THE EXPENSIVE PART - setting the item triggers ATT
+						if itemInfo.hyperlink then
+							tooltip:SetHyperlink(itemInfo.hyperlink)
+						else
+							tooltip:SetItemByID(itemInfo.itemID)
+						end
+
+						tooltip:Show()
+						-- Don't parse - just set item and cleanup
+						tooltip:Hide()
+						tooltip:ClearLines()
+					end
+				end
+			end
+		end
+	end
+
+	local duration = GetTime() - startTime
+	print(string.format("|cffff00ffTEST|r Tooltip item setting: %d items in %.3fs", tooltipsSet, duration))
+	return tooltipsSet
+end
+
+-- Test 4: Tooltip parsing only (assume tooltip already populated)
+function DOKI:TestTooltipParsingOnly(bagSpec)
+	local selectedBags = self:ParseBagSpec(bagSpec)
+	print("|cffff00ffTEST|r === TOOLTIP PARSING TEST ===")
+	print(string.format("|cffff00ffTEST|r Testing bags: %s", table.concat(selectedBags, ", ")))
+	local startTime = GetTime()
+	local tooltipsParsed = 0
+	for _, bagID in ipairs(selectedBags) do
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			for slotID = 1, numSlots do
+				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+				if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+					if self:IsCollectibleItem(itemInfo.itemID, itemInfo.hyperlink) then
+						tooltipsParsed = tooltipsParsed + 1
+						-- Set up tooltip with item (expensive part)
+						local tooltip = GameTooltip
+						tooltip:Hide()
+						tooltip:ClearLines()
+						tooltip:SetOwner(UIParent, "ANCHOR_NONE")
+						if itemInfo.hyperlink then
+							tooltip:SetHyperlink(itemInfo.hyperlink)
+						else
+							tooltip:SetItemByID(itemInfo.itemID)
+						end
+
+						tooltip:Show()
+						-- Wait for ATT to inject data, then test parsing speed
+						C_Timer.After(0.001, function()
+							local parseStartTime = GetTime()
+							-- Test only the parsing logic (this should be fast)
+							local attStatus, hasOtherTransmogSources, isPartiallyCollected =
+									DOKI:ParseATTTooltipFromGameTooltipEnhanced(itemInfo.itemID)
+							local parseTime = GetTime() - parseStartTime
+							tooltip:Hide()
+							tooltip:ClearLines()
+							-- Don't print per-item to avoid spam, just accumulate
+						end)
+					end
+				end
+			end
+		end
+	end
+
+	local duration = GetTime() - startTime
+	print(string.format("|cffff00ffTEST|r Tooltip parsing test: %d items in %.3fs", tooltipsParsed, duration))
+	print("|cffff00ffTEST|r Note: This includes tooltip setting time - parsing time is negligible")
+	return tooltipsParsed
+end
+
+-- Test 5: Full ATT pipeline with timing breakdown
+function DOKI:TestATTFullPipelineBreakdown(bagSpec)
+	local selectedBags = self:ParseBagSpec(bagSpec)
+	print("|cffff00ffTEST|r === ATT FULL PIPELINE BREAKDOWN ===")
+	print(string.format("|cffff00ffTEST|r Testing bags: %s", table.concat(selectedBags, ", ")))
+	local totalStartTime = GetTime()
+	local itemsProcessed = 0
+	local timings = {
+		linkGeneration = 0,
+		tooltipSetup = 0,
+		itemSetting = 0,
+		attWait = 0,
+		parsing = 0,
+		cleanup = 0,
+	}
+	for _, bagID in ipairs(selectedBags) do
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			for slotID = 1, numSlots do
+				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+				if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+					if self:IsCollectibleItem(itemInfo.itemID, itemInfo.hyperlink) then
+						itemsProcessed = itemsProcessed + 1
+						-- Step 1: Link generation
+						local step1Start = GetTime()
+						local itemLink = itemInfo.hyperlink
+						timings.linkGeneration = timings.linkGeneration + (GetTime() - step1Start)
+						-- Step 2: Tooltip setup
+						local step2Start = GetTime()
+						local tooltip = GameTooltip
+						tooltip:Hide()
+						tooltip:ClearLines()
+						tooltip:SetOwner(UIParent, "ANCHOR_NONE")
+						timings.tooltipSetup = timings.tooltipSetup + (GetTime() - step2Start)
+						-- Step 3: Item setting (triggers ATT)
+						local step3Start = GetTime()
+						if itemLink then
+							tooltip:SetHyperlink(itemLink)
+						else
+							tooltip:SetItemByID(itemInfo.itemID)
+						end
+
+						tooltip:Show()
+						timings.itemSetting = timings.itemSetting + (GetTime() - step3Start)
+						-- Step 4: ATT processing wait
+						local step4Start = GetTime()
+						-- ATT injects data asynchronously, simulate wait
+						timings.attWait = timings.attWait + (GetTime() - step4Start)
+						-- Step 5: Parsing
+						local step5Start = GetTime()
+						local attStatus = self:ParseATTTooltipFromGameTooltipEnhanced(itemInfo.itemID)
+						timings.parsing = timings.parsing + (GetTime() - step5Start)
+						-- Step 6: Cleanup
+						local step6Start = GetTime()
+						tooltip:Hide()
+						tooltip:ClearLines()
+						timings.cleanup = timings.cleanup + (GetTime() - step6Start)
+					end
+				end
+			end
+		end
+	end
+
+	local totalDuration = GetTime() - totalStartTime
+	print(string.format("|cffff00ffTEST|r === ATT PIPELINE BREAKDOWN RESULTS ==="))
+	print(string.format("|cffff00ffTEST|r Total items: %d, Total time: %.3fs", itemsProcessed, totalDuration))
+	print(string.format("|cffff00ffTEST|r Average per item: %.3fs",
+		itemsProcessed > 0 and (totalDuration / itemsProcessed) or 0))
+	print(string.format("|cffff00ffTEST|r"))
+	print(string.format("|cffff00ffTEST|r Step breakdown:"))
+	print(string.format("|cffff00ffTEST|r   Link generation: %.3fs (%.1f%%)", timings.linkGeneration,
+		(timings.linkGeneration / totalDuration) * 100))
+	print(string.format("|cffff00ffTEST|r   Tooltip setup:   %.3fs (%.1f%%)", timings.tooltipSetup,
+		(timings.tooltipSetup / totalDuration) * 100))
+	print(string.format("|cffff00ffTEST|r   Item setting:    %.3fs (%.1f%%)", timings.itemSetting,
+		(timings.itemSetting / totalDuration) * 100))
+	print(string.format("|cffff00ffTEST|r   ATT wait:        %.3fs (%.1f%%)", timings.attWait,
+		(timings.attWait / totalDuration) * 100))
+	print(string.format("|cffff00ffTEST|r   Parsing:         %.3fs (%.1f%%)", timings.parsing,
+		(timings.parsing / totalDuration) * 100))
+	print(string.format("|cffff00ffTEST|r   Cleanup:         %.3fs (%.1f%%)", timings.cleanup,
+		(timings.cleanup / totalDuration) * 100))
+	return itemsProcessed
 end
 
 -- ===== DEBOUNCING STATISTICS AND CLEANUP =====
@@ -2652,4 +3275,295 @@ function DOKI:ProcessItemsWithATTMicroChunking(bagItems)
 	end
 
 	return indicatorCount
+end
+
+-- Minimal test scan (no chunking, no complexity)
+function DOKI:MinimalTestScan()
+	print("|cffff00ffTEST|r === MINIMAL TEST SCAN START ===")
+	local startTime = GetTime()
+	-- Clear existing indicators first (simple)
+	if self.ClearAllButtonIndicators then
+		self:ClearAllButtonIndicators()
+	end
+
+	local indicatorCount = 0
+	local itemsProcessed = 0
+	-- Only scan the active bag system (no triple scanning)
+	local activeBagSystem = self:GetActiveBagSystem()
+	if not activeBagSystem then
+		print("|cffff00ffTEST|r No bags visible")
+		return 0
+	end
+
+	print(string.format("|cffff00ffTEST|r Active system: %s", activeBagSystem))
+	-- Scan only the active system
+	if activeBagSystem == "elvui" then
+		indicatorCount, itemsProcessed = self:MinimalScanElvUI()
+	elseif activeBagSystem == "combined" then
+		indicatorCount, itemsProcessed = self:MinimalScanCombined()
+	elseif activeBagSystem == "individual" then
+		indicatorCount, itemsProcessed = self:MinimalScanIndividual()
+	end
+
+	local duration = GetTime() - startTime
+	print(string.format("|cffff00ffTEST|r === MINIMAL TEST COMPLETE ==="))
+	print(string.format("|cffff00ffTEST|r %d items processed, %d indicators created in %.3fs",
+		itemsProcessed, indicatorCount, duration))
+	return indicatorCount
+end
+
+-- Minimal ElvUI scan
+function DOKI:MinimalScanElvUI()
+	local indicatorCount = 0
+	local itemsProcessed = 0
+	for bagID = 0, NUM_BAG_SLOTS do
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			for slotID = 1, numSlots do
+				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+				if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+					itemsProcessed = itemsProcessed + 1
+					-- Find button (simple)
+					local button = self:FindElvUIButton(bagID, slotID)
+					if button then
+						-- Test core functionality
+						if self:MinimalProcessItem(itemInfo.itemID, itemInfo.hyperlink, button) then
+							indicatorCount = indicatorCount + 1
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return indicatorCount, itemsProcessed
+end
+
+-- Minimal combined scan
+function DOKI:MinimalScanCombined()
+	local indicatorCount = 0
+	local itemsProcessed = 0
+	for bagID = 0, NUM_BAG_SLOTS do
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			for slotID = 1, numSlots do
+				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+				if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+					itemsProcessed = itemsProcessed + 1
+					-- Find button (simple)
+					local button = self:FindCombinedButton(bagID, slotID)
+					if button then
+						-- Test core functionality
+						if self:MinimalProcessItem(itemInfo.itemID, itemInfo.hyperlink, button) then
+							indicatorCount = indicatorCount + 1
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return indicatorCount, itemsProcessed
+end
+
+-- Minimal individual scan
+function DOKI:MinimalScanIndividual()
+	local indicatorCount = 0
+	local itemsProcessed = 0
+	for bagID = 0, NUM_BAG_SLOTS do
+		local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
+		if containerFrame and containerFrame:IsVisible() then
+			local numSlots = C_Container.GetContainerNumSlots(bagID)
+			if numSlots and numSlots > 0 then
+				for slotID = 1, numSlots do
+					local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+					if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+						itemsProcessed = itemsProcessed + 1
+						-- Find button (simple)
+						local button = self:FindIndividualButton(bagID, slotID)
+						if button then
+							-- Test core functionality
+							if self:MinimalProcessItem(itemInfo.itemID, itemInfo.hyperlink, button) then
+								indicatorCount = indicatorCount + 1
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return indicatorCount, itemsProcessed
+end
+
+-- Core item processing (the actual test)
+function DOKI:MinimalProcessItem(itemID, itemLink, button)
+	-- Step 1: Check if collectible (same as current)
+	if not self:IsCollectibleItem(itemID, itemLink) then
+		return false
+	end
+
+	-- Step 2: Check collection status (this includes ATT parsing)
+	local isCollected, hasOtherTransmogSources, isPartiallyCollected = self:IsItemCollected(itemID, itemLink)
+	-- Step 3: Create indicator if needed (same as current)
+	if not isCollected or isPartiallyCollected then
+		local itemData = {
+			itemID = itemID,
+			itemLink = itemLink,
+			isCollected = isCollected,
+			hasOtherTransmogSources = hasOtherTransmogSources,
+			isPartiallyCollected = isPartiallyCollected,
+			frameType = "test",
+		}
+		-- Test indicator creation
+		return self:CreateUniversalIndicator(button, itemData) > 0
+	end
+
+	return false
+end
+
+-- Simple button finders (no complex logic)
+function DOKI:FindElvUIButton(bagID, slotID)
+	local possibleNames = {
+		string.format("ElvUI_ContainerFrameBag%dSlot%dHash", bagID, slotID),
+		string.format("ElvUI_ContainerFrameBag%dSlot%d", bagID, slotID),
+		string.format("ElvUI_ContainerFrameBag%dSlot%dCenter", bagID, slotID),
+	}
+	for _, buttonName in ipairs(possibleNames) do
+		local button = _G[buttonName]
+		if button and button:IsVisible() then
+			return button
+		end
+	end
+
+	return nil
+end
+
+function DOKI:FindCombinedButton(bagID, slotID)
+	if not (ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown()) then
+		return nil
+	end
+
+	if ContainerFrameCombinedBags.EnumerateValidItems then
+		for _, itemButton in ContainerFrameCombinedBags:EnumerateValidItems() do
+			if itemButton and itemButton:IsVisible() then
+				local buttonBagID, buttonSlotID = nil, nil
+				if itemButton.GetBagID and itemButton.GetID then
+					local success1, bag = pcall(itemButton.GetBagID, itemButton)
+					local success2, slot = pcall(itemButton.GetID, itemButton)
+					if success1 and success2 then
+						buttonBagID, buttonSlotID = bag, slot
+					end
+				end
+
+				if buttonBagID == bagID and buttonSlotID == slotID then
+					return itemButton
+				end
+			end
+		end
+	end
+
+	return nil
+end
+
+function DOKI:FindIndividualButton(bagID, slotID)
+	local possibleNames = {
+		string.format("ContainerFrame%dItem%d", bagID + 1, slotID),
+		string.format("ContainerFrame%dItem%dButton", bagID + 1, slotID),
+	}
+	for _, buttonName in ipairs(possibleNames) do
+		local button = _G[buttonName]
+		if button and button:IsVisible() then
+			return button
+		end
+	end
+
+	return nil
+end
+
+-- ==================================================================
+-- STEP 2: ADD TEST VERSIONS WITH ISOLATED COMPONENTS
+-- ==================================================================
+-- Test 1: ATT parsing only (no indicators)
+function DOKI:TestATTParsingOnly()
+	print("|cffff00ffTEST|r === ATT PARSING ONLY TEST ===")
+	local startTime = GetTime()
+	local itemsProcessed = 0
+	-- Scan items but don't create indicators
+	local activeBagSystem = self:GetActiveBagSystem()
+	if not activeBagSystem then return 0 end
+
+	for bagID = 0, NUM_BAG_SLOTS do
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			for slotID = 1, numSlots do
+				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+				if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+					itemsProcessed = itemsProcessed + 1
+					-- Only test ATT parsing
+					if self:IsCollectibleItem(itemInfo.itemID, itemInfo.hyperlink) then
+						local isCollected = self:IsItemCollected(itemInfo.itemID, itemInfo.hyperlink)
+						-- Do nothing with the result - just parse
+					end
+				end
+			end
+		end
+	end
+
+	local duration = GetTime() - startTime
+	print(string.format("|cffff00ffTEST|r ATT parsing only: %d items in %.3fs", itemsProcessed, duration))
+	return itemsProcessed
+end
+
+-- Test 2: Indicator creation only (no ATT)
+function DOKI:TestIndicatorCreationOnly()
+	print("|cffff00ffTEST|r === INDICATOR CREATION ONLY TEST ===")
+	local startTime = GetTime()
+	local indicatorsCreated = 0
+	-- Clear existing first
+	if self.ClearAllButtonIndicators then
+		self:ClearAllButtonIndicators()
+	end
+
+	-- Find all buttons and create test indicators (no ATT parsing)
+	local activeBagSystem = self:GetActiveBagSystem()
+	if not activeBagSystem then return 0 end
+
+	for bagID = 0, NUM_BAG_SLOTS do
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			for slotID = 1, numSlots do
+				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+				if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+					local button = nil
+					if activeBagSystem == "elvui" then
+						button = self:FindElvUIButton(bagID, slotID)
+					elseif activeBagSystem == "combined" then
+						button = self:FindCombinedButton(bagID, slotID)
+					elseif activeBagSystem == "individual" then
+						button = self:FindIndividualButton(bagID, slotID)
+					end
+
+					if button then
+						-- Create test indicator (no collection checking)
+						local testItemData = {
+							itemID = itemInfo.itemID,
+							itemLink = itemInfo.hyperlink,
+							isCollected = false, -- Always create indicator
+							hasOtherTransmogSources = false,
+							isPartiallyCollected = false,
+							frameType = "test",
+						}
+						if self:CreateUniversalIndicator(button, testItemData) > 0 then
+							indicatorsCreated = indicatorsCreated + 1
+						end
+					end
+				end
+			end
+		end
+	end
+
+	local duration = GetTime() - startTime
+	print(string.format("|cffff00ffTEST|r Indicator creation only: %d indicators in %.3fs", indicatorsCreated, duration))
+	return indicatorsCreated
 end
