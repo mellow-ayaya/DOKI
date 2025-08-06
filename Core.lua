@@ -67,13 +67,6 @@ frame:SetScript("OnEvent", OnEvent)
 SLASH_DOKI1 = "/doki"
 SlashCmdList["DOKI"] = function(msg)
 	local command = string.lower(strtrim(msg or ""))
-	-- Parse command and parameters
-	local cmd, params = string.match(command, "^(%S+)%s*(.*)")
-	if not cmd then
-		cmd = command
-		params = ""
-	end
-
 	if command == "toggle" then
 		DOKI.db.enabled = not DOKI.db.enabled
 		local status = DOKI.db.enabled and "|cff00ff00enabled|r" or "|cffff0000disabled|r"
@@ -580,7 +573,7 @@ SlashCmdList["DOKI"] = function(msg)
 		end
 
 		print("|cffff69b4DOKI|r === END TRACE ===")
-	elseif command == "testattold" then
+	elseif command == "testatt" then
 		if not DOKI.db.attMode then
 			print("|cffff69b4DOKI|r ATT mode is disabled. Enable with /doki att")
 			return
@@ -965,137 +958,6 @@ SlashCmdList["DOKI"] = function(msg)
 			DOKI:DebugFoundFrames()
 		else
 			print("|cffff69b4DOKI|r DebugFoundFrames function not available")
-		end
-	elseif command == "testmode" then
-		if DOKI:IsInTestingMode() then
-			DOKI:ExitTestingMode()
-		else
-			DOKI:EnterTestingMode()
-		end
-	elseif command == "testminimal" or command == "tmin" then
-		if not DOKI:IsInTestingMode() then
-			print("|cffff69b4DOKI|r Please enter testing mode first: /doki testmode")
-			return
-		end
-
-		if DOKI.MinimalTestScan then
-			DOKI:MinimalTestScan()
-		else
-			print("|cffff69b4DOKI|r Minimal test not available")
-		end
-	elseif cmd == "testatt" or cmd == "tatt" then
-		if not DOKI:IsInTestingMode() then
-			print("|cffff69b4DOKI|r Please enter testing mode first: /doki testmode")
-			return
-		end
-
-		-- Use parameters as bag specification (empty = "all")
-		local bagSpec = strtrim(params)
-		if bagSpec == "" then
-			bagSpec = "all"
-		end
-
-		print(string.format("|cffff69b4DOKI|r Running ATT test on bags: %s", bagSpec))
-		if DOKI.TestATTParsingOnlySelective then
-			DOKI:TestATTParsingOnlySelective(bagSpec)
-		else
-			print("|cffff69b4DOKI|r Selective ATT parsing test not available")
-		end
-	elseif cmd == "testindicators" or cmd == "tind" then
-		if not DOKI:IsInTestingMode() then
-			print("|cffff69b4DOKI|r Please enter testing mode first: /doki testmode")
-			return
-		end
-
-		-- Use parameters as bag specification (empty = "all")
-		local bagSpec = strtrim(params)
-		if bagSpec == "" then
-			bagSpec = "all"
-		end
-
-		print(string.format("|cffff69b4DOKI|r Running indicator test on bags: %s", bagSpec))
-		if DOKI.TestIndicatorCreationOnlySelective then
-			DOKI:TestIndicatorCreationOnlySelective(bagSpec)
-		else
-			print("|cffff69b4DOKI|r Selective indicator test not available")
-		end
-	elseif cmd == "testminimal" or cmd == "tmin" then
-		if not DOKI:IsInTestingMode() then
-			print("|cffff69b4DOKI|r Please enter testing mode first: /doki testmode")
-			return
-		end
-
-		-- Use parameters as bag specification (empty = "all")
-		local bagSpec = strtrim(params)
-		if bagSpec == "" then
-			bagSpec = "all"
-		end
-
-		print(string.format("|cffff69b4DOKI|r Running minimal test on bags: %s", bagSpec))
-		if DOKI.MinimalTestScanSelective then
-			DOKI:MinimalTestScanSelective(bagSpec)
-		else
-			print("|cffff69b4DOKI|r Selective minimal test not available")
-		end
-	elseif cmd == "testlinks" then
-		if not DOKI:IsInTestingMode() then
-			print("|cffff69b4DOKI|r Please enter testing mode first: /doki testmode")
-			return
-		end
-
-		local bagSpec = strtrim(params)
-		if bagSpec == "" then bagSpec = "all" end
-
-		if DOKI.TestItemLinkGenerationOnly then
-			DOKI:TestItemLinkGenerationOnly(bagSpec)
-		end
-	elseif cmd == "testtooltips" then
-		if not DOKI:IsInTestingMode() then
-			print("|cffff69b4DOKI|r Please enter testing mode first: /doki testmode")
-			return
-		end
-
-		local bagSpec = strtrim(params)
-		if bagSpec == "" then bagSpec = "all" end
-
-		if DOKI.TestTooltipCreationOnly then
-			DOKI:TestTooltipCreationOnly(bagSpec)
-		end
-	elseif cmd == "testsetting" then
-		if not DOKI:IsInTestingMode() then
-			print("|cffff69b4DOKI|r Please enter testing mode first: /doki testmode")
-			return
-		end
-
-		local bagSpec = strtrim(params)
-		if bagSpec == "" then bagSpec = "all" end
-
-		if DOKI.TestTooltipItemSettingOnly then
-			DOKI:TestTooltipItemSettingOnly(bagSpec)
-		end
-	elseif cmd == "testparsing" then
-		if not DOKI:IsInTestingMode() then
-			print("|cffff69b4DOKI|r Please enter testing mode first: /doki testmode")
-			return
-		end
-
-		local bagSpec = strtrim(params)
-		if bagSpec == "" then bagSpec = "all" end
-
-		if DOKI.TestTooltipParsingOnly then
-			DOKI:TestTooltipParsingOnly(bagSpec)
-		end
-	elseif cmd == "testbreakdown" then
-		if not DOKI:IsInTestingMode() then
-			print("|cffff69b4DOKI|r Please enter testing mode first: /doki testmode")
-			return
-		end
-
-		local bagSpec = strtrim(params)
-		if bagSpec == "" then bagSpec = "all" end
-
-		if DOKI.TestATTFullPipelineBreakdown then
-			DOKI:TestATTFullPipelineBreakdown(bagSpec)
 		end
 	elseif string.find(command, "why ") then
 		-- Trace why an item gets/doesn't get an indicator - /doki why 12345

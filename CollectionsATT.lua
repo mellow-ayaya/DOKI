@@ -818,3 +818,462 @@ function DOKI:DebugATTBagScan(maxItems)
 
 	print(string.format("|cffff69b4DOKI|r Initiated async scan of %d slots...", #slotsToScan))
 end
+
+-- ATT Integration - Fixed Async Tooltip Priming Solution
+-- Add this to your CollectionsATT.lua file
+-- Enhanced ATT Status function with proper tooltip priming
+local function GetATTStatusAsync(itemID, itemLink, callback)
+	if not itemLink or not callback then
+		if callback then callback(nil, "INVALID_INPUT") end
+
+		return
+	end
+
+	local tooltip = GameTooltip -- Use the REAL GameTooltip
+	-- 1. Store the original script handler
+	local originalOnSetItem = tooltip:GetScript("OnTooltipSetItem")
+	-- 2. Set our temporary script
+	tooltip:SetScript("OnTooltipSetItem", function(self)
+		-- The data is now "hot" and primed for ATT
+		-- Restore the original script handler immediately
+		self:SetScript("OnTooltipSetItem", originalOnSetItem)
+		self:Hide()
+		-- Now call ATT Internal API with primed data
+		local isCollected, hasOtherSources, isPartiallyCollected, debugInfo = GetATTCollectionStatusInternal(itemID, itemLink)
+		-- Pass the results back to the caller
+		callback(isCollected, hasOtherSources, isPartiallyCollected, debugInfo)
+	end)
+	-- 3. Prime the data invisibly (no visual rendering overhead)
+	tooltip:SetOwner(UIParent, "ANCHOR_NONE")
+	tooltip:SetHyperlink(itemLink)
+	tooltip:Hide() -- Hide immediately - this prevents visual rendering but keeps data primed
+end
+
+-- Your existing GetATTCollectionStatusInternal function (from paste.txt)
+function GetATTCollectionStatusInternal(itemID, itemLink)
+	-- Ensure ATT is available
+	local ATT = _G["AllTheThings"]
+	if not ATT or not ATT.SearchForLink or not ATT.ProcessInformationTypesForExternalTooltips then
+		return nil, "ATT_API_NOT_AVAILABLE"
+	end
+
+	-- Need itemLink for SearchForLink
+	if not itemLink then
+		return nil, "NO_ITEMLINK"
+	end
+
+	-- STEP 1: Search for item data using hyperlink (data is now primed!)
+	local status, group = pcall(ATT.SearchForLink, itemLink)
+	if not status or not group then
+		return nil, "NO_ATT_DATA"
+	end
+
+	-- STEP 2: Process the group to get tooltip information
+	local tooltipLines = {}
+	local processStatus = pcall(ATT.ProcessInformationTypesForExternalTooltips, tooltipLines, group)
+	if not processStatus then
+		return nil, "PROCESSING_FAILED"
+	end
+
+	-- STEP 3: Parse the structured tooltip data
+	local isCollected = nil
+	local hasOtherSources = false
+	local isPartiallyCollected = false
+	local debugInfo = {}
+	for i, lineData in ipairs(tooltipLines) do
+		local leftText = lineData.left or ""
+		local rightText = lineData.right or ""
+		local color = lineData.color
+		-- Debug info
+		if DOKI and DOKI.db and DOKI.db.debugMode then
+			table.insert(debugInfo, string.format("Line %d: L='%s' R='%s' Color=%s",
+				i, leftText, rightText, color or "nil"))
+		end
+
+		-- Look for collection status indicators
+		-- Method 1: Text-based detection
+		if leftText:find("Not Collected") or rightText:find("Not Collected") then
+			isCollected = false
+			table.insert(debugInfo, "Found 'Not Collected' text")
+			break
+		elseif leftText:find("Collected") or rightText:find("Collected") then
+			-- Look for fraction patterns like "2/2 (100%)"
+			local current, total = rightText:match("(%d+)%s*/%s*(%d+)")
+			if current and total then
+				current, total = tonumber(current), tonumber(total)
+				if current and total then
+					if current >= total then
+						isCollected = true
+					elseif current > 0 then
+						isCollected = false
+						isPartiallyCollected = true
+					else
+						isCollected = false
+					end
+
+					table.insert(debugInfo, string.format("Found fraction: %d/%d", current, total))
+					break
+				end
+			else
+				isCollected = true
+				table.insert(debugInfo, "Found 'Collected' text")
+				break
+			end
+		end
+
+		-- Method 2: Symbol detection (same as your current parsing)
+		local combinedText = leftText .. " " .. rightText
+		if combinedText:find("❌") or combinedText:find("✗") then
+			isCollected = false
+			table.insert(debugInfo, "Found X symbol")
+			break
+		elseif combinedText:find("✅") or combinedText:find("✓") then
+			isCollected = true
+			table.insert(debugInfo, "Found checkmark symbol")
+			break
+		elseif combinedText:find("💎") then
+			-- Diamond symbol for currency items
+			if combinedText:find("Collected") then
+				local currentCount, totalCount = rightText:match("(%d+)%s*/%s*(%d+)")
+				if currentCount and totalCount then
+					currentCount, totalCount = tonumber(currentCount), tonumber(totalCount)
+					if currentCount and totalCount then
+						isCollected = (currentCount >= totalCount)
+						isPartiallyCollected = (currentCount > 0 and currentCount < totalCount)
+						table.insert(debugInfo, string.format("Found diamond currency: %d/%d", currentCount, totalCount))
+						break
+					end
+				end
+			end
+		end
+	end
+
+	return isCollected, hasOtherSources, isPartiallyCollected, debugInfo
+end
+
+-- Replace your current DOKI:GetATTCollectionStatusDirect function with this:
+function DOKI:GetATTCollectionStatusDirect(itemID, itemLink)
+	if not itemID then return nil, nil, nil end
+
+	-- Check cache first (use your existing cache system)
+	local cachedIsCollected, cachedHasOtherSources, cachedIsPartiallyCollected = self:GetCachedATTStatus(itemID, itemLink)
+	if cachedIsCollected == "NO_ATT_DATA" then
+		return "NO_ATT_DATA", nil, nil
+	elseif cachedIsCollected ~= nil then
+		return cachedIsCollected, cachedHasOtherSources, cachedIsPartiallyCollected
+	end
+
+	-- Check if item data is loaded (your existing logic)
+	local itemName = C_Item.GetItemInfo(itemID)
+	if not itemName or itemName == "" then
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r ATT Direct: Item %d data not loaded, requesting...", itemID))
+		end
+
+		C_Item.RequestLoadItemDataByID(itemID)
+		return nil, nil, nil -- Still processing
+	end
+
+	-- Check if itemLink is complete (your existing logic)
+	if itemLink and not self:IsItemLinkComplete(itemLink) then
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r ATT Direct: ItemLink incomplete for ID %d", itemID))
+		end
+
+		-- Try fallback (your existing logic)
+		local _, fallbackItemLink = C_Item.GetItemInfo(itemID)
+		if fallbackItemLink and self:IsItemLinkComplete(fallbackItemLink) then
+			itemLink = fallbackItemLink
+		else
+			return nil, nil, nil -- Still processing
+		end
+	end
+
+	-- Use the async tooltip priming approach (this is the key fix!)
+	GetATTStatusAsync(itemID, itemLink, function(isCollected, hasOtherSources, isPartiallyCollected, debugInfo)
+		-- Cache the result
+		if isCollected ~= nil then
+			DOKI:SetCachedATTStatus(itemID, itemLink, isCollected, hasOtherSources, isPartiallyCollected)
+			if DOKI.db and DOKI.db.debugMode then
+				local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+				local result = isCollected and "COLLECTED" or (isPartiallyCollected and "PARTIAL" or "NOT_COLLECTED")
+				print(string.format("|cffff69b4DOKI|r ATT Direct: %s (ID: %d) -> %s", itemName, itemID, result))
+				-- Debug info from ATT parsing
+				if debugInfo then
+					for _, info in ipairs(debugInfo) do
+						print(string.format("|cffff69b4DOKI|r   %s", info))
+					end
+				end
+			end
+		else
+			-- No ATT data found
+			DOKI:SetCachedATTStatus(itemID, itemLink, nil, nil, nil) -- Cache "no data" result
+		end
+
+		-- Since this is async, you may need to trigger a UI update here
+		-- depending on how your addon works
+		if DOKI.TriggerImmediateSurgicalUpdate then
+			DOKI:TriggerImmediateSurgicalUpdate()
+		end
+	end)
+	-- Return "processing" status for now - the callback will handle the actual result
+	return nil, nil, nil
+end
+
+-- ATT Internal API - Fixed Implementation
+-- Uses your existing item loading system instead of broken tooltip scripts
+-- Core ATT internal API function (no changes needed)
+local function GetATTCollectionStatusInternal(itemID, itemLink)
+	-- Ensure ATT is available
+	local ATT = _G["AllTheThings"]
+	if not ATT or not ATT.SearchForLink or not ATT.ProcessInformationTypesForExternalTooltips then
+		return nil, "ATT_API_NOT_AVAILABLE"
+	end
+
+	-- Need itemLink for SearchForLink
+	if not itemLink then
+		return nil, "NO_ITEMLINK"
+	end
+
+	-- STEP 1: Search for item data using hyperlink
+	local status, group = pcall(ATT.SearchForLink, itemLink)
+	if not status or not group then
+		return nil, "NO_ATT_DATA"
+	end
+
+	-- STEP 2: Process the group to get tooltip information
+	local tooltipLines = {}
+	local processStatus = pcall(ATT.ProcessInformationTypesForExternalTooltips, tooltipLines, group)
+	if not processStatus then
+		return nil, "PROCESSING_FAILED"
+	end
+
+	-- STEP 3: Parse the structured tooltip data
+	local isCollected = nil
+	local hasOtherSources = false
+	local isPartiallyCollected = false
+	local debugInfo = {}
+	for i, lineData in ipairs(tooltipLines) do
+		local leftText = lineData.left or ""
+		local rightText = lineData.right or ""
+		local color = lineData.color
+		-- Debug info
+		if DOKI and DOKI.db and DOKI.db.debugMode then
+			table.insert(debugInfo, string.format("Line %d: L='%s' R='%s' Color=%s",
+				i, leftText, rightText, color or "nil"))
+		end
+
+		-- Look for collection status indicators
+		-- Method 1: Text-based detection (same as your current parsing)
+		if leftText:find("Not Collected") or rightText:find("Not Collected") then
+			isCollected = false
+			table.insert(debugInfo, "Found 'Not Collected' text")
+			break
+		elseif leftText:find("Collected") or rightText:find("Collected") then
+			-- Look for fraction patterns like "2/2 (100%)"
+			local current, total = rightText:match("(%d+)%s*/%s*(%d+)")
+			if current and total then
+				current, total = tonumber(current), tonumber(total)
+				if current and total then
+					if current >= total then
+						isCollected = true
+					elseif current > 0 then
+						isCollected = false
+						isPartiallyCollected = true
+					else
+						isCollected = false
+					end
+
+					table.insert(debugInfo, string.format("Found fraction: %d/%d", current, total))
+					break
+				end
+			else
+				isCollected = true
+				table.insert(debugInfo, "Found 'Collected' text")
+				break
+			end
+		end
+
+		-- Method 2: Symbol detection (same as your current parsing)
+		local combinedText = leftText .. " " .. rightText
+		if combinedText:find("❌") or combinedText:find("✗") then
+			isCollected = false
+			table.insert(debugInfo, "Found X symbol")
+			break
+		elseif combinedText:find("✅") or combinedText:find("✓") then
+			isCollected = true
+			table.insert(debugInfo, "Found checkmark symbol")
+			break
+		elseif combinedText:find("💎") then
+			-- Diamond symbol for currency items
+			if combinedText:find("Collected") then
+				local currentCount, totalCount = rightText:match("(%d+)%s*/%s*(%d+)")
+				if currentCount and totalCount then
+					currentCount, totalCount = tonumber(currentCount), tonumber(totalCount)
+					if currentCount and totalCount then
+						isCollected = (currentCount >= totalCount)
+						isPartiallyCollected = (currentCount > 0 and currentCount < totalCount)
+						table.insert(debugInfo, string.format("Found diamond currency: %d/%d", currentCount, totalCount))
+						break
+					end
+				end
+			end
+		end
+	end
+
+	return isCollected, hasOtherSources, isPartiallyCollected, debugInfo
+end
+
+-- NEW: Direct replacement for your current ATT function
+-- This integrates with your existing item loading system
+-- Test function using your existing item loading system
+local function TestATTDirectIntegration(itemID)
+	if not DOKI then
+		print("|cff00ff00ATTFIX|r DOKI addon not found")
+		return
+	end
+
+	itemID = itemID or 32458 -- Default to Ashes of Al'ar
+	print(string.format("|cff00ff00ATTFIX|r === TESTING ATT DIRECT INTEGRATION FOR ITEM %d ===", itemID))
+	local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+	print(string.format("Item: %s (ID: %d)", itemName, itemID))
+	-- Try to find this item in bags to get real itemLink
+	local itemLink = nil
+	for bagID = 0, NUM_BAG_SLOTS do
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			for slotID = 1, numSlots do
+				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+				if itemInfo and itemInfo.itemID == itemID then
+					itemLink = C_Container.GetContainerItemLink(bagID, slotID)
+					break
+				end
+			end
+		end
+
+		if itemLink then break end
+	end
+
+	if not itemLink then
+		-- Try to get generic itemlink
+		local _, fallbackLink = C_Item.GetItemInfo(itemID)
+		itemLink = fallbackLink
+	end
+
+	print(string.format("ItemLink: %s", itemLink and (itemLink:sub(1, 80) .. "...") or "Not found"))
+	-- Test new direct method
+	print("\n--- NEW ATT DIRECT METHOD ---")
+	local startTime = GetTime()
+	local directResult, directOther, directPartial = DOKI:GetATTCollectionStatusDirect(itemID, itemLink)
+	local directDuration = GetTime() - startTime
+	print(string.format("Direct result: %s (hasOther: %s, partial: %s) [%.4fs]",
+		tostring(directResult), tostring(directOther), tostring(directPartial), directDuration))
+	-- Compare with your current method
+	print("\n--- CURRENT TOOLTIP METHOD ---")
+	local currentStart = GetTime()
+	local currentResult = DOKI:GetATTCollectionStatus(itemID, itemLink)
+	local currentDuration = GetTime() - currentStart
+	print(string.format("Current result: %s [%.4fs]", tostring(currentResult), currentDuration))
+	-- Performance comparison
+	if directDuration > 0 and currentDuration > 0 then
+		local speedup = currentDuration / directDuration
+		print(string.format("Performance: %.1fx speedup", speedup))
+	end
+
+	-- Result comparison
+	if directResult == currentResult or (directResult == false and currentResult == false) or (directResult == true and currentResult == true) then
+		print("✅ RESULTS MATCH")
+	else
+		print("❌ RESULTS DIFFER")
+		print(string.format("   Direct: %s vs Current: %s", tostring(directResult), tostring(currentResult)))
+	end
+
+	print("|cff00ff00ATTFIX|r === END INTEGRATION TEST ===")
+end
+
+-- Test with bag items using your existing async loading
+local function TestBagItemsDirect(maxItems)
+	if not DOKI then
+		print("|cff00ff00ATTFIX|r DOKI addon not found")
+		return
+	end
+
+	maxItems = maxItems or 3
+	print(string.format("|cff00ff00ATTFIX|r === TESTING %d BAG ITEMS WITH ATT DIRECT ===", maxItems))
+	local itemsFound = 0
+	local processedCount = 0
+	local totalDuration = 0
+	for bagID = 0, NUM_BAG_SLOTS do
+		if itemsFound >= maxItems then break end
+
+		local numSlots = C_Container.GetContainerNumSlots(bagID)
+		if numSlots and numSlots > 0 then
+			for slotID = 1, numSlots do
+				if itemsFound >= maxItems then break end
+
+				local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+				if itemInfo and itemInfo.itemID then
+					itemsFound = itemsFound + 1
+					-- Use your existing async item loading system
+					DOKI:GetItemLinkWhenReady(bagID, slotID, function(itemID, itemLink, success)
+						processedCount = processedCount + 1
+						local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+						print(string.format("\n--- Item %d: %s ---", processedCount, itemName))
+						if success and itemLink then
+							local startTime = GetTime()
+							local isCollected, hasOther, isPartial = DOKI:GetATTCollectionStatusDirect(itemID, itemLink)
+							local duration = GetTime() - startTime
+							totalDuration = totalDuration + duration
+							if isCollected == "NO_ATT_DATA" then
+								print(string.format("  Result: NO ATT DATA (%.4fs)", duration))
+							elseif isCollected ~= nil then
+								local status = isCollected and "COLLECTED" or "NOT COLLECTED"
+								if isPartial then status = status .. " (PARTIAL)" end
+
+								if hasOther then status = status .. " (OTHER SOURCES)" end
+
+								print(string.format("  Result: %s (%.4fs)", status, duration))
+							else
+								print(string.format("  Result: STILL PROCESSING (%.4fs)", duration))
+							end
+						else
+							print("  Result: FAILED TO LOAD ITEM DATA")
+						end
+
+						-- Show summary when all items are processed
+						if processedCount >= maxItems then
+							print(string.format("\nSummary: %d items processed, average %.4fs per item",
+								processedCount, totalDuration / math.max(1, processedCount)))
+							print("|cff00ff00ATTFIX|r === END BAG ITEMS TEST ===")
+						end
+					end)
+				end
+			end
+		end
+	end
+
+	if itemsFound == 0 then
+		print("No items found in bags to test")
+	end
+end
+
+-- Simple slash commands
+SLASH_ATTFIX1 = "/attfix"
+SlashCmdList["ATTFIX"] = function(msg)
+	local args = { strsplit(" ", msg) }
+	local command = args[1] and strlower(args[1]) or ""
+	if command == "test" then
+		local itemID = tonumber(args[2]) or 32458
+		TestATTDirectIntegration(itemID)
+	elseif command == "bags" then
+		local maxItems = tonumber(args[2]) or 3
+		TestBagItemsDirect(maxItems)
+	else
+		print("|cff00ff00ATTFIX|r Available commands:")
+		print("/attfix test [itemID] - Test direct ATT integration (default: 32458)")
+		print("/attfix bags [count] - Test bag items with direct method (default: 3)")
+		print("")
+		print("This uses your existing item loading system - no broken tooltip scripts!")
+	end
+end
+print("|cff00ff00ATTFIX|r ATT Direct Integration (fixed) loaded. Try /attfix")
