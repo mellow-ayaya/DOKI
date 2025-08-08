@@ -410,52 +410,13 @@ function DOKI:GetATTCollectionStatus(itemID, itemLink)
 			end
 		end
 
-		-- Trigger UI update - use full rescan to create indicators
-		C_Timer.After(0.1, function()
+		-- NEW: Create indicators directly instead of triggering full rescan
+		C_Timer.After(0.05, function() -- Small delay to ensure button state is stable
 			if DOKI and DOKI.db and DOKI.db.enabled then
-				-- Check if any UI is visible before rescanning
-				local anyUIVisible = false
-				-- Check ElvUI
-				if ElvUI and DOKI:IsElvUIBagVisible() then
-					anyUIVisible = true
-				end
-
-				-- Check Blizzard bags
-				if not anyUIVisible then
-					if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
-						anyUIVisible = true
-					else
-						for bagID = 0, NUM_BAG_SLOTS do
-							local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
-							if containerFrame and containerFrame:IsVisible() then
-								anyUIVisible = true
-								break
-							end
-						end
-					end
-				end
-
-				-- Check merchant
-				if not anyUIVisible and MerchantFrame and MerchantFrame:IsVisible() then
-					anyUIVisible = true
-				end
-
-				if anyUIVisible then
-					-- Trigger full scan to create indicators for newly processed ATT items
-					if DOKI.ScanBagFrames then
-						local indicatorCount = DOKI:ScanBagFrames()
-						if DOKI.db and DOKI.db.debugMode and indicatorCount > 0 then
-							print(string.format("|cffff69b4DOKI|r ATT callback created %d indicators", indicatorCount))
-						end
-					end
-
-					-- Also scan merchant if visible
-					if MerchantFrame and MerchantFrame:IsVisible() and DOKI.ScanMerchantFrames then
-						local merchantCount = DOKI:ScanMerchantFrames()
-						if DOKI.db and DOKI.db.debugMode and merchantCount > 0 then
-							print(string.format("|cffff69b4DOKI|r ATT callback created %d merchant indicators", merchantCount))
-						end
-					end
+				local indicatorsCreated = DOKI:CreateATTIndicatorDirectly(itemID, itemLink, isCollected, hasOtherSources,
+					isPartiallyCollected)
+				if DOKI.db and DOKI.db.debugMode then
+					print(string.format("|cffff69b4DOKI|r ATT callback: %d indicators created directly", indicatorsCreated))
 				end
 			end
 		end)
@@ -547,4 +508,176 @@ SlashCmdList["DOKIATTSTREAM"] = function(msg)
 		print("")
 		print("FINAL FIX: Borrows real GameTooltip!")
 	end
+end
+-- Add this new function to find the button for a specific item
+function DOKI:FindButtonForItem(targetItemID, targetItemLink)
+	local foundButtons = {}
+	-- Search ElvUI bags
+	if ElvUI and self:IsElvUIBagVisible() then
+		for bagID = 0, NUM_BAG_SLOTS do
+			local numSlots = C_Container.GetContainerNumSlots(bagID)
+			if numSlots and numSlots > 0 then
+				for slotID = 1, numSlots do
+					local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+					if itemInfo and itemInfo.itemID == targetItemID then
+						-- Check if itemLink matches for battlepets
+						if not targetItemLink or not string.find(targetItemLink, "battlepet:") or
+								itemInfo.hyperlink == targetItemLink then
+							local possibleNames = {
+								string.format("ElvUI_ContainerFrameBag%dSlot%dHash", bagID, slotID),
+								string.format("ElvUI_ContainerFrameBag%dSlot%d", bagID, slotID),
+								string.format("ElvUI_ContainerFrameBag%dSlot%dCenter", bagID, slotID),
+							}
+							for _, buttonName in ipairs(possibleNames) do
+								local button = _G[buttonName]
+								if button and button:IsVisible() then
+									table.insert(foundButtons, button)
+									break
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	-- Search Blizzard combined bags
+	if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
+		for bagID = 0, NUM_BAG_SLOTS do
+			local numSlots = C_Container.GetContainerNumSlots(bagID)
+			if numSlots and numSlots > 0 then
+				for slotID = 1, numSlots do
+					local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+					if itemInfo and itemInfo.itemID == targetItemID then
+						if not targetItemLink or not string.find(targetItemLink, "battlepet:") or
+								itemInfo.hyperlink == targetItemLink then
+							-- Find button in combined bags
+							if ContainerFrameCombinedBags.EnumerateValidItems then
+								for _, itemButton in ContainerFrameCombinedBags:EnumerateValidItems() do
+									if itemButton and itemButton:IsVisible() then
+										local buttonBagID, buttonSlotID = nil, nil
+										if itemButton.GetBagID and itemButton.GetID then
+											local bagIDSuccess, retrievedBagID = pcall(itemButton.GetBagID, itemButton)
+											local slotIDSuccess, retrievedSlotID = pcall(itemButton.GetID, itemButton)
+											if bagIDSuccess and slotIDSuccess then
+												buttonBagID, buttonSlotID = retrievedBagID, retrievedSlotID
+											end
+										end
+
+										if buttonBagID == bagID and buttonSlotID == slotID then
+											table.insert(foundButtons, itemButton)
+											break
+										end
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	-- Search individual container frames
+	for bagID = 0, NUM_BAG_SLOTS do
+		local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
+		if containerFrame and containerFrame:IsVisible() then
+			local numSlots = C_Container.GetContainerNumSlots(bagID)
+			if numSlots and numSlots > 0 then
+				for slotID = 1, numSlots do
+					local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+					if itemInfo and itemInfo.itemID == targetItemID then
+						if not targetItemLink or not string.find(targetItemLink, "battlepet:") or
+								itemInfo.hyperlink == targetItemLink then
+							local possibleNames = {
+								string.format("ContainerFrame%dItem%d", bagID + 1, slotID),
+								string.format("ContainerFrame%dItem%dButton", bagID + 1, slotID),
+							}
+							for _, buttonName in ipairs(possibleNames) do
+								local button = _G[buttonName]
+								if button and button:IsVisible() then
+									table.insert(foundButtons, button)
+									break
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	-- Search merchant frames
+	if MerchantFrame and MerchantFrame:IsVisible() then
+		for i = 1, 12 do
+			local possibleButtonNames = {
+				string.format("MerchantItem%dItemButton", i),
+				string.format("MerchantItem%d", i),
+			}
+			for _, buttonName in ipairs(possibleButtonNames) do
+				local button = _G[buttonName]
+				if button and button:IsVisible() then
+					local itemID, itemLink = self:GetItemFromMerchantButton(button, i)
+					if itemID == targetItemID then
+						if not targetItemLink or itemLink == targetItemLink then
+							table.insert(foundButtons, button)
+						end
+					end
+
+					break
+				end
+			end
+		end
+	end
+
+	return foundButtons
+end
+
+-- Replace the callback in GetATTStatusAsync with this version:
+-- This should go in CollectionsATT.lua, replacing the existing callback section
+function DOKI:CreateATTIndicatorDirectly(itemID, itemLink, isCollected, hasOtherSources, isPartiallyCollected)
+	-- Don't create indicator if ATT has no data for this item (isCollected = nil means no ATT data)
+	if isCollected == nil then
+		if self.db and self.db.debugMode then
+			local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+			print(string.format("|cffff69b4DOKI|r ATT: %s has no ATT data, no indicator needed", itemName))
+		end
+
+		return 0
+	end
+
+	-- Don't create indicator if item is collected and not partial
+	if isCollected and not isPartiallyCollected then
+		if self.db and self.db.debugMode then
+			local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+			print(string.format("|cffff69b4DOKI|r ATT: %s is collected, no indicator needed", itemName))
+		end
+
+		return 0
+	end
+
+	-- Find all buttons for this item
+	local buttons = self:FindButtonForItem(itemID, itemLink)
+	local indicatorsCreated = 0
+	for _, button in ipairs(buttons) do
+		local itemData = {
+			itemID = itemID,
+			itemLink = itemLink,
+			isCollected = isCollected,
+			hasOtherTransmogSources = hasOtherSources,
+			isPartiallyCollected = isPartiallyCollected,
+			frameType = "att_callback",
+		}
+		if self:AddButtonIndicator(button, itemData) then
+			indicatorsCreated = indicatorsCreated + 1
+		end
+	end
+
+	if self.db and self.db.debugMode and indicatorsCreated > 0 then
+		local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+		print(string.format("|cffff69b4DOKI|r ATT: Created %d indicators for %s", indicatorsCreated, itemName))
+	end
+
+	return indicatorsCreated
 end
