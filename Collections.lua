@@ -24,6 +24,10 @@ DOKI.pendingSurgicalUpdate = false
 -- Enhanced scanning system variables
 DOKI.delayedScanTimer = nil
 DOKI.delayedScanCancelled = false
+local scanWorkQueue = {}
+local isScanProcessing = false
+local scanProcessFrame = nil
+local ITEMS_PER_FRAME = 5 -- Process 5 items per frame (adjust based on performance)
 -- Enhanced cache system with specific cache types
 DOKI.collectionCache = DOKI.collectionCache or {}
 DOKI.cacheStats = {
@@ -141,6 +145,351 @@ function DOKI:IsAnyRelevantUIVisible()
 	end
 
 	return false
+end
+
+-- Create scan processing frame
+local function CreateScanProcessFrame()
+	if scanProcessFrame then return scanProcessFrame end
+
+	scanProcessFrame = CreateFrame("Frame", "DOKIScanProcessFrame")
+	scanProcessFrame:Hide()
+	return scanProcessFrame
+end
+
+-- Process scan work queue (ONE batch per frame)
+local function ProcessScanWorkQueue()
+	if #scanWorkQueue == 0 or not isScanProcessing then
+		isScanProcessing = false
+		if scanProcessFrame then
+			scanProcessFrame:SetScript("OnUpdate", nil)
+		end
+
+		if DOKI.db and DOKI.db.debugMode then
+			print("|cffff69b4DOKI|r Throttled scan complete")
+		end
+
+		return
+	end
+
+	-- Process a batch of items per frame
+	local itemsProcessed = 0
+	while itemsProcessed < ITEMS_PER_FRAME and #scanWorkQueue > 0 do
+		local workItem = table.remove(scanWorkQueue, 1)
+		if workItem then
+			-- Process single item (this is the heavy work)
+			ProcessSingleScanItem(workItem)
+			itemsProcessed = itemsProcessed + 1
+		end
+	end
+
+	if DOKI.db and DOKI.db.debugMode and itemsProcessed > 0 then
+		print(string.format("|cffff69b4DOKI|r Processed %d scan items (%d remaining)",
+			itemsProcessed, #scanWorkQueue))
+	end
+end
+
+-- Process a single scan item (the actual heavy work)
+function ProcessSingleScanItem(workItem)
+	local itemID = workItem.itemID
+	local itemLink = workItem.itemLink
+	local button = workItem.button
+	local frameType = workItem.frameType
+	-- Check if item is collectible (can be expensive)
+	if not DOKI:IsCollectibleItem(itemID, itemLink) then
+		return -- Skip non-collectible items
+	end
+
+	-- Check collection status (can be expensive)
+	local isCollected, hasOtherTransmogSources, isPartiallyCollected = DOKI:IsItemCollected(itemID, itemLink)
+	-- Only create indicator if NOT collected OR if it needs purple indicator
+	if not isCollected or isPartiallyCollected then
+		local itemData = {
+			itemID = itemID,
+			itemLink = itemLink,
+			isCollected = isCollected,
+			hasOtherTransmogSources = hasOtherTransmogSources,
+			isPartiallyCollected = isPartiallyCollected,
+			frameType = frameType,
+		}
+		-- Create the indicator
+		if DOKI.AddButtonIndicator then
+			DOKI:AddButtonIndicator(button, itemData)
+		end
+
+		-- Track the frame
+		table.insert(DOKI.foundFramesThisScan, {
+			frame = button,
+			frameName = button:GetName() or "unnamed",
+			itemData = itemData,
+		})
+	end
+end
+
+-- ===== REPLACE BLOCKING SCAN FUNCTIONS =====
+-- FIXED: Non-blocking bag scan
+function DOKI:ScanBagFrames()
+	if not self.db or not self.db.enabled then return 0 end
+
+	local queuedItems = 0
+	-- Collect all bag items first (this part is fast)
+	local allBagItems = {}
+	-- Scan ElvUI bags if visible
+	if ElvUI and self:IsElvUIBagVisible() then
+		local E = ElvUI[1]
+		if E then
+			local B = E:GetModule("Bags", true)
+			if B and (B.BagFrame and B.BagFrame:IsShown()) then
+				for bagID = 0, NUM_BAG_SLOTS do
+					local numSlots = C_Container.GetContainerNumSlots(bagID)
+					if numSlots and numSlots > 0 then
+						for slotID = 1, numSlots do
+							local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+							if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+								local possibleNames = {
+									string.format("ElvUI_ContainerFrameBag%dSlot%dHash", bagID, slotID),
+									string.format("ElvUI_ContainerFrameBag%dSlot%d", bagID, slotID),
+									string.format("ElvUI_ContainerFrameBag%dSlot%dCenter", bagID, slotID),
+								}
+								for _, elvUIButtonName in ipairs(possibleNames) do
+									local elvUIButton = _G[elvUIButtonName]
+									if elvUIButton and elvUIButton:IsVisible() then
+										allBagItems[elvUIButton] = {
+											itemID = itemInfo.itemID,
+											itemLink = itemInfo.hyperlink,
+											frameType = "bag",
+										}
+										break
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	-- Scan Blizzard bags
+	local scannedBlizzardBags = false
+	if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
+		-- Combined bags logic (fast collection)
+		for bagID = 0, NUM_BAG_SLOTS do
+			local numSlots = C_Container.GetContainerNumSlots(bagID)
+			if numSlots and numSlots > 0 then
+				for slotID = 1, numSlots do
+					local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+					if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+						-- Find button (this part can be expensive but less so than collection checks)
+						local button = nil
+						if ContainerFrameCombinedBags.EnumerateValidItems then
+							for _, itemButton in ContainerFrameCombinedBags:EnumerateValidItems() do
+								if itemButton and itemButton:IsVisible() then
+									local buttonBagID, buttonSlotID = nil, nil
+									if itemButton.GetBagID and itemButton.GetID then
+										local bagIDSuccess, retrievedBagID = pcall(itemButton.GetBagID, itemButton)
+										local slotIDSuccess, retrievedSlotID = pcall(itemButton.GetID, itemButton)
+										if bagIDSuccess and slotIDSuccess then
+											buttonBagID, buttonSlotID = retrievedBagID, retrievedSlotID
+										end
+									end
+
+									if buttonBagID == bagID and buttonSlotID == slotID then
+										button = itemButton
+										break
+									end
+								end
+							end
+						end
+
+						if button then
+							allBagItems[button] = {
+								itemID = itemInfo.itemID,
+								itemLink = itemInfo.hyperlink,
+								frameType = "bag",
+							}
+						end
+					end
+				end
+			end
+		end
+
+		scannedBlizzardBags = true
+	end
+
+	-- Individual container frames
+	if not scannedBlizzardBags then
+		for bagID = 0, NUM_BAG_SLOTS do
+			local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
+			if containerFrame and containerFrame:IsVisible() then
+				local numSlots = C_Container.GetContainerNumSlots(bagID)
+				if numSlots and numSlots > 0 then
+					for slotID = 1, numSlots do
+						local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+						if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+							local possibleNames = {
+								string.format("ContainerFrame%dItem%d", bagID + 1, slotID),
+								string.format("ContainerFrame%dItem%dButton", bagID + 1, slotID),
+							}
+							for _, buttonName in ipairs(possibleNames) do
+								local button = _G[buttonName]
+								if button and button:IsVisible() then
+									allBagItems[button] = {
+										itemID = itemInfo.itemID,
+										itemLink = itemInfo.hyperlink,
+										frameType = "bag",
+									}
+									break
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	-- Now queue all items for throttled processing (this part is fast)
+	for button, itemData in pairs(allBagItems) do
+		table.insert(scanWorkQueue, {
+			itemID = itemData.itemID,
+			itemLink = itemData.itemLink,
+			button = button,
+			frameType = itemData.frameType,
+		})
+		queuedItems = queuedItems + 1
+	end
+
+	-- Start throttled processing if we have items
+	if queuedItems > 0 then
+		if not isScanProcessing then
+			isScanProcessing = true
+			CreateScanProcessFrame()
+			if self.db and self.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r Starting throttled processing of %d items", queuedItems))
+			end
+
+			if scanProcessFrame then
+				scanProcessFrame:SetScript("OnUpdate", ProcessScanWorkQueue)
+			end
+		end
+	end
+
+	return queuedItems -- Return number of items queued, not indicators created
+end
+
+-- FIXED: Non-blocking merchant scan (similar approach)
+function DOKI:ScanMerchantFrames()
+	if not (MerchantFrame and MerchantFrame:IsVisible()) then
+		return 0
+	end
+
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Scanning merchant frames...")
+	end
+
+	local queuedItems = 0
+	-- Scan only visible merchant button slots (collect quickly)
+	for i = 1, 12 do
+		local possibleButtonNames = {
+			string.format("MerchantItem%dItemButton", i),
+			string.format("MerchantItem%d", i),
+		}
+		for _, buttonName in ipairs(possibleButtonNames) do
+			local button = _G[buttonName]
+			if button and button:IsVisible() then
+				local itemID, itemLink = self:GetItemFromMerchantButton(button, i)
+				if itemID and itemID ~= "EMPTY_SLOT" then
+					-- Queue for processing instead of processing immediately
+					table.insert(scanWorkQueue, {
+						itemID = itemID,
+						itemLink = itemLink,
+						button = button,
+						frameType = "merchant",
+					})
+					queuedItems = queuedItems + 1
+				end
+
+				break
+			end
+		end
+	end
+
+	-- Start processing if needed
+	if queuedItems > 0 and not isScanProcessing then
+		isScanProcessing = true
+		CreateScanProcessFrame()
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r Queued %d merchant items for processing", queuedItems))
+		end
+
+		if scanProcessFrame then
+			scanProcessFrame:SetScript("OnUpdate", ProcessScanWorkQueue)
+		end
+	end
+
+	return queuedItems
+end
+
+-- FIXED: Non-blocking full scan
+function DOKI:FullItemScan(withDelay)
+	if not self.db or not self.db.enabled then return 0 end
+
+	-- Add slight delay for battlepet caging timing issues
+	if withDelay then
+		C_Timer.After(0.15, function()
+			if self.db and self.db.enabled then
+				self:FullItemScan(false)
+			end
+		end)
+		return 0
+	end
+
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r === THROTTLED FULL SCAN START ===")
+	end
+
+	local startTime = GetTime()
+	local queuedItems = 0
+	self.foundFramesThisScan = {}
+	-- Queue items for processing (these calls are now fast)
+	queuedItems = queuedItems + self:ScanBagFrames()
+	queuedItems = queuedItems + self:ScanMerchantFrames()
+	local scanDuration = GetTime() - startTime
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r Throttled scan setup: %d items queued in %.3fs",
+			queuedItems, scanDuration))
+		print("|cffff69b4DOKI|r Processing will continue in background...")
+	end
+
+	return queuedItems
+end
+
+-- ===== QUEUE MANAGEMENT =====
+function DOKI:GetScanQueueStatus()
+	return {
+		queueSize = #scanWorkQueue,
+		isProcessing = isScanProcessing,
+		itemsPerFrame = ITEMS_PER_FRAME,
+	}
+end
+
+function DOKI:ClearScanQueue()
+	scanWorkQueue = {}
+	isScanProcessing = false
+	if scanProcessFrame then
+		scanProcessFrame:SetScript("OnUpdate", nil)
+	end
+
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Scan queue cleared")
+	end
+end
+
+function DOKI:SetScanPerformance(itemsPerFrame)
+	ITEMS_PER_FRAME = math.max(1, math.min(20, itemsPerFrame or 5))
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r Scan performance set to %d items per frame", ITEMS_PER_FRAME))
+	end
 end
 
 -- ===== ENHANCED EVENT SYSTEM WITH DEBOUNCING =====
@@ -1258,51 +1607,6 @@ function DOKI:TriggerImmediateSurgicalUpdate()
 	end
 end
 
-function DOKI:FullItemScan(withDelay)
-	if not self.db or not self.db.enabled then return 0 end
-
-	-- Add slight delay for battlepet caging timing issues
-	if withDelay then
-		C_Timer.After(0.15, function()
-			if self.db and self.db.enabled then
-				self:FullItemScan(false) -- Run without delay on retry
-			end
-		end)
-		return 0
-	end
-
-	if self.db.debugMode then
-		print("|cffff69b4DOKI|r === ENHANCED FULL SCAN START ===")
-	end
-
-	local startTime = GetTime()
-	local indicatorCount = 0
-	self.foundFramesThisScan = {}
-	-- Use standard scanning for bags
-	indicatorCount = indicatorCount + self:ScanBagFrames()
-	-- Keep original merchant scanning
-	indicatorCount = indicatorCount + self:ScanMerchantFrames()
-	-- Update snapshot after full scan
-	if self.CreateButtonSnapshot then
-		self.lastButtonSnapshot = self:CreateButtonSnapshot()
-	end
-
-	local scanDuration = GetTime() - startTime
-	self:TrackUpdatePerformance(scanDuration, false)
-	-- Schedule delayed rescan to catch items that may have failed to load
-	if indicatorCount > 0 or self.foundFramesThisScan and #self.foundFramesThisScan > 0 then
-		self:ScheduleDelayedFullRescan()
-	end
-
-	if self.db.debugMode then
-		print(string.format("|cffff69b4DOKI|r Enhanced full scan: %d indicators in %.3fs",
-			indicatorCount, scanDuration))
-		print("|cffff69b4DOKI|r === ENHANCED FULL SCAN END ===")
-	end
-
-	return indicatorCount
-end
-
 -- Helper function to get item info directly from merchant button
 function DOKI:GetItemFromMerchantButton(button, slotIndex)
 	if not button then return nil, nil end
@@ -1321,239 +1625,6 @@ function DOKI:GetItemFromMerchantButton(button, slotIndex)
 	end
 
 	return nil, nil
-end
-
--- ===== MERCHANT FRAME SCANNING =====
-function DOKI:ScanMerchantFrames()
-	local indicatorCount = 0
-	if not (MerchantFrame and MerchantFrame:IsVisible()) then
-		return 0
-	end
-
-	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Scanning merchant frames...")
-	end
-
-	-- Scan only visible merchant button slots (not all API items)
-	for i = 1, 12 do -- Most merchants have 10-12 visible slots
-		local possibleButtonNames = {
-			string.format("MerchantItem%dItemButton", i),
-			string.format("MerchantItem%d", i),
-		}
-		for _, buttonName in ipairs(possibleButtonNames) do
-			local button = _G[buttonName]
-			if button and button:IsVisible() then
-				-- Get item directly from the button
-				local itemID, itemLink = self:GetItemFromMerchantButton(button, i)
-				-- Skip empty slots entirely for indicator creation
-				if itemID and itemID ~= "EMPTY_SLOT" and self:IsCollectibleItem(itemID, itemLink) then
-					local isCollected, hasOtherTransmogSources, isPartiallyCollected = self:IsItemCollected(itemID, itemLink)
-					-- Only create indicator if NOT collected OR if it needs purple indicator
-					if not isCollected or isPartiallyCollected then
-						local itemData = {
-							itemID = itemID,
-							itemLink = itemLink,
-							isCollected = isCollected,
-							hasOtherTransmogSources = hasOtherTransmogSources,
-							isPartiallyCollected = isPartiallyCollected,
-							frameType = "merchant",
-						}
-						-- Try to create indicator
-						local success = self:AddButtonIndicator(button, itemData)
-						if success then
-							indicatorCount = indicatorCount + 1
-							if self.db.debugMode then
-								local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
-								local colorType = isPartiallyCollected and "PURPLE" or (hasOtherTransmogSources and "BLUE" or "ORANGE")
-								print(string.format("|cffff69b4DOKI|r Created %s indicator for %s (ID: %d) on %s",
-									colorType, itemName, itemID, buttonName))
-							end
-						end
-
-						table.insert(self.foundFramesThisScan, {
-							frame = button,
-							frameName = buttonName,
-							itemData = itemData,
-						})
-					else
-						if self.db.debugMode then
-							local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
-							print(string.format("|cffff69b4DOKI|r Skipping %s (ID: %d) on %s - ALREADY COLLECTED",
-								itemName, itemID, buttonName))
-						end
-					end
-				elseif itemID == "EMPTY_SLOT" then
-					if self.db.debugMode then
-						print(string.format("|cffff69b4DOKI|r Skipping %s - EMPTY SLOT", buttonName))
-					end
-				elseif itemID then
-					if self.db.debugMode then
-						local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
-						print(string.format("|cffff69b4DOKI|r Skipping %s (ID: %d) on %s - NOT COLLECTIBLE",
-							itemName, itemID, buttonName))
-					end
-				end
-
-				break
-			end
-		end
-	end
-
-	if self.db and self.db.debugMode then
-		print(string.format("|cffff69b4DOKI|r Merchant scan complete: %d indicators created", indicatorCount))
-	end
-
-	return indicatorCount
-end
-
--- ===== BAG FRAME SCANNING =====
-function DOKI:ScanBagFrames()
-	if not self.db or not self.db.enabled then return 0 end
-
-	local indicatorCount = 0
-	-- Collect all bag items first
-	local allBagItems = {}
-	-- Scan ElvUI bags if visible
-	if ElvUI and self:IsElvUIBagVisible() then
-		local E = ElvUI[1]
-		if E then
-			local B = E:GetModule("Bags", true)
-			if B and (B.BagFrame and B.BagFrame:IsShown()) then
-				for bagID = 0, NUM_BAG_SLOTS do
-					local numSlots = C_Container.GetContainerNumSlots(bagID)
-					if numSlots and numSlots > 0 then
-						for slotID = 1, numSlots do
-							local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
-							if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
-								local possibleNames = {
-									string.format("ElvUI_ContainerFrameBag%dSlot%dHash", bagID, slotID),
-									string.format("ElvUI_ContainerFrameBag%dSlot%d", bagID, slotID),
-									string.format("ElvUI_ContainerFrameBag%dSlot%dCenter", bagID, slotID),
-								}
-								for _, elvUIButtonName in ipairs(possibleNames) do
-									local elvUIButton = _G[elvUIButtonName]
-									if elvUIButton and elvUIButton:IsVisible() then
-										allBagItems[elvUIButton] = {
-											itemID = itemInfo.itemID,
-											itemLink = itemInfo.hyperlink,
-											frameType = "bag",
-										}
-										break
-									end
-								end
-							end
-						end
-					end
-				end
-			end
-		end
-	end
-
-	-- Scan Blizzard bags
-	local scannedBlizzardBags = false
-	if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
-		-- Combined bags logic
-		for bagID = 0, NUM_BAG_SLOTS do
-			local numSlots = C_Container.GetContainerNumSlots(bagID)
-			if numSlots and numSlots > 0 then
-				for slotID = 1, numSlots do
-					local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
-					if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
-						local button = nil
-						if ContainerFrameCombinedBags.EnumerateValidItems then
-							for _, itemButton in ContainerFrameCombinedBags:EnumerateValidItems() do
-								if itemButton and itemButton:IsVisible() then
-									local buttonBagID, buttonSlotID = nil, nil
-									if itemButton.GetBagID and itemButton.GetID then
-										local bagIDRetrievalSuccess, retrievedBagID = pcall(itemButton.GetBagID, itemButton)
-										local slotIDRetrievalSuccess, retrievedBagID = pcall(itemButton.GetID, itemButton)
-										if bagIDRetrievalSuccess and slotIDRetrievalSuccess then
-											buttonBagID, buttonSlotID = retrievedBagID, retrievedBagID
-										end
-									end
-
-									if buttonBagID == bagID and buttonSlotID == slotID then
-										button = itemButton
-										break
-									end
-								end
-							end
-						end
-
-						if button then
-							allBagItems[button] = {
-								itemID = itemInfo.itemID,
-								itemLink = itemInfo.hyperlink,
-								frameType = "bag",
-							}
-						end
-					end
-				end
-			end
-		end
-
-		scannedBlizzardBags = true
-	end
-
-	-- Individual container frames
-	if not scannedBlizzardBags then
-		for bagID = 0, NUM_BAG_SLOTS do
-			local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
-			if containerFrame and containerFrame:IsVisible() then
-				local numSlots = C_Container.GetContainerNumSlots(bagID)
-				if numSlots and numSlots > 0 then
-					for slotID = 1, numSlots do
-						local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
-						if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
-							local possibleNames = {
-								string.format("ContainerFrame%dItem%d", bagID + 1, slotID),
-								string.format("ContainerFrame%dItem%dButton", bagID + 1, slotID),
-							}
-							for _, buttonName in ipairs(possibleNames) do
-								local button = _G[buttonName]
-								if button and button:IsVisible() then
-									allBagItems[button] = {
-										itemID = itemInfo.itemID,
-										itemLink = itemInfo.hyperlink,
-										frameType = "bag",
-									}
-									break
-								end
-							end
-						end
-					end
-				end
-
-				scannedBlizzardBags = true
-			end
-		end
-	end
-
-	-- Create indicators for collectible items only
-	for button, itemData in pairs(allBagItems) do
-		-- FIXED: Check if item is collectible before processing (same logic as merchant scanning)
-		if self:IsCollectibleItem(itemData.itemID, itemData.itemLink) then
-			local isCollected, hasOtherTransmogSources, isPartiallyCollected = self:IsItemCollected(itemData.itemID,
-				itemData.itemLink)
-			itemData.isCollected = isCollected
-			itemData.hasOtherTransmogSources = hasOtherTransmogSources
-			itemData.isPartiallyCollected = isPartiallyCollected
-			-- Only create indicator if NOT collected OR if it needs purple indicator
-			if not isCollected or isPartiallyCollected then
-				indicatorCount = indicatorCount + self:CreateUniversalIndicator(button, itemData)
-			elseif self.db and self.db.debugMode then
-				local itemName = C_Item.GetItemInfo(itemData.itemID) or "Unknown"
-				print(string.format("|cffff69b4DOKI|r Skipping %s (ID: %d) in bags - ALREADY COLLECTED",
-					itemName, itemData.itemID))
-			end
-		elseif self.db and self.db.debugMode then
-			local itemName = C_Item.GetItemInfo(itemData.itemID) or "Unknown"
-			print(string.format("|cffff69b4DOKI|r Skipping %s (ID: %d) in bags - NOT COLLECTIBLE",
-				itemName, itemData.itemID))
-		end
-	end
-
-	return indicatorCount
 end
 
 -- Create universal indicator (only called for items that need indicators)
