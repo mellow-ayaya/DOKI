@@ -8,6 +8,14 @@ DOKI.textureCache = {}
 -- Enhanced scanning system variables
 DOKI.delayedScanTimer = nil       -- Timer for delayed secondary scan
 DOKI.delayedScanCancelled = false -- Flag to track if delayed scan should be cancelled
+-- Category-based re-evaluation flags for ATT mode
+DOKI.needsTransmogReevaluation = false
+DOKI.needsPetReevaluation = false
+DOKI.needsMountReevaluation = false
+DOKI.needsToyReevaluation = false
+DOKI.needsConsumableReevaluation = false
+DOKI.needsReagentReevaluation = false
+DOKI.needsOtherReevaluation = false
 -- Main addon frame
 local frame = CreateFrame("Frame", "DOKIFrame")
 -- Initialize saved variables
@@ -1108,6 +1116,24 @@ SlashCmdList["DOKI"] = function(msg)
 		end
 
 		print("|cffff69b4DOKI|r === END SETTINGS ===")
+	elseif command == "categoryflags" then
+		-- Show current category re-evaluation flags
+		print("|cffff69b4DOKI|r === CATEGORY RE-EVALUATION FLAGS ===")
+		print(string.format("ATT Mode: %s", DOKI.db.attMode and "|cff00ff00ENABLED|r" or "|cffff0000DISABLED|r"))
+		if DOKI.db.attMode then
+			print("Category flags:")
+			print(string.format("  Transmog: %s", DOKI.needsTransmogReevaluation and "|cffffff00FLAGGED|r" or "Ready"))
+			print(string.format("  Pets: %s", DOKI.needsPetReevaluation and "|cffffff00FLAGGED|r" or "Ready"))
+			print(string.format("  Mounts: %s", DOKI.needsMountReevaluation and "|cffffff00FLAGGED|r" or "Ready"))
+			print(string.format("  Toys: %s", DOKI.needsToyReevaluation and "|cffffff00FLAGGED|r" or "Ready"))
+			print(string.format("  Consumables: %s", DOKI.needsConsumableReevaluation and "|cffffff00FLAGGED|r" or "Ready"))
+			print(string.format("  Reagents: %s", DOKI.needsReagentReevaluation and "|cffffff00FLAGGED|r" or "Ready"))
+			print(string.format("  Other: %s", DOKI.needsOtherReevaluation and "|cffffff00FLAGGED|r" or "Ready"))
+		else
+			print("Category flags only used in ATT mode")
+		end
+
+		print("|cffff69b4DOKI|r === END FLAGS ===")
 	else
 		print("|cffff69b4DOKI|r War Within Enhanced Surgical System with Ensemble + Merchant Support Commands:")
 		print("")

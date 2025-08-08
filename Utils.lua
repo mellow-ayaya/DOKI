@@ -460,6 +460,58 @@ function DOKI:IsPetCollectedWarWithin(itemID)
 	return numCollected and numCollected > 0
 end
 
+-- Get item category for re-evaluation system
+function DOKI:GetItemCategory(itemID, itemLink)
+	if not itemID then return "other" end
+
+	-- Check for battlepets first
+	if itemLink and string.find(itemLink, "battlepet:") then
+		return "pet"
+	end
+
+	-- Check for ensembles
+	if self:IsEnsembleItem(itemID) then
+		return "other"
+	end
+
+	local _, _, _, _, _, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
+	if not classID or not subClassID then
+		return "other"
+	end
+
+	-- Mount items (class 15, subclass 5)
+	if classID == 15 and subClassID == 5 then
+		return "mount"
+	end
+
+	-- Pet items (class 15, subclass 2)
+	if classID == 15 and subClassID == 2 then
+		return "pet"
+	end
+
+	-- Toy items
+	if C_ToyBox and C_ToyBox.GetToyInfo(itemID) then
+		return "toy"
+	end
+
+	-- Transmog items (weapons class 2, armor class 4)
+	if classID == 2 or classID == 4 then
+		return "transmog"
+	end
+
+	-- Reagents (Trade Goods class 7)
+	if classID == 7 then
+		return "reagent"
+	end
+
+	-- Consumables (class 0)
+	if classID == 0 then
+		return "consumable"
+	end
+
+	return "other"
+end
+
 -- ===== TRANSMOG DETECTION =====
 -- FIXED: Enhanced transmog collection detection with proper data loading and no premature caching
 function DOKI:IsTransmogCollected(itemID, itemLink)

@@ -303,6 +303,7 @@ function DOKI:CreateButtonSnapshot()
 end
 
 -- ===== ENHANCED SURGICAL UPDATE PROCESSING WITH RAPID-SALE SAFEGUARDS =====
+-- ===== ENHANCED SURGICAL UPDATE PROCESSING WITH CATEGORY RE-EVALUATION =====
 function DOKI:ProcessSurgicalUpdate()
 	local currentSnapshot = self:CreateButtonSnapshot()
 	local changes = {
@@ -310,6 +311,79 @@ function DOKI:ProcessSurgicalUpdate()
 		added = {},
 		changed = {},
 	}
+	-- ADDED: Category-based re-evaluation for ATT mode
+	local categoryUpdateCount = 0
+	if self.db and self.db.attMode then
+		local hasAnyFlagSet = self.needsTransmogReevaluation or self.needsPetReevaluation or
+				self.needsMountReevaluation or self.needsToyReevaluation or
+				self.needsConsumableReevaluation or self.needsReagentReevaluation or
+				self.needsOtherReevaluation
+		if hasAnyFlagSet then
+			if self.db and self.db.debugMode then
+				print("|cffff69b4DOKI|r ATT: Processing category re-evaluation")
+			end
+
+			-- Re-evaluate all visible items in flagged categories
+			for button, itemData in pairs(currentSnapshot) do
+				if itemData.hasItem and not itemData.isEmpty then
+					local category = self:GetItemCategory(itemData.itemID, itemData.itemLink)
+					local needsReevaluation = false
+					-- Check if this item's category is flagged for re-evaluation
+					if category == "transmog" and self.needsTransmogReevaluation then
+						needsReevaluation = true
+					elseif category == "pet" and self.needsPetReevaluation then
+						needsReevaluation = true
+					elseif category == "mount" and self.needsMountReevaluation then
+						needsReevaluation = true
+					elseif category == "toy" and self.needsToyReevaluation then
+						needsReevaluation = true
+					elseif category == "consumable" and self.needsConsumableReevaluation then
+						needsReevaluation = true
+					elseif category == "reagent" and self.needsReagentReevaluation then
+						needsReevaluation = true
+					elseif category == "other" and self.needsOtherReevaluation then
+						needsReevaluation = true
+					end
+
+					if needsReevaluation then
+						-- Force fresh collection check by temporarily clearing cache for this item
+						local cacheKey = itemData.itemLink or ("ATT_" .. tostring(itemData.itemID))
+						local tempCachedValue = self.collectionCache[cacheKey]
+						self.collectionCache[cacheKey] = nil
+						-- Get fresh collection status
+						local itemData = self:GetItemDataForSurgicalUpdate(itemData.itemID, itemData.itemLink)
+						if itemData then
+							-- Remove old indicator
+							self:RemoveButtonIndicator(button)
+							-- Add new indicator if needed
+							if not itemData.isCollected or itemData.isPartiallyCollected then
+								if self:AddButtonIndicator(button, itemData) then
+									categoryUpdateCount = categoryUpdateCount + 1
+								end
+							end
+						end
+
+						-- Restore cache if it was valid (let normal caching handle new value)
+						-- Don't restore tempCachedValue - let fresh check establish new cache
+					end
+				end
+			end
+
+			-- Clear all category flags
+			self.needsTransmogReevaluation = false
+			self.needsPetReevaluation = false
+			self.needsMountReevaluation = false
+			self.needsToyReevaluation = false
+			self.needsConsumableReevaluation = false
+			self.needsReagentReevaluation = false
+			self.needsOtherReevaluation = false
+			if self.db and self.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r ATT: Category re-evaluation complete, %d indicators updated",
+					categoryUpdateCount))
+			end
+		end
+	end
+
 	-- ADDED: Force cleanup of any indicators on empty slots before comparison
 	local cleanedIndicators = 0
 	for button, textureData in pairs(self.buttonTextures or {}) do
@@ -327,7 +401,7 @@ function DOKI:ProcessSurgicalUpdate()
 		end
 	end
 
-	-- FIXED: Enhanced comparison that properly handles empty slots and item changes
+	-- EXISTING LOGIC: Enhanced comparison that properly handles empty slots and item changes
 	local function itemsEqual(oldItem, newItem)
 		-- Both nil/empty
 		if not oldItem and not newItem then return true end
@@ -360,7 +434,7 @@ function DOKI:ProcessSurgicalUpdate()
 		return oldItem.hasItem == newItem.hasItem
 	end
 
-	-- FIXED: Better detection of buttons that lost items or changed items
+	-- EXISTING LOGIC: Better detection of buttons that lost items or changed items
 	for button, oldItemData in pairs(self.lastButtonSnapshot or {}) do
 		local newItemData = currentSnapshot[button]
 		if not newItemData then
@@ -372,7 +446,7 @@ function DOKI:ProcessSurgicalUpdate()
 		end
 	end
 
-	-- FIXED: Better detection of buttons that gained items
+	-- EXISTING LOGIC: Better detection of buttons that gained items
 	for button, newItemData in pairs(currentSnapshot) do
 		local oldItemData = self.lastButtonSnapshot and self.lastButtonSnapshot[button]
 		if not oldItemData then
@@ -439,12 +513,12 @@ function DOKI:ProcessSurgicalUpdate()
 
 	-- Update snapshot
 	self.lastButtonSnapshot = currentSnapshot
-	-- ADDED: Always return total changes including forced cleanup
-	local totalChanges = updateCount + cleanedIndicators
+	-- MODIFIED: Include category updates in total changes
+	local totalChanges = updateCount + cleanedIndicators + categoryUpdateCount
 	if self.db and self.db.debugMode and totalChanges > 0 then
 		print(string.format(
-			"|cffff69b4DOKI|r Surgical update: %d changes (%d removed, %d added, %d changed, %d force cleaned)",
-			totalChanges, #changes.removed, #changes.added, #changes.changed, cleanedIndicators))
+			"|cffff69b4DOKI|r Surgical update: %d total changes (%d removed, %d added, %d changed, %d force cleaned, %d category re-evaluated)",
+			totalChanges, #changes.removed, #changes.added, #changes.changed, cleanedIndicators, categoryUpdateCount))
 	end
 
 	return totalChanges

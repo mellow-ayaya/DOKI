@@ -588,19 +588,61 @@ function DOKI:SetupDebouncedEventSystem()
 		elseif event == "PET_JOURNAL_LIST_UPDATE" or
 				event == "COMPANION_LEARNED" or
 				event == "COMPANION_UNLEARNED" then
-			-- Collection changed - these can be slightly debounced too
+			-- Pet/Mount collection changed
 			DOKI:DebounceEvent("COLLECTION_CHANGE", function()
 				if DOKI.db and DOKI.db.enabled then
-					-- Cache was already cleared by the cache invalidation system
-					DOKI:FullItemScan(true) -- Use withDelay for battlepet timing
+					-- Clear cache
+					DOKI:ClearCollectionCache()
+					-- ATT MODE: Mark categories for re-evaluation
+					if DOKI.db.attMode then
+						DOKI.needsPetReevaluation = true
+						DOKI.needsMountReevaluation = true
+						if DOKI.db.debugMode then
+							print("|cffff69b4DOKI|r ATT: Marked pets and mounts for re-evaluation")
+						end
+					else
+						-- Non-ATT mode: use existing full scan
+						DOKI:FullItemScan(true)
+					end
 				end
 			end, 0.1)
-		elseif event == "TRANSMOG_COLLECTION_UPDATED" or event == "TOYS_UPDATED" then
-			-- Transmog/toy collection changed
+		elseif event == "TRANSMOG_COLLECTION_UPDATED" then
+			-- Transmog collection changed
 			DOKI:DebounceEvent("COLLECTION_CHANGE", function()
 				if DOKI.db and DOKI.db.enabled then
-					-- Cache was already cleared by the cache invalidation system
-					DOKI:FullItemScan()
+					-- Clear cache
+					DOKI:ClearCollectionCache()
+					-- ATT MODE: Mark category for re-evaluation
+					if DOKI.db.attMode then
+						DOKI.needsTransmogReevaluation = true
+						if DOKI.db.debugMode then
+							print("|cffff69b4DOKI|r ATT: Marked transmog for re-evaluation")
+						end
+					else
+						-- Non-ATT mode: use existing full scan
+						DOKI:FullItemScan()
+					end
+				end
+			end, 0.1)
+		elseif event == "TOYS_UPDATED" then
+			-- Toy collection changed
+			DOKI:DebounceEvent("COLLECTION_CHANGE", function()
+				if DOKI.db and DOKI.db.enabled then
+					-- Clear cache
+					DOKI:ClearCollectionCache()
+					-- ATT MODE: Mark category for re-evaluation
+					if DOKI.db.attMode then
+						DOKI.needsTransmogReevaluation = true
+						if DOKI.db.debugMode then
+							print("|cffff69b4DOKI|r ATT: Marked transmog for re-evaluation")
+						end
+
+						-- MISSING: Trigger surgical update to process the flag
+						DOKI:TriggerImmediateSurgicalUpdate()
+					else
+						-- Non-ATT mode: use existing full scan
+						DOKI:FullItemScan()
+					end
 				end
 			end, 0.1)
 		end
