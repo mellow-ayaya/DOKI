@@ -480,6 +480,27 @@ function DOKI:GetItemDataForSurgicalUpdate(itemID, itemLink)
 	-- FIXED: Handle empty slots - return nil so no indicator is created
 	if itemID == "EMPTY_SLOT" or not itemID then return nil end
 
+	-- ATT MODE: Skip IsCollectibleItem check, but apply ATT filtering
+	if self.db and self.db.attMode then
+		-- Apply ATT-specific filtering
+		if not self:ShouldTrackItemInATTMode(itemID) then
+			return nil -- Item filtered by ATT settings
+		end
+
+		-- In ATT mode, send ALL items (except filtered ones) to collection check
+		-- ATT will determine if the item is relevant/collectible
+		local isCollected, hasOtherTransmogSources, isPartiallyCollected = self:IsItemCollected(itemID, itemLink)
+		return {
+			itemID = itemID,
+			itemLink = itemLink,
+			isCollected = isCollected,
+			hasOtherTransmogSources = hasOtherTransmogSources,
+			isPartiallyCollected = isPartiallyCollected,
+			frameType = "surgical",
+		}
+	end
+
+	-- NORMAL MODE: Use existing logic
 	-- ADDED: Handle caged pets first
 	if itemLink then
 		local petSpeciesID = self:GetPetSpeciesFromBattlePetLink(itemLink)

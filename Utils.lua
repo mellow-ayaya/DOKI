@@ -135,15 +135,6 @@ end
 -- ===== CORE ITEM DETECTION =====
 -- FIXED: Enhanced collectible item detection with better data loading
 function DOKI:IsCollectibleItem(itemID, itemLink)
-	-- ATT MODE: Consider ALL items as potentially collectible
-	if self.db and self.db.attMode then
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r ATT mode: treating item %d as collectible for parsing", itemID or 0))
-		end
-
-		return true
-	end
-
 	-- EXISTING LOGIC: Only for non-ATT mode
 	-- ADDED: Check for ensembles first
 	if self:IsEnsembleItem(itemID) then
@@ -220,6 +211,56 @@ function DOKI:IsCollectibleItem(itemID, itemLink)
 	end
 
 	return false
+end
+
+function DOKI:ShouldTrackItemInATTMode(itemID)
+	if not itemID then return false end
+
+	local _, _, _, _, _, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
+	if not classID or not subClassID then
+		-- Request data and return true for now (let ATT handle it)
+		self:RequestItemDataWithRetry(itemID, nil, function(loadedItemID, loadedItemLink)
+			-- When data loads, trigger a rescan if UI is visible
+			if DOKI.db and DOKI.db.enabled then
+				C_Timer.After(0.1, function()
+					if DOKI.TriggerImmediateSurgicalUpdate then
+						DOKI:TriggerImmediateSurgicalUpdate()
+					end
+				end)
+			end
+		end)
+		return true -- Let ATT handle items we don't have data for yet
+	end
+
+	-- Filter out reagents if disabled (Trade Goods class 7)
+	if not self.db.attTrackReagents and classID == 7 then
+		if self.db and self.db.debugMode then
+			local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+			print(string.format("|cffff69b4DOKI|r ATT mode: Ignoring reagent %s (ID: %d) - reagent tracking disabled", itemName,
+				itemID))
+		end
+
+		return false
+	end
+
+	-- Filter out consumables if disabled (Consumables class 0)
+	if not self.db.attTrackConsumables and classID == 0 then
+		if self.db and self.db.debugMode then
+			local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+			print(string.format("|cffff69b4DOKI|r ATT mode: Ignoring consumable %s (ID: %d) - consumable tracking disabled",
+				itemName, itemID))
+		end
+
+		return false
+	end
+
+	-- All other items should be tracked in ATT mode
+	if self.db and self.db.debugMode then
+		local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+		print(string.format("|cffff69b4DOKI|r ATT mode: Tracking item %s (ID: %d, class: %d)", itemName, itemID, classID))
+	end
+
+	return true
 end
 
 -- ADDED: Extract species ID from caged pet (battlepet) links

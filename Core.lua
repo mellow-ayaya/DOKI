@@ -18,6 +18,8 @@ local function InitializeSavedVariables()
 			debugMode = false,
 			smartMode = true,
 			attMode = true,
+			attTrackReagents = false, -- NEW: Track reagent items in ATT mode
+			attTrackConsumables = false, -- NEW: Track consumable items in ATT mode
 		}
 	else
 		if DOKI_DB.smartMode == nil then
@@ -27,11 +29,19 @@ local function InitializeSavedVariables()
 		if DOKI_DB.attMode == nil then
 			DOKI_DB.attMode = false
 		end
+
+		-- NEW: Initialize ATT tracking settings
+		if DOKI_DB.attTrackReagents == nil then
+			DOKI_DB.attTrackReagents = false
+		end
+
+		if DOKI_DB.attTrackConsumables == nil then
+			DOKI_DB.attTrackConsumables = false
+		end
 	end
 
 	DOKI.db = DOKI_DB
 end
-
 -- Event handlers
 local function OnEvent(self, event, ...)
 	if event == "ADDON_LOADED" then
@@ -172,7 +182,7 @@ SlashCmdList["DOKI"] = function(msg)
 		print(string.format("|cffff69b4DOKI|r Status: %s, Smart: %s, ATT: %s, Debug: %s",
 			DOKI.db.enabled and "Enabled" or "Disabled",
 			DOKI.db.smartMode and "On" or "Off",
-			DOKI.db.attMode and "On" or "Off", -- ADDED: ATT mode status
+			DOKI.db.attMode and "On" or "Off",
 			DOKI.db.debugMode and "On" or "Off"))
 		print(string.format("|cffff69b4DOKI|r Active indicators: %d (%d battlepets)", indicatorCount, battlepetCount))
 		print(string.format("|cffff69b4DOKI|r Tracked buttons: %d", snapshotCount))
@@ -1023,6 +1033,81 @@ SlashCmdList["DOKI"] = function(msg)
 	elseif command == "clearcache" then
 		DOKI:ClearCollectionCache()
 		print("|cffff69b4DOKI|r Session cache cleared")
+	elseif command == "attreagents" then
+		-- Toggle ATT reagent tracking
+		DOKI.db.attTrackReagents = not DOKI.db.attTrackReagents
+		local status = DOKI.db.attTrackReagents and "|cff00ff00enabled|r" or "|cffff0000disabled|r"
+		print("|cffff69b4DOKI|r ATT reagent tracking is now " .. status)
+		if DOKI.db.attMode then
+			print("|cffff69b4DOKI|r Reagents (Trade Goods) will " ..
+				(DOKI.db.attTrackReagents and "be analyzed" or "be ignored") .. " in ATT mode")
+		else
+			print("|cffff69b4DOKI|r This setting only affects ATT mode (currently disabled)")
+		end
+
+		-- Clear collection cache since tracking settings changed
+		if DOKI.ClearCollectionCache then
+			DOKI:ClearCollectionCache()
+		end
+
+		-- Force full rescan if addon is enabled and UI is visible
+		if DOKI.db.enabled and DOKI.db.attMode then
+			C_Timer.After(0.1, function()
+				if DOKI.db and DOKI.db.enabled and DOKI.ForceUniversalScan then
+					local count = DOKI:ForceUniversalScan()
+					if DOKI.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r ATT reagent toggle rescan: %d indicators created", count))
+					end
+				end
+			end)
+		end
+	elseif command == "attconsumables" then
+		-- Toggle ATT consumable tracking
+		DOKI.db.attTrackConsumables = not DOKI.db.attTrackConsumables
+		local status = DOKI.db.attTrackConsumables and "|cff00ff00enabled|r" or "|cffff0000disabled|r"
+		print("|cffff69b4DOKI|r ATT consumable tracking is now " .. status)
+		if DOKI.db.attMode then
+			print("|cffff69b4DOKI|r Consumables will " ..
+				(DOKI.db.attTrackConsumables and "be analyzed" or "be ignored") .. " in ATT mode")
+		else
+			print("|cffff69b4DOKI|r This setting only affects ATT mode (currently disabled)")
+		end
+
+		-- Clear collection cache since tracking settings changed
+		if DOKI.ClearCollectionCache then
+			DOKI:ClearCollectionCache()
+		end
+
+		-- Force full rescan if addon is enabled and UI is visible
+		if DOKI.db.enabled and DOKI.db.attMode then
+			C_Timer.After(0.1, function()
+				if DOKI.db and DOKI.db.enabled and DOKI.ForceUniversalScan then
+					local count = DOKI:ForceUniversalScan()
+					if DOKI.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r ATT consumable toggle rescan: %d indicators created", count))
+					end
+				end
+			end)
+		end
+	elseif command == "attsettings" then
+		-- Show current ATT settings
+		print("|cffff69b4DOKI|r === ATT MODE SETTINGS ===")
+		print(string.format("ATT Mode: %s", DOKI.db.attMode and "|cff00ff00ENABLED|r" or "|cffff0000DISABLED|r"))
+		if DOKI.db.attMode then
+			print(string.format("Track Reagents: %s", DOKI.db.attTrackReagents and "|cff00ff00YES|r" or "|cffff0000NO|r"))
+			print(string.format("Track Consumables: %s", DOKI.db.attTrackConsumables and "|cff00ff00YES|r" or "|cffff0000NO|r"))
+			print("")
+			print("Item types being analyzed:")
+			print("  • Equipment (weapons/armor): Always")
+			print("  • Mounts/Pets/Toys: Always")
+			print(string.format("  • Reagents (Trade Goods): %s", DOKI.db.attTrackReagents and "YES" or "NO"))
+			print(string.format("  • Consumables: %s", DOKI.db.attTrackConsumables and "YES" or "NO"))
+			print("  • All other item types: Always")
+		else
+			print("Enable ATT mode with /doki att to use these settings")
+		end
+
+		print("|cffff69b4DOKI|r === END SETTINGS ===")
 	else
 		print("|cffff69b4DOKI|r War Within Enhanced Surgical System with Ensemble + Merchant Support Commands:")
 		print("")

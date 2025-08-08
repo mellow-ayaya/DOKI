@@ -189,14 +189,26 @@ local function ProcessScanWorkQueue()
 end
 
 -- Process a single scan item (the actual heavy work)
+-- Process a single scan item (the actual heavy work)
 function ProcessSingleScanItem(workItem)
 	local itemID = workItem.itemID
 	local itemLink = workItem.itemLink
 	local button = workItem.button
 	local frameType = workItem.frameType
-	-- Check if item is collectible (can be expensive)
-	if not DOKI:IsCollectibleItem(itemID, itemLink) then
-		return -- Skip non-collectible items
+	-- ATT MODE: Skip IsCollectibleItem check, but apply ATT-specific filtering
+	if DOKI.db and DOKI.db.attMode then
+		-- Apply ATT-specific filtering for reagents/consumables
+		if not DOKI:ShouldTrackItemInATTMode(itemID) then
+			return -- Skip items filtered by ATT settings
+		end
+
+		-- In ATT mode, send ALL items (except filtered ones) to collection check
+		-- ATT will determine if the item is relevant/collectible
+	else
+		-- NORMAL MODE: Use IsCollectibleItem check
+		if not DOKI:IsCollectibleItem(itemID, itemLink) then
+			return -- Skip non-collectible items
+		end
 	end
 
 	-- Check collection status (can be expensive)
