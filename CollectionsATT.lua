@@ -144,169 +144,87 @@ function ProcessNextATTInQueue()
 end
 
 -- KEEP: Your existing parsing function (unchanged - it's perfect!)
+-- Helper function to remove ONLY WoW's invisible formatting codes.
+-- This version is safer and will NOT remove visible Unicode symbols.
+local function StripWoWFormatting(str)
+	if not str then return "" end
+
+	-- This pattern finds color codes |c(8 hex chars) and removes them.
+	str = str:gsub("|c%x%x%x%x%x%x%x%x", "")
+	-- This pattern finds texture codes |T(any characters until the next)|t and removes them.
+	str = str:gsub("|T.-|t", "")
+	-- This pattern finds hyperlink codes |H(any characters until the next)|h and removes the enclosing part.
+	str = str:gsub("|H(.-)|h(.-)|h", "%2")
+	-- This pattern removes the closing color tag |r.
+	str = str:gsub("|r", "")
+	return str
+end
+
+-- FINAL, ROBUST PARSER with corrected cleaning and symbol detection
 function ParseATTTooltipLines(tooltipLines, itemID, itemLink)
-	local isCollected = nil
-	local hasOtherSources = false
-	local isPartiallyCollected = false
+	local hasOtherSources = false -- Kept for API consistency
 	local debugInfo = {}
-	if DOKI and DOKI.db and DOKI.db.debugMode then
-		print(string.format("|cffff69b4DOKI|r Starting parsing of %d tooltip lines...", #tooltipLines))
-	end
-
-	for i, lineData in ipairs(tooltipLines) do
-		local leftText = lineData.left or ""
+	-- Default to "collected" if ATT provides no usable data, as per your request.
+	local finalResult = true
+	local finalPartial = false
+	if #tooltipLines > 0 then
+		local lineData = tooltipLines[1]
 		local rightText = lineData.right or ""
-		local combinedText = leftText .. " " .. rightText
-		if DOKI and DOKI.db and DOKI.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r   Parsing line %d: '%s'", i, combinedText))
+		table.insert(debugInfo, string.format("Line 1 Raw: R='%s'", rightText))
+		-- Clean the string to remove only invisible formatting.
+		local cleanText = StripWoWFormatting(rightText)
+		table.insert(debugInfo, string.format("Line 1 Cleaned: '%s'", cleanText))
+		-- === STEP 1: Check for the HIGHEST priority pattern: the "uncollected" symbol ===
+		-- This must be checked first and is definitive.
+		if cleanText:find("❌") or cleanText:find("✗") or cleanText:find("✕") or cleanText:find("Not Collected") then
+			finalResult = false
+			finalPartial = false
+			table.insert(debugInfo, "Found Uncollected symbol/text. Result: Not Collected.")
+			return finalResult, hasOtherSources, finalPartial, debugInfo -- Return immediately
 		end
 
-		-- Debug info
-		if DOKI and DOKI.db and DOKI.db.debugMode then
-			table.insert(debugInfo, string.format("Line %d: L='%s' R='%s'", i, leftText, rightText))
-		end
-
-		-- Priority 1: Percentage patterns "2/3 (66.66%)"
-		local current, total, percentage = combinedText:match("(%d+)%s*/%s*(%d+)%s*%(([%d%.]+)%%%)")
-		if current and total and percentage then
-			if DOKI and DOKI.db and DOKI.db.debugMode then
-				print(string.format("|cffff69b4DOKI|r     Found percentage pattern: %s/%s (%s%%)", current, total, percentage))
-			end
-
-			current, total, percentage = tonumber(current), tonumber(total), tonumber(percentage)
-			if current and total and percentage then
-				if current >= total or percentage >= 100 then
-					isCollected = true
-				elseif current > 0 or percentage > 0 then
-					isCollected = false
-					isPartiallyCollected = true
+		-- === STEP 2: Check for any other known ATT symbols/keywords ===
+		-- This list now correctly includes the currency symbol and Reagent/Currency keywords.
+		local hasATTSymbol = cleanText:find("✅") or cleanText:find("✓") or cleanText:find("☑") or
+				cleanText:find("💎") or cleanText:find("♦") or cleanText:find("🪙") or
+				cleanText:find("Catalyst") or cleanText:find("Reagent") or cleanText:find("Currency")
+		if hasATTSymbol then
+			table.insert(debugInfo, "Found a positive ATT symbol/keyword.")
+			-- === STEP 3: If a symbol was found, look for a fraction ===
+			local current, total = cleanText:match("(%d+)%s*/%s*(%d+)")
+			if current and total then
+				current, total = tonumber(current), tonumber(total)
+				table.insert(debugInfo, string.format("Found fraction %d/%d", current, total))
+				if current >= total then
+					finalResult = true
+					finalPartial = false
+				elseif current > 0 then
+					finalResult = false
+					finalPartial = true
 				else
-					isCollected = false
+					finalResult = false
+					finalPartial = false
 				end
-
-				table.insert(debugInfo, string.format("Found percentage: %d/%d (%.1f%%)", current, total, percentage))
-				if DOKI and DOKI.db and DOKI.db.debugMode then
-					print(string.format("|cffff69b4DOKI|r     Result: isCollected=%s, isPartiallyCollected=%s",
-						tostring(isCollected), tostring(isPartiallyCollected)))
-				end
-
-				break
+			else
+				-- A positive symbol was found, but NO fraction.
+				finalResult = true
+				finalPartial = false
+				table.insert(debugInfo, "Positive symbol found, no fraction. Result: Collected.")
 			end
+		else
+			-- No ATT symbols of any kind were found.
+			finalResult = true
+			finalPartial = false
+			table.insert(debugInfo, "No ATT symbols found at all. Defaulting to Collected.")
 		end
-
-		-- Priority 2: Simple fractions "2/3" (not in parentheses)
-		local simpleCurrent, simpleTotal = combinedText:match("(%d+)%s*/%s*(%d+)")
-		if simpleCurrent and simpleTotal and not combinedText:match("%(.*" .. simpleCurrent .. "%s*/%s*" .. simpleTotal .. ".*%)") then
-			if DOKI and DOKI.db and DOKI.db.debugMode then
-				print(string.format("|cffff69b4DOKI|r     Found simple fraction: %s/%s", simpleCurrent, simpleTotal))
-			end
-
-			simpleCurrent, simpleTotal = tonumber(simpleCurrent), tonumber(simpleTotal)
-			if simpleCurrent and simpleTotal then
-				if simpleCurrent >= simpleTotal then
-					isCollected = true
-				elseif simpleCurrent > 0 then
-					isCollected = false
-					isPartiallyCollected = true
-				else
-					isCollected = false
-				end
-
-				table.insert(debugInfo, string.format("Found fraction: %d/%d", simpleCurrent, simpleTotal))
-				if DOKI and DOKI.db and DOKI.db.debugMode then
-					print(string.format("|cffff69b4DOKI|r     Result: isCollected=%s, isPartiallyCollected=%s",
-						tostring(isCollected), tostring(isPartiallyCollected)))
-				end
-
-				break
-			end
-		end
-
-		-- Priority 3: Unicode symbols
-		if combinedText:find("❌") or combinedText:find("✗") or combinedText:find("✕") then
-			if DOKI and DOKI.db and DOKI.db.debugMode then
-				print("|cffff69b4DOKI|r     Found X symbol -> NOT COLLECTED")
-			end
-
-			isCollected = false
-			table.insert(debugInfo, "Found X symbol -> NOT COLLECTED")
-			break
-		end
-
-		if combinedText:find("✅") or combinedText:find("✓") or combinedText:find("☑") then
-			if DOKI and DOKI.db and DOKI.db.debugMode then
-				print("|cffff69b4DOKI|r     Found checkmark -> COLLECTED")
-			end
-
-			isCollected = true
-			table.insert(debugInfo, "Found checkmark -> COLLECTED")
-			break
-		end
-
-		-- Priority 4: Diamond symbol for currency/reagents
-		if combinedText:find("💎") or combinedText:find("♦") then
-			if DOKI and DOKI.db and DOKI.db.debugMode then
-				print("|cffff69b4DOKI|r     Found diamond symbol")
-			end
-
-			if combinedText:find("Collected") then
-				local currentCount, totalCount = combinedText:match("(%d+)%s*/%s*(%d+)")
-				if currentCount and totalCount then
-					currentCount, totalCount = tonumber(currentCount), tonumber(totalCount)
-					if currentCount and totalCount then
-						isCollected = (currentCount >= totalCount)
-						isPartiallyCollected = (currentCount > 0 and currentCount < totalCount)
-						table.insert(debugInfo, string.format("Found diamond: %d/%d", currentCount, totalCount))
-						if DOKI and DOKI.db and DOKI.db.debugMode then
-							print(string.format("|cffff69b4DOKI|r     Diamond result: isCollected=%s, isPartiallyCollected=%s",
-								tostring(isCollected), tostring(isPartiallyCollected)))
-						end
-
-						break
-					end
-				else
-					isCollected = true
-					table.insert(debugInfo, "Found diamond + 'Collected' (no numbers)")
-					if DOKI and DOKI.db and DOKI.db.debugMode then
-						print("|cffff69b4DOKI|r     Diamond result: COLLECTED (no numbers)")
-					end
-
-					break
-				end
-			end
-		end
-
-		-- Priority 5: Text fallback (only if no symbols found)
-		if isCollected == nil and not combinedText:find("[❌✅💎]") then
-			if combinedText:find("Not Collected") and not combinedText:find("Catalyst") then
-				if DOKI and DOKI.db and DOKI.db.debugMode then
-					print("|cffff69b4DOKI|r     Found 'Not Collected' text")
-				end
-
-				isCollected = false
-				table.insert(debugInfo, "Found 'Not Collected' text")
-				break
-			end
-
-			if combinedText == "Collected" or combinedText:match("^Collected%s*$") then
-				if DOKI and DOKI.db and DOKI.db.debugMode then
-					print("|cffff69b4DOKI|r     Found standalone 'Collected' text")
-				end
-
-				isCollected = true
-				table.insert(debugInfo, "Found standalone 'Collected' text")
-				break
-			end
-		end
+	else
+		-- The tooltip was empty.
+		finalResult = true
+		finalPartial = false
+		table.insert(debugInfo, "No tooltip lines found. Defaulting to Collected.")
 	end
 
-	if DOKI and DOKI.db and DOKI.db.debugMode then
-		print(string.format(
-			"|cffff69b4DOKI|r Final result: isCollected=%s, hasOtherSources=%s, isPartiallyCollected=%s",
-			tostring(isCollected), tostring(hasOtherSources), tostring(isPartiallyCollected)))
-	end
-
-	return isCollected, hasOtherSources, isPartiallyCollected, debugInfo
+	return finalResult, hasOtherSources, finalPartial, debugInfo
 end
 
 -- KEEP: Your existing public function (unchanged)
