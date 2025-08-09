@@ -7,6 +7,16 @@ local addonName, DOKI = ...
 local attProcessingQueue = {}
 local isProcessingATT = false
 local currentlyProcessingRequest = nil
+-- Enhanced scanning state
+DOKI.scanState = DOKI.scanState or {
+	isScanInProgress = false,
+	isLoginScan = false,
+	scanStartTime = 0,
+	totalItems = 0,
+	processedItems = 0,
+	progressFrame = nil,
+	tooltipHooks = {},
+}
 -- FINAL FIX: Borrow the real GameTooltip temporarily
 function ProcessNextATTInQueue()
 	if #attProcessingQueue == 0 then
@@ -127,6 +137,24 @@ function ProcessNextATTInQueue()
 						(isCollected == nil and "NO_ATT_DATA" or (isPartial and "PARTIAL" or "NOT_COLLECTED"))
 				print(string.format("|cffff69b4DOKI|r [Frame 2] %s -> %s", itemName, result))
 			end
+
+			-- NEW: Add progress tracking after successful callback
+			if DOKI.scanState and DOKI.scanState.isScanInProgress then
+				DOKI.scanState.processedItems = (DOKI.scanState.processedItems or 0) + 1
+				-- Update progress UI if available
+				if DOKI.UpdateProgressFrame then
+					DOKI:UpdateProgressFrame()
+				end
+
+				-- Check if scan is complete
+				if DOKI.scanState.processedItems >= DOKI.scanState.totalItems then
+					if DOKI.CompleteEnhancedATTScan then
+						C_Timer.After(0.1, function()
+							DOKI:CompleteEnhancedATTScan()
+						end)
+					end
+				end
+			end
 		else
 			-- Handle error
 			if DOKI and DOKI.db and DOKI.db.debugMode then
@@ -135,6 +163,23 @@ function ProcessNextATTInQueue()
 			end
 
 			currentlyProcessingRequest.callback(nil, nil, nil, { "ATT_ERROR_IN_PROCESSING", tostring(isCollected) })
+			-- NEW: Add progress tracking for failed callbacks too
+			if DOKI.scanState and DOKI.scanState.isScanInProgress then
+				DOKI.scanState.processedItems = (DOKI.scanState.processedItems or 0) + 1
+				-- Update progress UI if available
+				if DOKI.UpdateProgressFrame then
+					DOKI:UpdateProgressFrame()
+				end
+
+				-- Check if scan is complete
+				if DOKI.scanState.processedItems >= DOKI.scanState.totalItems then
+					if DOKI.CompleteEnhancedATTScan then
+						C_Timer.After(0.1, function()
+							DOKI:CompleteEnhancedATTScan()
+						end)
+					end
+				end
+			end
 		end
 
 		-- STEP 5: Process next item in queue

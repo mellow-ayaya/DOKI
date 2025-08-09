@@ -26,8 +26,9 @@ local function InitializeSavedVariables()
 			debugMode = false,
 			smartMode = true,
 			attMode = true,
-			attTrackReagents = false, -- NEW: Track reagent items in ATT mode
-			attTrackConsumables = false, -- NEW: Track consumable items in ATT mode
+			attTrackReagents = false,
+			attTrackConsumables = false,
+			lastFullScanTime = nil, -- NEW: Track when last full scan completed
 		}
 	else
 		if DOKI_DB.smartMode == nil then
@@ -38,13 +39,18 @@ local function InitializeSavedVariables()
 			DOKI_DB.attMode = false
 		end
 
-		-- NEW: Initialize ATT tracking settings
+		-- Initialize ATT tracking settings
 		if DOKI_DB.attTrackReagents == nil then
 			DOKI_DB.attTrackReagents = false
 		end
 
 		if DOKI_DB.attTrackConsumables == nil then
 			DOKI_DB.attTrackConsumables = false
+		end
+
+		-- NEW: Initialize last scan time
+		if DOKI_DB.lastFullScanTime == nil then
+			DOKI_DB.lastFullScanTime = nil
 		end
 	end
 
@@ -59,6 +65,11 @@ local function OnEvent(self, event, ...)
 			-- Initialize clean systems
 			DOKI:InitializeButtonTextureSystem()
 			DOKI:InitializeUniversalScanning()
+			-- NEW: Initialize enhanced ATT system
+			if DOKI.InitializeEnhancedATTSystem then
+				DOKI:InitializeEnhancedATTSystem()
+			end
+
 			if ElvUI then
 				print(
 					"|cffff69b4DOKI|r loaded with War Within surgical system + ElvUI support + Merchant scroll detection + Ensemble support. Type /doki for commands.")
@@ -1134,6 +1145,36 @@ SlashCmdList["DOKI"] = function(msg)
 		end
 
 		print("|cffff69b4DOKI|r === END FLAGS ===")
+	elseif command == "loginscan" then
+		print("|cffff69b4DOKI|r Simulating login scan...")
+		if DOKI.StartEnhancedATTScan then
+			DOKI:StartEnhancedATTScan(true)
+		else
+			print("|cffff69b4DOKI|r Enhanced ATT system not available")
+		end
+	elseif command == "scanstatus" then
+		if DOKI.scanState and DOKI.scanState.isScanInProgress then
+			print(string.format("|cffff69b4DOKI|r Scan in progress: %d/%d items (%.1fs)",
+				DOKI.scanState.processedItems, DOKI.scanState.totalItems,
+				GetTime() - DOKI.scanState.scanStartTime))
+		else
+			print("|cffff69b4DOKI|r No scan in progress")
+			if DOKI.db and DOKI.db.lastFullScanTime then
+				local lastScan = date("%H:%M:%S", DOKI.db.lastFullScanTime)
+				print(string.format("Last full scan: %s", lastScan))
+			else
+				print("No full scan recorded")
+			end
+		end
+	elseif command == "forcecomplete" then
+		if DOKI.scanState and DOKI.scanState.isScanInProgress then
+			print("|cffff69b4DOKI|r Forcing scan completion...")
+			if DOKI.CompleteEnhancedATTScan then
+				DOKI:CompleteEnhancedATTScan(true)
+			end
+		else
+			print("|cffff69b4DOKI|r No scan in progress to complete")
+		end
 	else
 		print("|cffff69b4DOKI|r War Within Enhanced Surgical System with Ensemble + Merchant Support Commands:")
 		print("")
@@ -1173,5 +1214,9 @@ SlashCmdList["DOKI"] = function(msg)
 		print("  /doki testensemble [itemID] - Trace ensemble detection (default: 234522)")
 		print("  /doki testbagensembles - Scan bags for ensemble items")
 		print("")
+		print("|cffff8000NEW - Enhanced ATT Scanning:|r")
+		print("  /doki loginscan - Simulate login scan with progress UI")
+		print("  /doki scanstatus - Show current scan progress")
+		print("  /doki forcecomplete - Force complete current scan")
 	end
 end
