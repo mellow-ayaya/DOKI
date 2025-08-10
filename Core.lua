@@ -1,4 +1,4 @@
--- DOKI Core - Complete War Within Fix with Enhanced Merchant Support + Ensemble Support
+-- DOKI Core - ATT Ready-State Watcher Architecture
 local addonName, DOKI = ...
 -- Initialize addon namespace
 DOKI.currentItems = {}
@@ -16,6 +16,14 @@ DOKI.needsToyReevaluation = false
 DOKI.needsConsumableReevaluation = false
 DOKI.needsReagentReevaluation = false
 DOKI.needsOtherReevaluation = false
+-- Track if collection events are registered
+DOKI.collectionEventsRegistered = false
+-- ===== THE DEFINITIVE FIX: INITIAL SCAN COMPLETION FLAG =====
+-- This prevents the surgical update system from interfering with the login scan
+DOKI.isInitialScanComplete = false
+-- ===== INDICATOR REFRESH FLAG =====
+-- This ensures indicators are created after login scan when bags are opened
+DOKI.needsFullIndicatorRefresh = false
 -- Main addon frame
 local frame = CreateFrame("Frame", "DOKIFrame")
 -- Initialize saved variables
@@ -28,7 +36,7 @@ local function InitializeSavedVariables()
 			attMode = true,
 			attTrackReagents = false,
 			attTrackConsumables = false,
-			lastFullScanTime = nil, -- NEW: Track when last full scan completed
+			lastFullScanTime = nil,
 		}
 	else
 		if DOKI_DB.smartMode == nil then
@@ -48,7 +56,6 @@ local function InitializeSavedVariables()
 			DOKI_DB.attTrackConsumables = false
 		end
 
-		-- NEW: Initialize last scan time
 		if DOKI_DB.lastFullScanTime == nil then
 			DOKI_DB.lastFullScanTime = nil
 		end
@@ -56,6 +63,7 @@ local function InitializeSavedVariables()
 
 	DOKI.db = DOKI_DB
 end
+
 -- Event handlers
 local function OnEvent(self, event, ...)
 	if event == "ADDON_LOADED" then
@@ -64,18 +72,14 @@ local function OnEvent(self, event, ...)
 			InitializeSavedVariables()
 			-- Initialize clean systems
 			DOKI:InitializeButtonTextureSystem()
-			DOKI:InitializeUniversalScanning()
-			-- NEW: Initialize enhanced ATT system
-			if DOKI.InitializeEnhancedATTSystem then
-				DOKI:InitializeEnhancedATTSystem()
-			end
-
+			-- Proper initialization sequence
+			DOKI:InitializeAddonSystems()
 			if ElvUI then
 				print(
-					"|cffff69b4DOKI|r loaded with War Within surgical system + ElvUI support + Merchant scroll detection + Ensemble support. Type /doki for commands.")
+					"|cffff69b4DOKI|r loaded with ATT Ready-State Watcher + ElvUI support + Merchant scroll detection + Ensemble support. Type /doki for commands.")
 			else
 				print(
-					"|cffff69b4DOKI|r loaded with War Within surgical system + Merchant scroll detection + Ensemble support. Type /doki for commands.")
+					"|cffff69b4DOKI|r loaded with ATT Ready-State Watcher + Merchant scroll detection + Ensemble support. Type /doki for commands.")
 			end
 
 			frame:UnregisterEvent("ADDON_LOADED")
@@ -88,7 +92,89 @@ local function OnEvent(self, event, ...)
 	end
 end
 
--- Register events
+-- Proper initialization sequence function
+function DOKI:InitializeAddonSystems()
+	-- Initialize ensemble detection first
+	if self.InitializeEnsembleDetection then
+		self:InitializeEnsembleDetection()
+	end
+
+	-- Initialize surgical update system
+	if self.surgicalTimer then
+		self.surgicalTimer:Cancel()
+	end
+
+	self.lastSurgicalUpdate = 0
+	self.pendingSurgicalUpdate = false
+	-- Enhanced surgical update timer
+	self.surgicalTimer = C_Timer.NewTicker(0.2, function()
+		if self.db and self.db.enabled then
+			local anyUIVisible = false
+			if ElvUI and self:IsElvUIBagVisible() then
+				anyUIVisible = true
+			elseif ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
+				anyUIVisible = true
+			else
+				for bagID = 0, NUM_BAG_SLOTS do
+					local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
+					if containerFrame and containerFrame:IsVisible() then
+						anyUIVisible = true
+						break
+					end
+				end
+			end
+
+			local cursorHasItem = C_Cursor and C_Cursor.GetCursorItem() and true or false
+			if anyUIVisible or (MerchantFrame and MerchantFrame:IsVisible()) or cursorHasItem then
+				-- ===== INDICATOR REFRESH AFTER LOGIN SCAN =====
+				-- Check if we need to create indicators after login scan completion
+				if DOKI.needsFullIndicatorRefresh and DOKI.isInitialScanComplete then
+					DOKI.needsFullIndicatorRefresh = false
+					if self.db and self.db.debugMode then
+						print("|cffff69b4DOKI|r === CREATING INDICATORS AFTER LOGIN SCAN ===")
+					end
+
+					-- ONLY the delayed scan - remove the immediate duplicate
+					C_Timer.After(0.5, function()
+						if self.FullItemScan then
+							local count = self:FullItemScan()
+							if self.db and self.db.debugMode then
+								print(string.format("|cffff69b4DOKI|r Post-login indicator creation (delayed): %d indicators", count))
+							end
+						elseif self.ForceUniversalScan then
+							local count = self:ForceUniversalScan()
+							if self.db and self.db.debugMode then
+								print(string.format("|cffff69b4DOKI|r Post-login indicator creation (delayed fallback): %d indicators",
+									count))
+							end
+						else
+							if self.db and self.db.debugMode then
+								print("|cffff69b4DOKI|r ERROR: No scan function available for indicator creation")
+							end
+						end
+					end)
+				else
+					-- Normal surgical update (restored)
+					self:SurgicalUpdate(false) -- This will be handled by ButtonTextures.lua
+				end
+			end
+		end
+	end)
+	-- Initialize enhanced ATT system with Ready-State Watcher
+	if self.InitializeEnhancedATTSystem then
+		self:InitializeEnhancedATTSystem()
+	end
+
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Addon systems initialized with ATT Ready-State Watcher")
+		print("  |cff00ff00•|r Session-long caching enabled")
+		print("  |cff00ff00•|r Event debouncing enabled")
+		print("  |cff00ff00•|r Cache invalidation events registered")
+		print("  |cffffff00•|r Collection events will be registered AFTER ATT is ready")
+	end
+end
+
+-- Register events (ONLY startup events, NOT collection events)
 frame:RegisterEvent("ADDON_LOADED")
 frame:RegisterEvent("GET_ITEM_INFO_RECEIVED")
 frame:SetScript("OnEvent", OnEvent)
@@ -1174,6 +1260,57 @@ SlashCmdList["DOKI"] = function(msg)
 			end
 		else
 			print("|cffff69b4DOKI|r No scan in progress to complete")
+		end
+	elseif command == "forcerefresh" then
+		-- Manually trigger indicator refresh
+		print("|cffff69b4DOKI|r Forcing indicator refresh...")
+		DOKI.needsFullIndicatorRefresh = false
+		if DOKI.FullItemScan then
+			local count = DOKI:FullItemScan()
+			print(string.format("|cffff69b4DOKI|r Force refresh complete: %d indicators created", count))
+		else
+			print("|cffff69b4DOKI|r FullItemScan function not available")
+		end
+	elseif command == "setrefreshflag" then
+		-- Manually set the refresh flag for testing
+		DOKI.needsFullIndicatorRefresh = true
+		print("|cffff69b4DOKI|r Indicator refresh flag manually set to TRUE")
+		print("|cffff69b4DOKI|r Open bags to trigger indicator creation")
+	elseif command == "racecondition" then
+		-- Debug the race condition
+		print("|cffff69b4DOKI|r === RACE CONDITION DEBUG ===")
+		print(string.format("Initial scan complete: %s", DOKI.isInitialScanComplete and "YES" or "NO"))
+		print(string.format("Needs indicator refresh: %s", DOKI.needsFullIndicatorRefresh and "YES" or "NO"))
+		print(string.format("ATT mode enabled: %s", DOKI.db.attMode and "YES" or "NO"))
+		print(string.format("Scan in progress: %s", (DOKI.scanState and DOKI.scanState.isScanInProgress) and "YES" or "NO"))
+		if DOKI.GetATTWatcherStatus then
+			local watcherActive = DOKI:GetATTWatcherStatus()
+			print(string.format("ATT watcher active: %s", watcherActive and "YES" or "NO"))
+		end
+
+		-- Check if surgical timer is running
+		print(string.format("Surgical timer active: %s", DOKI.surgicalTimer and "YES" or "NO"))
+		-- Show current cache status
+		local cacheCount = 0
+		if DOKI.collectionCache then
+			for _ in pairs(DOKI.collectionCache) do
+				cacheCount = cacheCount + 1
+			end
+		end
+
+		print(string.format("Collection cache entries: %d", cacheCount))
+		print("|cffff69b4DOKI|r === END RACE CONDITION DEBUG ===")
+		print("")
+		print("|cffffd100DIAGNOSIS:|r")
+		if not DOKI.isInitialScanComplete and cacheCount == 0 then
+			print("  • Race condition detected: Surgical timer started before scan")
+		elseif DOKI.isInitialScanComplete and DOKI.needsFullIndicatorRefresh then
+			print("  • Cache populated but indicators not yet created")
+			print("  • Solution: Open your bags to trigger indicator creation")
+		elseif DOKI.isInitialScanComplete and not DOKI.needsFullIndicatorRefresh then
+			print("  • System working correctly")
+		else
+			print("  • Scan still in progress or cache being populated")
 		end
 	else
 		print("|cffff69b4DOKI|r War Within Enhanced Surgical System with Ensemble + Merchant Support Commands:")

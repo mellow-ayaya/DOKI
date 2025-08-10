@@ -1,4 +1,4 @@
--- DOKI Collections - ENHANCED: Surgical Update System (No Batching/Lazy Loading)
+-- DOKI Collections - Delayed Event Registration Architecture (No Login Grace Period)
 local addonName, DOKI = ...
 -- Initialize collection-specific storage
 DOKI.foundFramesThisScan = {}
@@ -145,6 +145,244 @@ function DOKI:IsAnyRelevantUIVisible()
 	end
 
 	return false
+end
+
+-- ===== NEW: DELAYED EVENT REGISTRATION SYSTEM =====
+-- This function registers collection events AFTER the initial scan is complete
+function DOKI:RegisterCollectionEvents()
+	if self.collectionEventsRegistered then
+		if self.db and self.db.debugMode then
+			print("|cffff69b4DOKI|r Collection events already registered")
+		end
+
+		return
+	end
+
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r === REGISTERING COLLECTION EVENTS (POST-SCAN) ===")
+	end
+
+	-- Create event frame if it doesn't exist
+	if not self.collectionEventFrame then
+		self.collectionEventFrame = CreateFrame("Frame")
+	end
+
+	-- Register collection-related events that can interfere with scanning
+	local collectionEvents = {
+		-- Collection change events
+		"PET_JOURNAL_LIST_UPDATE",   -- Main pet event
+		"COMPANION_LEARNED",         -- Mount/pet learning
+		"COMPANION_UNLEARNED",       -- Mount/pet unlearning
+		"NEW_MOUNT_ADDED",           -- Mount collection updates
+		"TRANSMOG_COLLECTION_UPDATED", -- When transmog is collected
+		"TOYS_UPDATED",              -- When toys are learned
+
+		-- Rapid-fire events (debounced)
+		"BAG_UPDATE",
+		"BAG_UPDATE_DELAYED",
+		"ITEM_LOCK_CHANGED",
+		"CURSOR_CHANGED",
+		"MERCHANT_UPDATE",
+
+		-- Merchant events
+		"MERCHANT_SHOW",
+		"MERCHANT_CLOSED",
+		"BANKFRAME_OPENED",
+		"BANKFRAME_CLOSED",
+		"MERCHANT_CONFIRM_TRADE_TIMER_REMOVAL",
+		"UI_INFO_MESSAGE",
+		"ITEM_UNLOCKED",
+	}
+	for _, event in ipairs(collectionEvents) do
+		self.collectionEventFrame:RegisterEvent(event)
+	end
+
+	self.collectionEventFrame:SetScript("OnEvent", function(self, event, ...)
+		if not (DOKI.db and DOKI.db.enabled) then return end
+
+		-- Handle debounced events
+		local debouncedEvents = {
+			"BAG_UPDATE",
+			"BAG_UPDATE_DELAYED",
+			"ITEM_LOCK_CHANGED",
+			"CURSOR_CHANGED",
+			"MERCHANT_UPDATE",
+		}
+		if tContains(debouncedEvents, event) then
+			DOKI:DebouncedSurgicalUpdate(event, false)
+			return
+		end
+
+		-- Handle immediate events
+		if event == "MERCHANT_SHOW" then
+			DOKI.merchantScrollDetector.merchantOpen = true
+			DOKI:InitializeMerchantScrollDetection()
+			DOKI:DebounceEvent("MERCHANT_SHOW", function()
+				if DOKI.db and DOKI.db.enabled then
+					DOKI:FullItemScan()
+				end
+			end, 0.2)
+		elseif event == "MERCHANT_CLOSED" then
+			DOKI.merchantScrollDetector.merchantOpen = false
+			DOKI.merchantScrollDetector.lastMerchantState = nil
+			if DOKI.CleanupMerchantTextures then
+				DOKI:CleanupMerchantTextures()
+			end
+		elseif event == "BANKFRAME_OPENED" then
+			DOKI:DebounceEvent("BANKFRAME_OPENED", function()
+				if DOKI.db and DOKI.db.enabled then
+					DOKI:FullItemScan()
+				end
+			end, 0.2)
+		elseif event == "BANKFRAME_CLOSED" then
+			if DOKI.CleanupBankTextures then
+				DOKI:CleanupBankTextures()
+			end
+		elseif event == "MERCHANT_CONFIRM_TRADE_TIMER_REMOVAL" or event == "UI_INFO_MESSAGE" then
+			DOKI:DebounceEvent("MERCHANT_SELL", function()
+				if DOKI.db and DOKI.db.enabled then
+					DOKI:TriggerImmediateSurgicalUpdate()
+				end
+			end, 0.05)
+		elseif event == "ITEM_UNLOCKED" then
+			C_Timer.After(0.02, function()
+				if DOKI.db and DOKI.db.enabled then
+					DOKI:TriggerImmediateSurgicalUpdate()
+				end
+			end)
+		elseif event == "PET_JOURNAL_LIST_UPDATE" or
+				event == "COMPANION_LEARNED" or event == "COMPANION_UNLEARNED" or
+				event == "NEW_MOUNT_ADDED" then
+			-- Pet/Mount collection changed
+			DOKI:DebounceEvent("COLLECTION_CHANGE", function()
+				if DOKI.db and DOKI.db.enabled then
+					-- Clear cache
+					DOKI:ClearCollectionCache()
+					-- ATT MODE: Mark categories for re-evaluation
+					if DOKI.db.attMode then
+						DOKI.needsPetReevaluation = true
+						DOKI.needsMountReevaluation = true
+						if DOKI.db.debugMode then
+							print("|cffff69b4DOKI|r ATT: Marked pets and mounts for re-evaluation")
+						end
+					else
+						-- Non-ATT mode: use existing full scan
+						DOKI:FullItemScan(true)
+					end
+				end
+			end, 0.1)
+		elseif event == "TRANSMOG_COLLECTION_UPDATED" then
+			-- Transmog collection changed
+			DOKI:DebounceEvent("COLLECTION_CHANGE", function()
+				if DOKI.db and DOKI.db.enabled then
+					-- Clear cache
+					DOKI:ClearCollectionCache()
+					-- ATT MODE: Mark category for re-evaluation
+					if DOKI.db.attMode then
+						DOKI.needsTransmogReevaluation = true
+						if DOKI.db.debugMode then
+							print("|cffff69b4DOKI|r ATT: Marked transmog for re-evaluation")
+						end
+					else
+						-- Non-ATT mode: use existing full scan
+						DOKI:FullItemScan()
+					end
+				end
+			end, 0.1)
+		elseif event == "TOYS_UPDATED" then
+			-- Toy collection changed
+			DOKI:DebounceEvent("COLLECTION_CHANGE", function()
+				if DOKI.db and DOKI.db.enabled then
+					-- Clear cache
+					DOKI:ClearCollectionCache()
+					-- ATT MODE: Mark category for re-evaluation
+					if DOKI.db.attMode then
+						DOKI.needsToyReevaluation = true
+						if DOKI.db.debugMode then
+							print("|cffff69b4DOKI|r ATT: Marked toys for re-evaluation")
+						end
+
+						-- Trigger surgical update to process the flag
+						DOKI:TriggerImmediateSurgicalUpdate()
+					else
+						-- Non-ATT mode: use existing full scan
+						DOKI:FullItemScan()
+					end
+				end
+			end, 0.1)
+		end
+	end)
+	-- Mark as registered
+	self.collectionEventsRegistered = true
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r Collection events registered: %d events", #collectionEvents))
+		print("|cffff69b4DOKI|r === COLLECTION EVENT REGISTRATION COMPLETE ===")
+	end
+end
+
+-- ===== CACHE INVALIDATION EVENTS (SEPARATE FROM COLLECTION EVENTS) =====
+function DOKI:SetupCacheInvalidationEvents()
+	if self.cacheEventFrame then
+		self.cacheEventFrame:UnregisterAllEvents()
+	else
+		self.cacheEventFrame = CreateFrame("Frame")
+	end
+
+	-- These events only clear cache, they don't interfere with scanning
+	local cacheEvents = {
+		["TRANSMOG_COLLECTION_UPDATED"] = DOKI.CACHE_TYPES.TRANSMOG,
+		["PET_JOURNAL_LIST_UPDATE"] = DOKI.CACHE_TYPES.PET,
+		["COMPANION_LEARNED"] = DOKI.CACHE_TYPES.PET,
+		["COMPANION_UNLEARNED"] = DOKI.CACHE_TYPES.PET,
+		["TOYS_UPDATED"] = DOKI.CACHE_TYPES.TOY,
+		["NEW_MOUNT_ADDED"] = DOKI.CACHE_TYPES.MOUNT,
+	}
+	for event, cacheType in pairs(cacheEvents) do
+		self.cacheEventFrame:RegisterEvent(event)
+	end
+
+	self.cacheEventFrame:SetScript("OnEvent", function(self, event, ...)
+		local cacheType = cacheEvents[event]
+		if cacheType then
+			-- Only clear cache if we have entries to clear (reduce spam)
+			local clearedCount = 0
+			for key, cached in pairs(DOKI.collectionCache) do
+				if cached.cacheType == cacheType then
+					DOKI.collectionCache[key] = nil
+					clearedCount = clearedCount + 1
+				end
+			end
+
+			if clearedCount > 0 then
+				DOKI.cacheStats.invalidations = DOKI.cacheStats.invalidations + 1
+				DOKI.cacheStats.totalEntries = DOKI.cacheStats.totalEntries - clearedCount
+				if DOKI.db and DOKI.db.debugMode then
+					print(string.format("|cffff69b4DOKI|r Cleared %s cache (%d entries)", cacheType, clearedCount))
+				end
+			end
+
+			-- Also clear ATT cache if we have ATT entries
+			if DOKI.db and DOKI.db.attMode then
+				local attCleared = 0
+				for key, cached in pairs(DOKI.collectionCache) do
+					if cached.isATTResult then
+						DOKI.collectionCache[key] = nil
+						attCleared = attCleared + 1
+					end
+				end
+
+				if attCleared > 0 then
+					DOKI.cacheStats.totalEntries = DOKI.cacheStats.totalEntries - attCleared
+					if DOKI.db and DOKI.db.debugMode then
+						print(string.format("|cffff69b4DOKI|r Also cleared %d ATT cache entries", attCleared))
+					end
+				end
+			end
+		end
+	end)
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r Cache invalidation events registered")
+	end
 end
 
 -- Create scan processing frame
@@ -586,11 +824,19 @@ function DOKI:SetupDebouncedEventSystem()
 				end
 			end, 0.05)
 		elseif event == "PET_JOURNAL_LIST_UPDATE" or
-				event == "COMPANION_LEARNED" or
-				event == "COMPANION_UNLEARNED" then
+				event == "COMPANION_LEARNED" or event == "COMPANION_UNLEARNED" then
 			-- Pet/Mount collection changed
 			DOKI:DebounceEvent("COLLECTION_CHANGE", function()
 				if DOKI.db and DOKI.db.enabled then
+					-- NEW: Skip during login grace period (prevents login spam)
+					if DOKI.IsLoginGracePeriodActive and DOKI:IsLoginGracePeriodActive() then
+						if DOKI.db and DOKI.db.debugMode then
+							print("|cffff69b4DOKI|r Skipping collection change - login grace period active")
+						end
+
+						return
+					end
+
 					-- Clear cache
 					DOKI:ClearCollectionCache()
 					-- ATT MODE: Mark categories for re-evaluation
@@ -610,6 +856,15 @@ function DOKI:SetupDebouncedEventSystem()
 			-- Transmog collection changed
 			DOKI:DebounceEvent("COLLECTION_CHANGE", function()
 				if DOKI.db and DOKI.db.enabled then
+					-- NEW: Skip during login grace period (prevents login spam)
+					if DOKI.IsLoginGracePeriodActive and DOKI:IsLoginGracePeriodActive() then
+						if DOKI.db and DOKI.db.debugMode then
+							print("|cffff69b4DOKI|r Skipping transmog change - login grace period active")
+						end
+
+						return
+					end
+
 					-- Clear cache
 					DOKI:ClearCollectionCache()
 					-- ATT MODE: Mark category for re-evaluation
@@ -628,16 +883,25 @@ function DOKI:SetupDebouncedEventSystem()
 			-- Toy collection changed
 			DOKI:DebounceEvent("COLLECTION_CHANGE", function()
 				if DOKI.db and DOKI.db.enabled then
+					-- NEW: Skip during login grace period (prevents login spam)
+					if DOKI.IsLoginGracePeriodActive and DOKI:IsLoginGracePeriodActive() then
+						if DOKI.db and DOKI.db.debugMode then
+							print("|cffff69b4DOKI|r Skipping toy change - login grace period active")
+						end
+
+						return
+					end
+
 					-- Clear cache
 					DOKI:ClearCollectionCache()
 					-- ATT MODE: Mark category for re-evaluation
 					if DOKI.db.attMode then
-						DOKI.needsTransmogReevaluation = true
+						DOKI.needsToyReevaluation = true
 						if DOKI.db.debugMode then
-							print("|cffff69b4DOKI|r ATT: Marked transmog for re-evaluation")
+							print("|cffff69b4DOKI|r ATT: Marked toys for re-evaluation")
 						end
 
-						-- MISSING: Trigger surgical update to process the flag
+						-- Trigger surgical update to process the flag
 						DOKI:TriggerImmediateSurgicalUpdate()
 					else
 						-- Non-ATT mode: use existing full scan
@@ -929,73 +1193,6 @@ function DOKI:SetCachedCollectionStatus(itemID, itemLink, isCollected, hasOtherT
 		cacheType = cacheType,
 		sessionTime = GetTime(), -- For debugging/stats only
 	}
-end
-
--- ===== EVENT-BASED CACHE INVALIDATION =====
-function DOKI:SetupCacheInvalidationEvents()
-	if self.cacheEventFrame then
-		self.cacheEventFrame:UnregisterAllEvents()
-	else
-		self.cacheEventFrame = CreateFrame("Frame")
-	end
-
-	-- FIXED: Better events that don't spam
-	local cacheEvents = {
-		["TRANSMOG_COLLECTION_UPDATED"] = DOKI.CACHE_TYPES.TRANSMOG,
-		["PET_JOURNAL_LIST_UPDATE"] = DOKI.CACHE_TYPES.PET,
-		["COMPANION_LEARNED"] = DOKI.CACHE_TYPES.PET,
-		["COMPANION_UNLEARNED"] = DOKI.CACHE_TYPES.PET,
-		["TOYS_UPDATED"] = DOKI.CACHE_TYPES.TOY,
-		-- FIXED: Use proper mount event instead of COMPANION_UPDATE
-		["NEW_MOUNT_ADDED"] = DOKI.CACHE_TYPES.MOUNT,
-		-- REMOVED: COMPANION_UPDATE (spams on movement)
-	}
-	for event, cacheType in pairs(cacheEvents) do
-		self.cacheEventFrame:RegisterEvent(event)
-	end
-
-	self.cacheEventFrame:SetScript("OnEvent", function(self, event, ...)
-		local cacheType = cacheEvents[event]
-		if cacheType then
-			-- FIXED: Only clear cache if we have entries to clear (reduce spam)
-			local clearedCount = 0
-			for key, cached in pairs(DOKI.collectionCache) do
-				if cached.cacheType == cacheType then
-					DOKI.collectionCache[key] = nil
-					clearedCount = clearedCount + 1
-				end
-			end
-
-			if clearedCount > 0 then
-				DOKI.cacheStats.invalidations = DOKI.cacheStats.invalidations + 1
-				DOKI.cacheStats.totalEntries = DOKI.cacheStats.totalEntries - clearedCount
-				if DOKI.db and DOKI.db.debugMode then
-					print(string.format("|cffff69b4DOKI|r Cleared %s cache (%d entries)", cacheType, clearedCount))
-				end
-			end
-
-			-- FIXED: Only clear ATT cache if we actually have ATT entries
-			if DOKI.db and DOKI.db.attMode then
-				local attCleared = 0
-				for key, cached in pairs(DOKI.collectionCache) do
-					if cached.isATTResult then
-						DOKI.collectionCache[key] = nil
-						attCleared = attCleared + 1
-					end
-				end
-
-				if attCleared > 0 then
-					DOKI.cacheStats.totalEntries = DOKI.cacheStats.totalEntries - attCleared
-					if DOKI.db and DOKI.db.debugMode then
-						print(string.format("|cffff69b4DOKI|r Also cleared %d ATT cache entries", attCleared))
-					end
-				end
-			end
-		end
-	end)
-	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Cache invalidation events registered (reduced spam)")
-	end
 end
 
 -- ===== CACHE STATISTICS AND DEBUGGING =====
@@ -1931,7 +2128,6 @@ function DOKI:InitializeUniversalScanning()
 	-- Initialize ensemble detection
 	self:InitializeEnsembleDetection()
 	-- NEW: Initialize cache and debouncing systems
-	self:SetupCacheInvalidationEvents() -- This was missing!
 	self:SetupDebouncedEventSystem()
 	-- Enhanced surgical update timer
 	self.surgicalTimer = C_Timer.NewTicker(0.2, function()

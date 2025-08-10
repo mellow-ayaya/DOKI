@@ -1,8 +1,6 @@
--- DOKI Collections ATT - FINAL FIX: Borrow Real GameTooltip for ATT Hooks
+-- DOKI Collections ATT - Updated for Delayed Event Registration Architecture
 local addonName, DOKI = ...
--- ===== NO MORE HIDDEN TOOLTIP - WE BORROW THE REAL ONE =====
--- Remove the hiddenTooltip variable and InitializeATTTooltip function
--- ATT only hooks the real GameTooltip now!
+-- ===== ATT PROCESSING QUEUE (UNCHANGED) =====
 -- Keep your existing queue variables (unchanged)
 local attProcessingQueue = {}
 local isProcessingATT = false
@@ -17,6 +15,7 @@ DOKI.scanState = DOKI.scanState or {
 	progressFrame = nil,
 	tooltipHooks = {},
 }
+-- ===== MAIN ATT PROCESSING FUNCTION (UNCHANGED) =====
 -- FINAL FIX: Borrow the real GameTooltip temporarily
 function ProcessNextATTInQueue()
 	if #attProcessingQueue == 0 then
@@ -40,16 +39,27 @@ function ProcessNextATTInQueue()
 			.itemID))
 	end
 
-	-- STEP 1: BORROW THE REAL GAMETOOLTIP
+	-- STEP 1: BORROW THE REAL GAMETOOLTIP WITH SMART BLOCKING
 	-- Save its current owner so we can restore it
 	local previousOwner = GameTooltip:GetOwner()
+	-- NEW: Set flag to allow our tooltip usage during scanning
+	if DOKI.scanState then
+		DOKI.scanState.isInternalScan = true
+	end
+
 	-- Take control and move it off-screen
 	GameTooltip:SetOwner(UIParent, "ANCHOR_NONE")
 	GameTooltip:ClearLines()
 	-- Set the hyperlink - THIS will now trigger ATT's hooks because it's the real GameTooltip!
 	GameTooltip:SetHyperlink(currentlyProcessingRequest.itemLink)
+	-- NEW: Immediately disable the flag after showing
+	if DOKI.scanState then
+		DOKI.scanState.isInternalScan = false
+	end
+
 	if DOKI and DOKI.db and DOKI.db.debugMode then
-		print(string.format("|cffff69b4DOKI|r [Frame 1] Set hyperlink on real GameTooltip, waiting for ATT hooks..."))
+		print(string.format(
+			"|cffff69b4DOKI|r [Frame 1] Set hyperlink on real GameTooltip with smart blocking, waiting for ATT hooks..."))
 	end
 
 	-- STEP 2: Schedule the reading and restoration for next frame
@@ -138,7 +148,7 @@ function ProcessNextATTInQueue()
 				print(string.format("|cffff69b4DOKI|r [Frame 2] %s -> %s", itemName, result))
 			end
 
-			-- NEW: Add progress tracking after successful callback
+			-- Progress tracking after successful callback
 			if DOKI.scanState and DOKI.scanState.isScanInProgress then
 				DOKI.scanState.processedItems = (DOKI.scanState.processedItems or 0) + 1
 				-- Update progress UI if available
@@ -163,7 +173,7 @@ function ProcessNextATTInQueue()
 			end
 
 			currentlyProcessingRequest.callback(nil, nil, nil, { "ATT_ERROR_IN_PROCESSING", tostring(isCollected) })
-			-- NEW: Add progress tracking for failed callbacks too
+			-- Progress tracking for failed callbacks too
 			if DOKI.scanState and DOKI.scanState.isScanInProgress then
 				DOKI.scanState.processedItems = (DOKI.scanState.processedItems or 0) + 1
 				-- Update progress UI if available
@@ -188,7 +198,7 @@ function ProcessNextATTInQueue()
 	end)
 end
 
--- KEEP: Your existing parsing function (unchanged - it's perfect!)
+-- ===== ATT TOOLTIP PARSING (UNCHANGED) =====
 -- Helper function to remove ONLY WoW's invisible formatting codes.
 -- This version is safer and will NOT remove visible Unicode symbols.
 local function StripWoWFormatting(str)
@@ -272,7 +282,7 @@ function ParseATTTooltipLines(tooltipLines, itemID, itemLink)
 	return finalResult, hasOtherSources, finalPartial, debugInfo
 end
 
--- KEEP: Your existing public function (unchanged)
+-- ===== PUBLIC ATT INTERFACE (UNCHANGED) =====
 function GetATTStatusAsync(itemID, itemLink, callback)
 	if DOKI and DOKI.db and DOKI.db.debugMode then
 		print("|cffff69b4DOKI|r GetATTStatusAsync called")
@@ -314,7 +324,7 @@ function GetATTStatusAsync(itemID, itemLink, callback)
 	end
 end
 
--- KEEP: Your existing main integration function (unchanged)
+-- ===== DOKI INTEGRATION (UNCHANGED) =====
 function DOKI:GetATTCollectionStatus(itemID, itemLink)
 	if not itemID then return nil, nil, nil end
 
@@ -373,7 +383,7 @@ function DOKI:GetATTCollectionStatus(itemID, itemLink)
 			end
 		end
 
-		-- NEW: Create indicators directly instead of triggering full rescan
+		-- Create indicators directly instead of triggering full rescan
 		C_Timer.After(0.05, function() -- Small delay to ensure button state is stable
 			if DOKI and DOKI.db and DOKI.db.enabled then
 				local indicatorsCreated = DOKI:CreateATTIndicatorDirectly(itemID, itemLink, isCollected, hasOtherSources,
@@ -387,7 +397,7 @@ function DOKI:GetATTCollectionStatus(itemID, itemLink)
 	return nil, nil, nil
 end
 
--- KEEP: All your existing cache management functions (unchanged)
+-- ===== CACHE MANAGEMENT (UNCHANGED) =====
 function DOKI:GetCachedATTStatus(itemID, itemLink)
 	local cacheKey = "ATT_" .. (itemLink or tostring(itemID))
 	local cached = self.collectionCache[cacheKey]
@@ -436,43 +446,7 @@ function DOKI:SetCachedATTStatus(itemID, itemLink, isCollected, hasOtherTransmog
 	end
 end
 
--- Simple diagnostic
-function DOKI:ShowATTQueueStatus()
-	print(string.format("|cffff69b4DOKI|r ATT Queue Status (BORROW REAL GAMETOOLTIP):"))
-	print(string.format("  Items in queue: %d", #attProcessingQueue))
-	print(string.format("  Currently processing: %s", tostring(isProcessingATT)))
-	if #attProcessingQueue > 0 then
-		print("  Next few items in queue:")
-		for i = 1, math.min(5, #attProcessingQueue) do
-			local request = attProcessingQueue[i]
-			local itemID = request[1]
-			local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
-			print(string.format("    %d. %s (ID: %d)", i, itemName, itemID))
-		end
-	end
-
-	print("")
-	print("BORROW GAMETOOLTIP System Features:")
-	print("  ✓ Uses real GameTooltip (ATT definitely hooks this)")
-	print("  ✓ Temporarily borrows it without user interference")
-	print("  ✓ Restores original owner after reading")
-	print("  ✓ Frame delay for ATT hook timing")
-end
-
--- Simple slash commands
-SLASH_DOKIATTSTREAM1 = "/attstream"
-SlashCmdList["DOKIATTSTREAM"] = function(msg)
-	local command = strlower(strtrim(msg or ""))
-	if command == "queue" then
-		DOKI:ShowATTQueueStatus()
-	else
-		print("|cffff69b4DOKI|r ATT Commands:")
-		print("/attstream queue - Show queue status")
-		print("")
-		print("FINAL FIX: Borrows real GameTooltip!")
-	end
-end
--- Add this new function to find the button for a specific item
+-- ===== BUTTON FINDING AND INDICATOR CREATION (UNCHANGED) =====
 function DOKI:FindButtonForItem(targetItemID, targetItemLink)
 	local foundButtons = {}
 	-- Search ElvUI bags
@@ -597,8 +571,6 @@ function DOKI:FindButtonForItem(targetItemID, targetItemLink)
 	return foundButtons
 end
 
--- Replace the callback in GetATTStatusAsync with this version:
--- This should go in CollectionsATT.lua, replacing the existing callback section
 function DOKI:CreateATTIndicatorDirectly(itemID, itemLink, isCollected, hasOtherSources, isPartiallyCollected)
 	-- Don't create indicator if ATT has no data for this item (isCollected = nil means no ATT data)
 	if isCollected == nil then
@@ -643,4 +615,46 @@ function DOKI:CreateATTIndicatorDirectly(itemID, itemLink, isCollected, hasOther
 	end
 
 	return indicatorsCreated
+end
+
+-- ===== DIAGNOSTICS (UNCHANGED) =====
+function DOKI:ShowATTQueueStatus()
+	print(string.format("|cffff69b4DOKI|r ATT Queue Status (BORROW REAL GAMETOOLTIP):"))
+	print(string.format("  Items in queue: %d", #attProcessingQueue))
+	print(string.format("  Currently processing: %s", tostring(isProcessingATT)))
+	if #attProcessingQueue > 0 then
+		print("  Next few items in queue:")
+		for i = 1, math.min(5, #attProcessingQueue) do
+			local request = attProcessingQueue[i]
+			local itemID = request[1]
+			local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+			print(string.format("    %d. %s (ID: %d)", i, itemName, itemID))
+		end
+	end
+
+	print("")
+	print("SMART TOOLTIP BLOCKING System Features:")
+	print("  ✓ Uses real GameTooltip (ATT definitely hooks this)")
+	print("  ✓ Temporarily borrows it without user interference")
+	print("  ✓ SMART blocking - allows our scanning, blocks user tooltips")
+	print("  ✓ Restores original owner after reading")
+	print("  ✓ Frame delay for ATT hook timing")
+	print("")
+	print("DELAYED EVENT REGISTRATION:")
+	print(string.format("  Collection events registered: %s",
+		DOKI.collectionEventsRegistered and "YES" or "NO (will be after login scan)"))
+end
+
+-- ===== SLASH COMMANDS (UNCHANGED) =====
+SLASH_DOKIATTSTREAM1 = "/attstream"
+SlashCmdList["DOKIATTSTREAM"] = function(msg)
+	local command = strlower(strtrim(msg or ""))
+	if command == "queue" then
+		DOKI:ShowATTQueueStatus()
+	else
+		print("|cffff69b4DOKI|r ATT Commands:")
+		print("/attstream queue - Show queue status")
+		print("")
+		print("Uses real GameTooltip borrowing + Smart Blocking + Delayed Event Registration!")
+	end
 end

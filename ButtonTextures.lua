@@ -551,11 +551,25 @@ end
 
 -- ADDED: Enhanced item data retrieval for surgical updates (supports battlepets + ensembles)
 function DOKI:GetItemDataForSurgicalUpdate(itemID, itemLink)
-	-- FIXED: Handle empty slots - return nil so no indicator is created
+	-- Handle empty slots - return nil so no indicator is created
 	if itemID == "EMPTY_SLOT" or not itemID then return nil end
 
-	-- ATT MODE: Skip IsCollectibleItem check, but apply ATT filtering
+	-- ===== THE DEFINITIVE FIX: GATEKEEPER FOR ATT MODE =====
+	-- ATT MODE: Prevent surgical updates from interfering with login scan
 	if self.db and self.db.attMode then
+		-- *** THE GATEKEEPER: Only try to get ATT status if initial scan is complete ***
+		if not DOKI.isInitialScanComplete then
+			-- The initial login scan is still running. Do nothing and wait.
+			-- The button will be updated correctly when the scan completes.
+			if self.db and self.db.debugMode then
+				local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
+				print(string.format("|cffffd100DOKI GATEKEEPER:|r Initial scan not complete, skipping ATT check for %s", itemName))
+			end
+
+			return nil -- Don't create any indicator yet
+		end
+
+		-- Initial scan is complete - proceed with normal ATT logic
 		-- Apply ATT-specific filtering
 		if not self:ShouldTrackItemInATTMode(itemID) then
 			return nil -- Item filtered by ATT settings
@@ -574,8 +588,8 @@ function DOKI:GetItemDataForSurgicalUpdate(itemID, itemLink)
 		}
 	end
 
-	-- NORMAL MODE: Use existing logic
-	-- ADDED: Handle caged pets first
+	-- NORMAL MODE: Use existing logic (unchanged)
+	-- Handle caged pets first
 	if itemLink then
 		local petSpeciesID = self:GetPetSpeciesFromBattlePetLink(itemLink)
 		if petSpeciesID then
@@ -592,7 +606,7 @@ function DOKI:GetItemDataForSurgicalUpdate(itemID, itemLink)
 		end
 	end
 
-	-- ADDED: Handle ensembles next
+	-- Handle ensembles next
 	if self:IsEnsembleItem(itemID) then
 		local isCollected = self:IsEnsembleCollected(itemID, itemLink)
 		return {

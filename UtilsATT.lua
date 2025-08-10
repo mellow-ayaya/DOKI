@@ -1,12 +1,10 @@
--- DOKI Enhanced ATT Scanning - Login Scan with Progress UI and Tooltip Blocking
--- THIS FILE: UtilsATT.lua
--- Add this line to DOKI.toc after CollectionsATT.lua:
--- UtilsATT.lua
+-- DOKI Enhanced ATT Scanning - The Definitive "ATT Ready-State Watcher" (Local Scope)
 local addonName, DOKI = ...
 -- ===== SCAN STATE MANAGEMENT =====
 DOKI.scanState = {
 	isScanInProgress = false,
 	isLoginScan = false,
+	isInternalScan = false, -- Flag to allow our own tooltip usage
 	scanStartTime = 0,
 	totalItems = 0,
 	processedItems = 0,
@@ -44,30 +42,186 @@ local function needsFullScan()
 	return true
 end
 
--- ===== TOOLTIP BLOCKING SYSTEM =====
+-- ===== THE DEFINITIVE ATT READY-STATE WATCHER (LOCAL SCOPE) =====
+-- By declaring these functions and variables as 'local', we ensure they cannot
+-- conflict with any other addon or any other part of your own code.
+local function StartEnhancedATTScan(isLoginScan)
+	-- This is a safe wrapper for the real DOKI function
+	if DOKI and DOKI.StartEnhancedATTScan then
+		DOKI:StartEnhancedATTScan(isLoginScan)
+	else
+		print("|cffff0000DOKI ERROR:|r StartEnhancedATTScan function not available")
+	end
+end
+
+local attWatcherIsActive = false
+local function StartATTWatcher()
+	-- Safety check to ensure we don't start multiple watchers
+	if attWatcherIsActive then return end
+
+	attWatcherIsActive = true
+	if DOKI and DOKI.db and DOKI.db.debugMode then
+		print("|cffffd100DOKI:|r Starting ATT Ready-State Watcher...")
+	end
+
+	local maxAttempts = 60 -- 60-second timeout to prevent infinite loops
+	local attempt = 0
+	local watcherTicker = nil
+	local function CheckATTReadyState()
+		attempt = attempt + 1
+		-- === THE DEFINITIVE "READY" CHECK ===
+		if _G["AllTheThings"] and _G["AllTheThings"].GetCachedSearchResults then
+			-- SUCCESS! ATT is ready.
+			if watcherTicker then
+				watcherTicker:Cancel()
+			end
+
+			attWatcherIsActive = false
+			if DOKI and DOKI.db and DOKI.db.debugMode then
+				print(string.format("|cff00ff00DOKI SUCCESS:|r ATT is ready after %d seconds. Proceeding with scan.", attempt))
+			end
+
+			-- === THE "FORCE-PRIME AND SCAN" SEQUENCE ===
+			-- 1. Force-prime the WoW client's item data
+			if DOKI and DOKI.db and DOKI.db.debugMode then
+				print("|cffff69b4DOKI|r Opening bags to prime inventory data...")
+			end
+
+			OpenAllBags()
+			-- 2. Wait one frame for the open command to process
+			C_Timer.After(0, function()
+				if DOKI and DOKI.db and DOKI.db.debugMode then
+					print("|cffff69b4DOKI|r Closing bags...")
+				end
+
+				CloseAllBags()
+				-- 3. Wait a fraction of a second to ensure the client has settled
+				C_Timer.After(0.1, function()
+					if DOKI and DOKI.db and DOKI.db.debugMode then
+						print("|cffff69b4DOKI|r Starting enhanced ATT scan...")
+					end
+
+					-- 4. Execute the main blocking scan
+					StartEnhancedATTScan(true)
+				end)
+			end)
+			return
+		end
+
+		-- Debug output every 5 seconds to show progress
+		if DOKI and DOKI.db and DOKI.db.debugMode and (attempt % 5 == 0) then
+			print(string.format(
+				"|cffff69b4DOKI|r ATT Watcher: %d seconds elapsed, still waiting for AllTheThings.GetCachedSearchResults...",
+				attempt))
+		end
+
+		-- Check for timeout
+		if attempt > maxAttempts then
+			if watcherTicker then
+				watcherTicker:Cancel()
+			end
+
+			attWatcherIsActive = false
+			print(
+				"|cffff0000DOKI ERROR:|r ATT Ready-State Watcher timed out after 60 seconds. ATT may not be loaded correctly.")
+			-- Still register collection events even if ATT failed to load
+			if DOKI and DOKI.RegisterCollectionEvents then
+				C_Timer.After(1, function()
+					DOKI:RegisterCollectionEvents()
+				end)
+			end
+		end
+	end
+
+	-- Start the watcher, checking once per second
+	watcherTicker = C_Timer.NewTicker(1, CheckATTReadyState)
+end
+
+-- This frame is also local to this file
+local startupFrame = CreateFrame("Frame")
+startupFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+startupFrame:SetScript("OnEvent", function(self, event, isInitialLogin, isReloadingUi)
+	if event == "PLAYER_ENTERING_WORLD" and (isInitialLogin or isReloadingUi) then
+		if DOKI and DOKI.db and DOKI.db.debugMode then
+			print("|cffff69b4DOKI|r Login detected - checking addon status")
+		end
+
+		-- Check if we need ATT functionality
+		if DOKI and DOKI.db and DOKI.db.enabled and DOKI.db.attMode then
+			if needsFullScan() then
+				if DOKI.db.debugMode then
+					print("|cffff69b4DOKI|r ATT mode enabled and scan needed - starting ATT watcher")
+				end
+
+				StartATTWatcher()
+			else
+				if DOKI.db.debugMode then
+					print("|cffff69b4DOKI|r ATT cache found - registering collection events without scan")
+				end
+
+				-- No scan needed, but we still need to register collection events
+				C_Timer.After(1, function()
+					if DOKI and DOKI.RegisterCollectionEvents then
+						DOKI:RegisterCollectionEvents()
+					end
+				end)
+			end
+		else
+			if DOKI and DOKI.db and DOKI.db.debugMode then
+				print("|cffff69b4DOKI|r ATT mode disabled or addon disabled - registering collection events")
+			end
+
+			-- ATT mode disabled, register collection events immediately
+			C_Timer.After(1, function()
+				if DOKI and DOKI.RegisterCollectionEvents then
+					DOKI:RegisterCollectionEvents()
+				end
+
+				-- ===== IMPORTANT: Set initial scan complete flag for non-ATT mode =====
+				-- Since no ATT scan is needed, surgical updates can start immediately
+				DOKI.isInitialScanComplete = true
+				DOKI.needsFullIndicatorRefresh = false -- No special refresh needed for non-ATT mode
+				if DOKI and DOKI.db and DOKI.db.debugMode then
+					print("|cffff69b4DOKI|r ATT mode disabled - initial scan flag set to TRUE (no scan needed)")
+				end
+			end)
+		end
+
+		-- Unregister to prevent multiple triggers
+		self:UnregisterEvent("PLAYER_ENTERING_WORLD")
+	end
+end)
+-- ===== SMART TOOLTIP BLOCKING SYSTEM =====
 local tooltipTypes = {
 	"GameTooltip", "ItemRefTooltip", "ShoppingTooltip1",
 	"ShoppingTooltip2", "WorldMapTooltip", "PerksProgramTooltip",
 }
+-- Smart tooltip blocker that allows our internal scanning
+local function SmartTooltipBlocker(tooltipFrame)
+	-- Block tooltips ONLY if scan is running AND it's not our own internal call
+	if DOKI and DOKI.scanState and DOKI.scanState.isScanInProgress and not DOKI.scanState.isInternalScan then
+		if tooltipFrame and tooltipFrame.Hide then
+			tooltipFrame:Hide()
+		end
+	end
+end
+
 local function InstallTooltipHooks()
-	if DOKI.db and DOKI.db.debugMode then
-		print("|cffff69b4DOKI|r Installing tooltip hooks...")
+	if DOKI and DOKI.db and DOKI.db.debugMode then
+		print("|cffff69b4DOKI|r Installing SMART tooltip hooks...")
 	end
 
 	for _, tooltipName in ipairs(tooltipTypes) do
 		local tooltip = _G[tooltipName]
 		if tooltip and tooltip.Show then
 			if not DOKI.scanState.tooltipHooks[tooltipName] then
+				-- Use the smart blocker instead of aggressive blocking
 				hooksecurefunc(tooltip, "Show", function(self)
-					if DOKI.scanState and DOKI.scanState.isScanInProgress then
-						if self and self.Hide then
-							self:Hide()
-						end
-					end
+					SmartTooltipBlocker(self)
 				end)
 				DOKI.scanState.tooltipHooks[tooltipName] = true
-				if DOKI.db and DOKI.db.debugMode then
-					print(string.format("|cffff69b4DOKI|r Hooked %s", tooltipName))
+				if DOKI and DOKI.db and DOKI.db.debugMode then
+					print(string.format("|cffff69b4DOKI|r Hooked %s with smart blocker", tooltipName))
 				end
 			end
 		end
@@ -203,6 +357,18 @@ function DOKI:StartEnhancedATTScan(isLoginScan)
 			print("|cffff69b4DOKI|r No items to scan")
 		end
 
+		-- Even if no items to scan, we still need to register events
+		if isLoginScan then
+			if DOKI.db and DOKI.db.debugMode then
+				print("|cffff69b4DOKI|r No items to scan, but registering collection events")
+			end
+
+			-- Mark scan as complete and register events
+			C_Timer.After(0.1, function()
+				DOKI:CompleteEnhancedATTScan(false)
+			end)
+		end
+
 		return
 	end
 
@@ -213,12 +379,13 @@ function DOKI:StartEnhancedATTScan(isLoginScan)
 	DOKI.scanState.totalItems = #scanQueue
 	DOKI.scanState.processedItems = 0
 	if showProgressUI then
-		-- Install tooltip hooks to prevent user confusion
+		-- Install smart tooltip hooks to prevent user confusion while allowing our scanning
 		InstallTooltipHooks()
 		-- Show progress frame
 		ShowProgressFrame()
 		if DOKI.db and DOKI.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Progress UI enabled - scanning %d items", #scanQueue))
+			print(string.format("|cffff69b4DOKI|r Progress UI enabled with SMART tooltip blocking - scanning %d items",
+				#scanQueue))
 		end
 	end
 
@@ -233,8 +400,8 @@ function DOKI:StartEnhancedATTScan(isLoginScan)
 		end
 	end
 
-	-- Safety timeout (11 seconds max)
-	C_Timer.After(11, function()
+	-- Safety timeout (60 seconds max)
+	C_Timer.After(60, function()
 		if DOKI.scanState.isScanInProgress then
 			if DOKI.db and DOKI.db.debugMode then
 				print("|cffff69b4DOKI|r Scan timeout reached - forcing completion")
@@ -271,11 +438,30 @@ function DOKI:CompleteEnhancedATTScan(isTimeout)
 	DOKI.scanState.isLoginScan = false
 	DOKI.scanState.processedItems = 0
 	DOKI.scanState.totalItems = 0
+	-- ===== REGISTER COLLECTION EVENTS AFTER SCAN COMPLETION =====
+	if wasLoginScan then
+		if DOKI.db and DOKI.db.debugMode then
+			print("|cffff69b4DOKI|r === LOGIN SCAN COMPLETE - REGISTERING COLLECTION EVENTS ===")
+		end
+
+		-- This is the key to the event registration architecture
+		if DOKI.RegisterCollectionEvents then
+			DOKI:RegisterCollectionEvents()
+			if DOKI.db and DOKI.db.debugMode then
+				print("|cffff69b4DOKI|r Collection events registered after login scan completion")
+			end
+		else
+			if DOKI.db and DOKI.db.debugMode then
+				print("|cffff69b4DOKI|r ERROR: RegisterCollectionEvents function not available!")
+			end
+		end
+	end
+
 	-- Show completion message
 	if isTimeout then
 		print("|cffff69b4DOKI|r Scan incomplete. Use /doki scan to retry.")
 	elseif wasLoginScan then
-		print(string.format("|cffff69b4DOKI|r Login scan completed in %.1fs. Ready to use!", elapsed))
+		print(string.format("|cffff69b4DOKI|r Login scan completed in %.1fs. Collection events now active!", elapsed))
 	end
 
 	-- Trigger UI update
@@ -284,48 +470,75 @@ function DOKI:CompleteEnhancedATTScan(isTimeout)
 			DOKI:TriggerImmediateSurgicalUpdate()
 		end)
 	end
-end
 
--- ===== LOGIN TRIGGER SYSTEM =====
-function DOKI:SetupLoginScanSystem()
-	-- Hook PLAYER_ENTERING_WORLD for login detection
-	if not DOKI.loginEventFrame then
-		DOKI.loginEventFrame = CreateFrame("Frame")
-		DOKI.loginEventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-		DOKI.loginEventFrame:SetScript("OnEvent", function(self, event, isInitialLogin, isReloadingUi)
-			-- Only trigger on initial login, not on loading screens or zone changes
-			if event == "PLAYER_ENTERING_WORLD" and (isInitialLogin or isReloadingUi) then
-				-- Small delay to ensure everything is loaded
-				C_Timer.After(2, function()
-					if DOKI.db and DOKI.db.enabled and DOKI.db.attMode then
-						if needsFullScan() then
-							if DOKI.db and DOKI.db.debugMode then
-								print("|cffff69b4DOKI|r Login detected - starting full ATT scan")
-							end
-
-							DOKI:StartEnhancedATTScan(true)
-						else
-							if DOKI.db and DOKI.db.debugMode then
-								print("|cffff69b4DOKI|r Login detected - ATT cache found, no scan needed")
-							end
-						end
-					end
-				end)
+	-- Force set the flags regardless of other logic
+	if wasLoginScan then
+		-- Small delay to ensure all other completion logic has run
+		C_Timer.After(0.1, function()
+			-- Explicitly set both flags
+			DOKI.isInitialScanComplete = true
+			DOKI.needsFullIndicatorRefresh = true
+			if DOKI.db and DOKI.db.debugMode then
+				print("|cff00ff00DOKI EXPLICIT FIX:|r Flags force-set after login scan completion")
+				print(string.format("|cff00ff00DOKI VERIFY:|r isInitialScanComplete=%s, needsFullIndicatorRefresh=%s",
+					tostring(DOKI.isInitialScanComplete), tostring(DOKI.needsFullIndicatorRefresh)))
 			end
 		end)
-	end
-
-	if DOKI.db and DOKI.db.debugMode then
-		print("|cffff69b4DOKI|r Login scan system initialized")
 	end
 end
 
 -- ===== INITIALIZATION =====
 function DOKI:InitializeEnhancedATTSystem()
 	if DOKI.db and DOKI.db.attMode then
-		self:SetupLoginScanSystem()
+		-- The local startup frame handles everything automatically
 		if DOKI.db and DOKI.db.debugMode then
-			print("|cffff69b4DOKI|r Enhanced ATT system with login scanning initialized")
+			print("|cffff69b4DOKI|r Enhanced ATT system with local scope ATT Ready-State Watcher initialized")
+		end
+	else
+		-- ATT mode disabled - still need to register collection events for normal mode
+		if DOKI.db and DOKI.db.debugMode then
+			print("|cffff69b4DOKI|r ATT mode disabled - will register collection events immediately")
+		end
+
+		C_Timer.After(10, function() -- Give addon time to fully load
+			if DOKI.RegisterCollectionEvents then
+				DOKI:RegisterCollectionEvents()
+			end
+		end)
+		-- ===== IMPORTANT: Set initial scan complete flag for non-ATT mode =====
+		-- Since no ATT scan is needed, surgical updates can start immediately
+		DOKI.isInitialScanComplete = true
+		DOKI.needsFullIndicatorRefresh = false -- No special refresh needed for non-ATT mode
+		if DOKI.db and DOKI.db.debugMode then
+			print("|cffff69b4DOKI|r ATT mode disabled - initial scan flag set to TRUE (no scan needed)")
 		end
 	end
+end
+
+-- ===== UTILITY FUNCTIONS FOR INTEGRATION =====
+-- Expose some functions to the DOKI namespace for compatibility and testing
+function DOKI:CheckATTStatus()
+	if _G["AllTheThings"] and _G["AllTheThings"].GetCachedSearchResults then
+		print("|cff00ff00DOKI:|r ATT Status: AllTheThings is ready and functional")
+		return true
+	elseif _G["AllTheThings"] then
+		print("|cffffd100DOKI:|r ATT Status: AllTheThings loaded but GetCachedSearchResults not available")
+		return false
+	else
+		print("|cffff0000DOKI:|r ATT Status: AllTheThings addon not found")
+		return false
+	end
+end
+
+function DOKI:TestATTWatcher()
+	print("|cffff69b4DOKI|r Testing local scope ATT watcher system...")
+	if attWatcherIsActive then
+		print("|cffffd100DOKI:|r Watcher already active")
+	else
+		StartATTWatcher()
+	end
+end
+
+function DOKI:GetATTWatcherStatus()
+	return attWatcherIsActive
 end
