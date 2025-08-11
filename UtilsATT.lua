@@ -137,56 +137,104 @@ local function StartATTWatcher()
 	watcherTicker = C_Timer.NewTicker(1, CheckATTReadyState)
 end
 
--- This frame is also local to this file
+-- DOKI UtilsATT.lua - Replace your existing startup frame with this working version
+-- Simple combat detection function
+local function IsInCombat()
+	return UnitAffectingCombat("player") -- More reliable than InCombatLockdown for this purpose
+end
+
+-- Proceed with normal startup logic
+local function ProceedWithStartup(isInitialLogin, isReloadingUi)
+	if DOKI and DOKI.db and DOKI.db.debugMode then
+		print("|cffff69b4DOKI|r Proceeding with startup (combat ended)")
+	end
+
+	-- Check if we need ATT functionality
+	if DOKI and DOKI.db and DOKI.db.enabled and DOKI.db.attMode then
+		if needsFullScan() then
+			if DOKI.db.debugMode then
+				print("|cffff69b4DOKI|r ATT mode enabled and scan needed - starting ATT watcher")
+			end
+
+			StartATTWatcher()
+		else
+			if DOKI.db.debugMode then
+				print("|cffff69b4DOKI|r ATT cache found - registering collection events without scan")
+			end
+
+			-- No scan needed, but we still need to register collection events
+			C_Timer.After(1, function()
+				if DOKI and DOKI.RegisterCollectionEvents then
+					DOKI:RegisterCollectionEvents()
+				end
+			end)
+		end
+	else
+		if DOKI and DOKI.db and DOKI.db.debugMode then
+			print("|cffff69b4DOKI|r ATT mode disabled or addon disabled - registering collection events")
+		end
+
+		-- ATT mode disabled, register collection events immediately
+		C_Timer.After(1, function()
+			if DOKI and DOKI.RegisterCollectionEvents then
+				DOKI:RegisterCollectionEvents()
+			end
+
+			-- Set initial scan complete flag for non-ATT mode
+			DOKI.isInitialScanComplete = true
+			DOKI.needsFullIndicatorRefresh = false
+			if DOKI and DOKI.db and DOKI.db.debugMode then
+				print("|cffff69b4DOKI|r ATT mode disabled - initial scan flag set to TRUE (no scan needed)")
+			end
+		end)
+	end
+end
+
+-- Combat wait frame (created only when needed)
+local combatWaitFrame = nil
+-- Handle combat detection
+local function HandleCombatSafeStartup(isInitialLogin, isReloadingUi)
+	if IsInCombat() then
+		if DOKI and DOKI.db and DOKI.db.debugMode then
+			print("|cffff69b4DOKI|r Player in combat - waiting for combat to end...")
+		end
+
+		-- Create combat wait frame
+		if not combatWaitFrame then
+			combatWaitFrame = CreateFrame("Frame")
+			combatWaitFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+			combatWaitFrame:SetScript("OnEvent", function(self, event)
+				if event == "PLAYER_REGEN_ENABLED" then
+					if DOKI and DOKI.db and DOKI.db.debugMode then
+						print("|cffff69b4DOKI|r Combat ended - proceeding with startup")
+					end
+
+					ProceedWithStartup(isInitialLogin, isReloadingUi)
+					-- Clean up
+					self:UnregisterAllEvents()
+					combatWaitFrame = nil
+				end
+			end)
+		end
+	else
+		if DOKI and DOKI.db and DOKI.db.debugMode then
+			print("|cffff69b4DOKI|r Player not in combat - proceeding immediately")
+		end
+
+		ProceedWithStartup(isInitialLogin, isReloadingUi)
+	end
+end
+
+-- Main startup frame (replace your existing one with this)
 local startupFrame = CreateFrame("Frame")
 startupFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 startupFrame:SetScript("OnEvent", function(self, event, isInitialLogin, isReloadingUi)
 	if event == "PLAYER_ENTERING_WORLD" and (isInitialLogin or isReloadingUi) then
 		if DOKI and DOKI.db and DOKI.db.debugMode then
-			print("|cffff69b4DOKI|r Login detected - checking addon status")
+			print("|cffff69b4DOKI|r Login detected - checking combat status")
 		end
 
-		-- Check if we need ATT functionality
-		if DOKI and DOKI.db and DOKI.db.enabled and DOKI.db.attMode then
-			if needsFullScan() then
-				if DOKI.db.debugMode then
-					print("|cffff69b4DOKI|r ATT mode enabled and scan needed - starting ATT watcher")
-				end
-
-				StartATTWatcher()
-			else
-				if DOKI.db.debugMode then
-					print("|cffff69b4DOKI|r ATT cache found - registering collection events without scan")
-				end
-
-				-- No scan needed, but we still need to register collection events
-				C_Timer.After(1, function()
-					if DOKI and DOKI.RegisterCollectionEvents then
-						DOKI:RegisterCollectionEvents()
-					end
-				end)
-			end
-		else
-			if DOKI and DOKI.db and DOKI.db.debugMode then
-				print("|cffff69b4DOKI|r ATT mode disabled or addon disabled - registering collection events")
-			end
-
-			-- ATT mode disabled, register collection events immediately
-			C_Timer.After(1, function()
-				if DOKI and DOKI.RegisterCollectionEvents then
-					DOKI:RegisterCollectionEvents()
-				end
-
-				-- ===== IMPORTANT: Set initial scan complete flag for non-ATT mode =====
-				-- Since no ATT scan is needed, surgical updates can start immediately
-				DOKI.isInitialScanComplete = true
-				DOKI.needsFullIndicatorRefresh = false -- No special refresh needed for non-ATT mode
-				if DOKI and DOKI.db and DOKI.db.debugMode then
-					print("|cffff69b4DOKI|r ATT mode disabled - initial scan flag set to TRUE (no scan needed)")
-				end
-			end)
-		end
-
+		HandleCombatSafeStartup(isInitialLogin, isReloadingUi)
 		-- Unregister to prevent multiple triggers
 		self:UnregisterEvent("PLAYER_ENTERING_WORLD")
 	end
