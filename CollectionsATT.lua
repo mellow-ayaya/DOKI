@@ -18,6 +18,23 @@ DOKI.scanState = DOKI.scanState or {
 -- ===== MAIN ATT PROCESSING FUNCTION (UNCHANGED) =====
 -- FINAL FIX: Borrow the real GameTooltip temporarily
 function ProcessNextATTInQueue()
+	-- Combat detection at the processing level
+	if UnitAffectingCombat("player") then
+		if DOKI and DOKI.db and DOKI.db.debugMode then
+			print("|cffff69b4DOKI|r ATT processing paused - combat active")
+		end
+
+		local combatWaitFrame = CreateFrame("Frame")
+		combatWaitFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+		combatWaitFrame:SetScript("OnEvent", function(self, event)
+			if event == "PLAYER_REGEN_ENABLED" then
+				ProcessNextATTInQueue()
+				self:UnregisterAllEvents()
+			end
+		end)
+		return
+	end
+
 	if #attProcessingQueue == 0 then
 		isProcessingATT = false
 		currentlyProcessingRequest = nil
@@ -35,14 +52,12 @@ function ProcessNextATTInQueue()
 		callback = requestData[3],
 	}
 	if DOKI and DOKI.db and DOKI.db.debugMode then
-		print(string.format("|cffff69b4DOKI|r [Frame 1] Borrowing GameTooltip for item %d", currentlyProcessingRequest
-			.itemID))
+		print(string.format("|cffff69b4DOKI|r [Frame 1] Processing item %d", currentlyProcessingRequest.itemID))
 	end
 
 	-- STEP 1: BORROW THE REAL GAMETOOLTIP WITH SMART BLOCKING
-	-- Save its current owner so we can restore it
 	local previousOwner = GameTooltip:GetOwner()
-	-- NEW: Set flag to allow our tooltip usage during scanning
+	-- Set flag to allow our tooltip usage during scanning
 	if DOKI.scanState then
 		DOKI.scanState.isInternalScan = true
 	end
@@ -50,16 +65,10 @@ function ProcessNextATTInQueue()
 	-- Take control and move it off-screen
 	GameTooltip:SetOwner(UIParent, "ANCHOR_NONE")
 	GameTooltip:ClearLines()
-	-- Set the hyperlink - THIS will now trigger ATT's hooks because it's the real GameTooltip!
 	GameTooltip:SetHyperlink(currentlyProcessingRequest.itemLink)
-	-- NEW: Immediately disable the flag after showing
+	-- Disable the flag after showing
 	if DOKI.scanState then
 		DOKI.scanState.isInternalScan = false
-	end
-
-	if DOKI and DOKI.db and DOKI.db.debugMode then
-		print(string.format(
-			"|cffff69b4DOKI|r [Frame 1] Set hyperlink on real GameTooltip with smart blocking, waiting for ATT hooks..."))
 	end
 
 	-- STEP 2: Schedule the reading and restoration for next frame
@@ -76,17 +85,8 @@ function ProcessNextATTInQueue()
 			return
 		end
 
-		if DOKI and DOKI.db and DOKI.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r [Frame 2] Reading real GameTooltip for item %d",
-				currentlyProcessingRequest.itemID))
-		end
-
 		local success, isCollected, hasOtherSources, isPartial, debugInfo = pcall(function()
 			local numTooltipLines = GameTooltip:NumLines()
-			if DOKI and DOKI.db and DOKI.db.debugMode then
-				print(string.format("|cffff69b4DOKI|r Real GameTooltip now has %d lines after frame delay", numTooltipLines))
-			end
-
 			-- Check if ATT populated the real tooltip
 			if numTooltipLines <= 2 then
 				return nil, nil, nil, { "ATT_DID_NOT_POPULATE_REAL_TOOLTIP" }
@@ -95,7 +95,6 @@ function ProcessNextATTInQueue()
 			-- Extract lines from the real GameTooltip
 			local tooltipLinesForParser = {}
 			for i = 1, numTooltipLines do
-				-- Read from the REAL GameTooltip's text elements
 				local leftLine = _G["GameTooltipTextLeft" .. i]
 				local rightLine = _G["GameTooltipTextRight" .. i]
 				if leftLine and rightLine then
@@ -105,15 +104,7 @@ function ProcessNextATTInQueue()
 						left = leftText,
 						right = rightText,
 					})
-					if DOKI and DOKI.db and DOKI.db.debugMode then
-						print(string.format("|cffff69b4DOKI|r Real tooltip line %d: left='%s' right='%s'", i, leftText, rightText))
-					end
 				end
-			end
-
-			if DOKI and DOKI.db and DOKI.db.debugMode then
-				print(string.format("|cffff69b4DOKI|r Extracted %d lines from real GameTooltip for parsing",
-					#tooltipLinesForParser))
 			end
 
 			-- Parse with existing parser
@@ -121,75 +112,55 @@ function ProcessNextATTInQueue()
 				currentlyProcessingRequest.itemLink)
 		end)
 		-- STEP 3: RESTORE THE GAMETOOLTIP (CRITICAL!)
-		-- Always restore the tooltip's owner, even if pcall failed
 		if previousOwner then
 			GameTooltip:SetOwner(previousOwner, "ANCHOR_CURSOR")
-			if DOKI and DOKI.db and DOKI.db.debugMode then
-				print("|cffff69b4DOKI|r [Frame 2] Restored GameTooltip to previous owner")
-			end
 		else
-			-- No previous owner - hide it to be safe
 			GameTooltip:Hide()
-			if DOKI and DOKI.db and DOKI.db.debugMode then
-				print("|cffff69b4DOKI|r [Frame 2] Hidden GameTooltip (no previous owner)")
-			end
 		end
 
-		-- STEP 4: Handle the result
-		if success then
-			-- Cache and callback with result
-			DOKI:SetCachedATTStatus(currentlyProcessingRequest.itemID, currentlyProcessingRequest.itemLink,
-				isCollected, hasOtherSources, isPartial)
-			currentlyProcessingRequest.callback(isCollected, hasOtherSources, isPartial, debugInfo)
+		-- STEP 4: Handle the result with enhanced error handling
+		if success and isCollected ~= nil then
+			-- **ENHANCED: More detailed success logging**
 			if DOKI and DOKI.db and DOKI.db.debugMode then
 				local itemName = C_Item.GetItemInfo(currentlyProcessingRequest.itemID) or "Unknown"
-				local result = isCollected and "COLLECTED" or
-						(isCollected == nil and "NO_ATT_DATA" or (isPartial and "PARTIAL" or "NOT_COLLECTED"))
-				print(string.format("|cffff69b4DOKI|r [Frame 2] %s -> %s", itemName, result))
+				local result = isCollected and "COLLECTED" or "NOT_COLLECTED"
+				if isPartial then result = result .. " (PARTIAL)" end
+
+				print(string.format("|cff00ff00DOKI ATT SUCCESS:|r %s (ID: %d) -> %s", itemName,
+					currentlyProcessingRequest.itemID, result))
 			end
 
-			-- Progress tracking after successful callback
-			if DOKI.scanState and DOKI.scanState.isScanInProgress then
-				DOKI.scanState.processedItems = (DOKI.scanState.processedItems or 0) + 1
-				-- Update progress UI if available
-				if DOKI.UpdateProgressFrame then
-					DOKI:UpdateProgressFrame()
-				end
-
-				-- Check if scan is complete
-				if DOKI.scanState.processedItems >= DOKI.scanState.totalItems then
-					if DOKI.CompleteEnhancedATTScan then
-						C_Timer.After(0.1, function()
-							DOKI:CompleteEnhancedATTScan()
-						end)
-					end
-				end
-			end
+			-- Cache the result
+			DOKI:SetCachedATTStatus(currentlyProcessingRequest.itemID, currentlyProcessingRequest.itemLink,
+				isCollected, hasOtherSources, isPartial)
+			-- Execute callback
+			currentlyProcessingRequest.callback(isCollected, hasOtherSources, isPartial, debugInfo)
 		else
-			-- Handle error
+			-- **ENHANCED: More detailed error logging**
 			if DOKI and DOKI.db and DOKI.db.debugMode then
-				print(string.format("|cffff69b4DOKI|r ATT error during real tooltip read for item %d: %s",
-					currentlyProcessingRequest.itemID, tostring(isCollected)))
+				local itemName = C_Item.GetItemInfo(currentlyProcessingRequest.itemID) or "Unknown"
+				local errorMsg = success and "NO_ATT_DATA" or tostring(isCollected)
+				print(string.format("|cffff6600DOKI ATT FAILED:|r %s (ID: %d) -> %s", itemName, currentlyProcessingRequest
+					.itemID, errorMsg))
 			end
 
-			currentlyProcessingRequest.callback(nil, nil, nil, { "ATT_ERROR_IN_PROCESSING", tostring(isCollected) })
-			-- Progress tracking for failed callbacks too
-			if DOKI.scanState and DOKI.scanState.isScanInProgress then
-				DOKI.scanState.processedItems = (DOKI.scanState.processedItems or 0) + 1
-				-- Update progress UI if available
-				if DOKI.UpdateProgressFrame then
-					DOKI:UpdateProgressFrame()
-				end
+			-- Cache as no ATT data
+			DOKI:SetCachedATTStatus(currentlyProcessingRequest.itemID, currentlyProcessingRequest.itemLink, nil, nil, nil)
+			-- Execute callback with failure
+			currentlyProcessingRequest.callback(nil, nil, nil,
+				{ success and "NO_ATT_DATA" or "ATT_ERROR_IN_PROCESSING", tostring(isCollected) })
+		end
 
-				-- Check if scan is complete
-				if DOKI.scanState.processedItems >= DOKI.scanState.totalItems then
-					if DOKI.CompleteEnhancedATTScan then
-						C_Timer.After(0.1, function()
-							DOKI:CompleteEnhancedATTScan()
-						end)
-					end
-				end
+		-- **LEGACY: Keep original progress tracking for compatibility**
+		if DOKI.scanState and DOKI.scanState.isScanInProgress then
+			DOKI.scanState.processedItems = (DOKI.scanState.processedItems or 0) + 1
+			-- Update progress UI if available
+			if DOKI.UpdateProgressFrame then
+				DOKI:UpdateProgressFrame()
 			end
+
+			-- **REMOVED: Old completion check - now handled by CheckEnhancedScanCompletion**
+			-- The enhanced scan will handle completion through the callback system
 		end
 
 		-- STEP 5: Process next item in queue
@@ -384,12 +355,14 @@ function DOKI:GetATTCollectionStatus(itemID, itemLink)
 		end
 
 		-- Create indicators directly instead of triggering full rescan
-		C_Timer.After(0.05, function() -- Small delay to ensure button state is stable
+		-- Trigger surgical update after ATT callback instead of direct creation
+		C_Timer.After(0.1, function() -- Small delay to ensure button state is stable
 			if DOKI and DOKI.db and DOKI.db.enabled then
-				local indicatorsCreated = DOKI:CreateATTIndicatorDirectly(itemID, itemLink, isCollected, hasOtherSources,
-					isPartiallyCollected)
-				if DOKI.db and DOKI.db.debugMode then
-					print(string.format("|cffff69b4DOKI|r ATT callback: %d indicators created directly", indicatorsCreated))
+				if DOKI.TriggerImmediateSurgicalUpdate then
+					DOKI:TriggerImmediateSurgicalUpdate()
+					if DOKI.db and DOKI.db.debugMode then
+						print("|cffff69b4DOKI|r ATT callback: triggered surgical update")
+					end
 				end
 			end
 		end)
@@ -399,15 +372,41 @@ end
 
 -- ===== CACHE MANAGEMENT (UNCHANGED) =====
 function DOKI:GetCachedATTStatus(itemID, itemLink)
-	local cacheKey = "ATT_" .. (itemLink or tostring(itemID))
-	local cached = self.collectionCache[cacheKey]
-	if cached and cached.isATTResult then
-		self.cacheStats.hits = self.cacheStats.hits + 1
-		if cached.noATTData then
-			return "NO_ATT_DATA", nil, nil
-		end
+	-- Try multiple cache key patterns to handle itemLink variations
+	local cacheKeys = {}
+	-- Pattern 1: With itemLink (if available)
+	if itemLink and itemLink ~= "" then
+		table.insert(cacheKeys, "ATT_" .. itemLink)
+	end
 
-		return cached.isCollected, cached.hasOtherTransmogSources, cached.isPartiallyCollected
+	-- Pattern 2: With itemID only
+	table.insert(cacheKeys, "ATT_" .. tostring(itemID))
+	-- Pattern 3: Empty itemLink pattern (for login scan compatibility)
+	table.insert(cacheKeys, "ATT_")
+	-- DEBUG: Show what we're trying
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff6600CACHE DEBUG:|r Trying keys: %s", table.concat(cacheKeys, ", ")))
+	end
+
+	-- Try each pattern until we find a match
+	for _, cacheKey in ipairs(cacheKeys) do
+		local cached = self.collectionCache[cacheKey]
+		if cached and cached.isATTResult then
+			if self.db and self.db.debugMode then
+				print(string.format("|cffff6600CACHE DEBUG:|r Found match with key: '%s'", cacheKey))
+			end
+
+			self.cacheStats.hits = self.cacheStats.hits + 1
+			if cached.noATTData then
+				return "NO_ATT_DATA", nil, nil
+			end
+
+			return cached.isCollected, cached.hasOtherTransmogSources, cached.isPartiallyCollected
+		end
+	end
+
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff6600CACHE DEBUG:|r No match found for any key pattern"))
 	end
 
 	self.cacheStats.misses = self.cacheStats.misses + 1

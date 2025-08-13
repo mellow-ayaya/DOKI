@@ -870,6 +870,163 @@ function DOKI:HasEqualOrLessRestrictiveSources(itemAppearanceID, excludeModified
 	return false
 end
 
+function DOKI:GetAllBagItems()
+	local allItems = {}
+	if self.db and self.db.debugMode then
+		print("|cffff69b4DOKI|r GetAllBagItems: Starting comprehensive item collection...")
+	end
+
+	-- Use the exact same logic as CreateButtonSnapshot but return item data instead of button mapping
+	local itemCount = 0
+	-- ElvUI bags (if visible and available)
+	if ElvUI and self:IsElvUIBagVisible() then
+		if self.db and self.db.debugMode then
+			print("|cffff69b4DOKI|r GetAllBagItems: Scanning ElvUI bags...")
+		end
+
+		for bagID = 0, NUM_BAG_SLOTS do
+			local numSlots = C_Container.GetContainerNumSlots(bagID)
+			if numSlots and numSlots > 0 then
+				for slotID = 1, numSlots do
+					local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+					if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+						-- Verify the button exists (same logic as CreateButtonSnapshot)
+						local possibleNames = {
+							string.format("ElvUI_ContainerFrameBag%dSlot%dHash", bagID, slotID),
+							string.format("ElvUI_ContainerFrameBag%dSlot%d", bagID, slotID),
+							string.format("ElvUI_ContainerFrameBag%dSlot%dCenter", bagID, slotID),
+						}
+						local buttonExists = false
+						for _, buttonName in ipairs(possibleNames) do
+							local button = _G[buttonName]
+							if button and button:IsVisible() then
+								buttonExists = true
+								break
+							end
+						end
+
+						if buttonExists then
+							table.insert(allItems, {
+								itemID = itemInfo.itemID,
+								itemLink = itemInfo.hyperlink,
+								bagID = bagID,
+								slotID = slotID,
+								source = "elvui",
+							})
+							itemCount = itemCount + 1
+						end
+					end
+				end
+			end
+		end
+	end
+
+	-- Blizzard combined bags (if visible and ElvUI not handling bags)
+	if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() and itemCount == 0 then
+		if self.db and self.db.debugMode then
+			print("|cffff69b4DOKI|r GetAllBagItems: Scanning Blizzard combined bags...")
+		end
+
+		for bagID = 0, NUM_BAG_SLOTS do
+			local numSlots = C_Container.GetContainerNumSlots(bagID)
+			if numSlots and numSlots > 0 then
+				for slotID = 1, numSlots do
+					local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+					if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+						-- Verify the button exists in combined bags (same logic as CreateButtonSnapshot)
+						local buttonExists = false
+						if ContainerFrameCombinedBags.EnumerateValidItems then
+							for _, itemButton in ContainerFrameCombinedBags:EnumerateValidItems() do
+								if itemButton and itemButton:IsVisible() then
+									local buttonBagID, buttonSlotID = nil, nil
+									if itemButton.GetBagID and itemButton.GetID then
+										local bagIDSuccess, retrievedBagID = pcall(itemButton.GetBagID, itemButton)
+										local slotIDSuccess, retrievedSlotID = pcall(itemButton.GetID, itemButton)
+										if bagIDSuccess and slotIDSuccess then
+											buttonBagID, buttonSlotID = retrievedBagID, retrievedSlotID
+										end
+									end
+
+									if buttonBagID == bagID and buttonSlotID == slotID then
+										buttonExists = true
+										break
+									end
+								end
+							end
+						end
+
+						if buttonExists then
+							table.insert(allItems, {
+								itemID = itemInfo.itemID,
+								itemLink = itemInfo.hyperlink,
+								bagID = bagID,
+								slotID = slotID,
+								source = "combined",
+							})
+							itemCount = itemCount + 1
+						end
+					end
+				end
+			end
+		end
+	end
+
+	-- Individual container frames (if combined bags not shown and ElvUI not handling)
+	if itemCount == 0 then
+		if self.db and self.db.debugMode then
+			print("|cffff69b4DOKI|r GetAllBagItems: Scanning individual container frames...")
+		end
+
+		for bagID = 0, NUM_BAG_SLOTS do
+			local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
+			if containerFrame and containerFrame:IsVisible() then
+				local numSlots = C_Container.GetContainerNumSlots(bagID)
+				if numSlots and numSlots > 0 then
+					for slotID = 1, numSlots do
+						local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
+						if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
+							-- Verify the button exists (same logic as CreateButtonSnapshot)
+							local possibleNames = {
+								string.format("ContainerFrame%dItem%d", bagID + 1, slotID),
+								string.format("ContainerFrame%dItem%dButton", bagID + 1, slotID),
+							}
+							local buttonExists = false
+							for _, buttonName in ipairs(possibleNames) do
+								local button = _G[buttonName]
+								if button and button:IsVisible() then
+									buttonExists = true
+									break
+								end
+							end
+
+							if buttonExists then
+								table.insert(allItems, {
+									itemID = itemInfo.itemID,
+									itemLink = itemInfo.hyperlink,
+									bagID = bagID,
+									slotID = slotID,
+									source = "individual",
+								})
+								itemCount = itemCount + 1
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r GetAllBagItems: Collected %d items total", itemCount))
+		if itemCount > 0 then
+			local firstItem = allItems[1]
+			print(string.format("|cffff69b4DOKI|r GetAllBagItems: First item source: %s", firstItem.source))
+		end
+	end
+
+	return allItems
+end
+
 -- ===== UTILITY FUNCTIONS =====
 function DOKI:ForceUniversalScan()
 	if self.db and self.db.debugMode then

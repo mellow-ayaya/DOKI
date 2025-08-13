@@ -551,16 +551,45 @@ end
 
 -- ADDED: Enhanced item data retrieval for surgical updates (supports battlepets + ensembles)
 function DOKI:GetItemDataForSurgicalUpdate(itemID, itemLink)
-	-- Handle empty slots - return nil so no indicator is created
+	-- Handle empty slots
 	if itemID == "EMPTY_SLOT" or not itemID then return nil end
 
-	-- ===== THE DEFINITIVE FIX: GATEKEEPER FOR ATT MODE =====
-	-- ATT MODE: Prevent surgical updates from interfering with login scan
 	if self.db and self.db.attMode then
-		-- *** THE GATEKEEPER: Only try to get ATT status if initial scan is complete ***
+		-- *** DEBUG: Check cache lookup ***
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff6600DOKI DEBUG:|r Checking cache for item %d, link: %s", itemID, itemLink or "nil"))
+		end
+
+		local cachedIsCollected, cachedHasOtherSources, cachedIsPartiallyCollected = self:GetCachedATTStatus(itemID, itemLink)
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff6600DOKI DEBUG:|r Cache result: collected=%s, sources=%s, partial=%s",
+				tostring(cachedIsCollected), tostring(cachedHasOtherSources), tostring(cachedIsPartiallyCollected)))
+		end
+
+		if cachedIsCollected ~= nil and cachedIsCollected ~= "NO_ATT_DATA" then
+			-- Use cached data
+			if self.db and self.db.debugMode then
+				print(string.format("|cffff69b4DOKI|r Using cached ATT data for item %d: %s", itemID,
+					cachedIsCollected and "COLLECTED" or "NOT_COLLECTED"))
+			end
+
+			return {
+				itemID = itemID,
+				itemLink = itemLink,
+				isCollected = cachedIsCollected,
+				hasOtherTransmogSources = cachedHasOtherSources,
+				isPartiallyCollected = cachedIsPartiallyCollected,
+				frameType = "surgical_cached",
+			}
+		else
+			if self.db and self.db.debugMode then
+				print(string.format("|cffff6600DOKI DEBUG:|r No valid cache found, falling through to normal ATT logic"))
+			end
+		end
+
+		-- ===== GATEKEEPER: Only try to get ATT status if initial scan is complete =====
 		if not DOKI.isInitialScanComplete then
 			-- The initial login scan is still running. Do nothing and wait.
-			-- The button will be updated correctly when the scan completes.
 			if self.db and self.db.debugMode then
 				local itemName = C_Item.GetItemInfo(itemID) or "Unknown"
 				print(string.format("|cffffd100DOKI GATEKEEPER:|r Initial scan not complete, skipping ATT check for %s", itemName))
@@ -588,7 +617,7 @@ function DOKI:GetItemDataForSurgicalUpdate(itemID, itemLink)
 		}
 	end
 
-	-- NORMAL MODE: Use existing logic (unchanged)
+	-- ===== NORMAL MODE: Use existing logic (unchanged) =====
 	-- Handle caged pets first
 	if itemLink then
 		local petSpeciesID = self:GetPetSpeciesFromBattlePetLink(itemLink)

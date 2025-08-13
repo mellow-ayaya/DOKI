@@ -108,7 +108,17 @@ function DOKI:DebouncedSurgicalUpdate(eventName, isImmediate)
 	if anyUIVisible then
 		self:DebounceEvent(eventName or "SURGICAL_UPDATE", function()
 			if DOKI.db and DOKI.db.enabled then
-				DOKI:TriggerImmediateSurgicalUpdate()
+				-- TWO-PHASE INTEGRATION: Check for post-scan indicator refresh
+				if DOKI.needsFullIndicatorRefresh and DOKI.isInitialScanComplete then
+					if DOKI.db and DOKI.db.debugMode then
+						print("|cffff69b4DOKI|r Post-scan indicator refresh triggered by %s", eventName or "unknown")
+					end
+
+					DOKI.needsFullIndicatorRefresh = false
+					DOKI:FullItemScan() -- Force full refresh instead of surgical
+				else
+					DOKI:TriggerImmediateSurgicalUpdate()
+				end
 			end
 		end)
 	end
@@ -147,8 +157,8 @@ function DOKI:IsAnyRelevantUIVisible()
 	return false
 end
 
--- ===== NEW: DELAYED EVENT REGISTRATION SYSTEM =====
--- This function registers collection events AFTER the initial scan is complete
+-- ===== TWO-PHASE INTEGRATION: DELAYED EVENT REGISTRATION SYSTEM =====
+-- This function registers collection events AFTER the Two-Phase scan is complete
 function DOKI:RegisterCollectionEvents()
 	if self.collectionEventsRegistered then
 		if self.db and self.db.debugMode then
@@ -159,7 +169,7 @@ function DOKI:RegisterCollectionEvents()
 	end
 
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r === REGISTERING COLLECTION EVENTS (POST-SCAN) ===")
+		print("|cffff69b4DOKI|r === REGISTERING COLLECTION EVENTS (POST-TWO-PHASE-SCAN) ===")
 	end
 
 	-- Create event frame if it doesn't exist
@@ -192,6 +202,9 @@ function DOKI:RegisterCollectionEvents()
 		"MERCHANT_CONFIRM_TRADE_TIMER_REMOVAL",
 		"UI_INFO_MESSAGE",
 		"ITEM_UNLOCKED",
+
+		-- Combat events for post-combat indicator refresh
+		"PLAYER_REGEN_ENABLED", -- Exiting combat
 	}
 	for _, event in ipairs(collectionEvents) do
 		self.collectionEventFrame:RegisterEvent(event)
@@ -210,6 +223,28 @@ function DOKI:RegisterCollectionEvents()
 		}
 		if tContains(debouncedEvents, event) then
 			DOKI:DebouncedSurgicalUpdate(event, false)
+			return
+		end
+
+		-- TWO-PHASE INTEGRATION: Handle combat exit for post-combat refresh
+		if event == "PLAYER_REGEN_ENABLED" then
+			-- Player exited combat - check if we need to refresh indicators
+			if DOKI.needsFullIndicatorRefresh and DOKI.isInitialScanComplete then
+				if DOKI.db and DOKI.db.debugMode then
+					print("|cffff69b4DOKI|r Post-combat indicator refresh triggered")
+				end
+
+				DOKI:DebounceEvent("POST_COMBAT_REFRESH", function()
+					if DOKI.db and DOKI.db.enabled and DOKI.needsFullIndicatorRefresh then
+						DOKI.needsFullIndicatorRefresh = false
+						DOKI:FullItemScan()
+					end
+				end, 0.5) -- Slight delay after combat ends
+			else
+				-- Normal post-combat surgical update
+				DOKI:DebouncedSurgicalUpdate("POST_COMBAT", false)
+			end
+
 			return
 		end
 
@@ -257,7 +292,7 @@ function DOKI:RegisterCollectionEvents()
 			DOKI:DebounceEvent("COLLECTION_CHANGE", function()
 				if DOKI.db and DOKI.db.enabled then
 					-- Clear cache
-					DOKI:ClearCollectionCache()
+					DOKI:ClearCollectionCache(nil, "Collection event: " .. event)
 					-- ATT MODE: Mark categories for re-evaluation
 					if DOKI.db.attMode then
 						DOKI.needsPetReevaluation = true
@@ -276,7 +311,7 @@ function DOKI:RegisterCollectionEvents()
 			DOKI:DebounceEvent("COLLECTION_CHANGE", function()
 				if DOKI.db and DOKI.db.enabled then
 					-- Clear cache
-					DOKI:ClearCollectionCache()
+					DOKI:ClearCollectionCache(nil, "Collection event: " .. event)
 					-- ATT MODE: Mark category for re-evaluation
 					if DOKI.db.attMode then
 						DOKI.needsTransmogReevaluation = true
@@ -294,7 +329,7 @@ function DOKI:RegisterCollectionEvents()
 			DOKI:DebounceEvent("COLLECTION_CHANGE", function()
 				if DOKI.db and DOKI.db.enabled then
 					-- Clear cache
-					DOKI:ClearCollectionCache()
+					DOKI:ClearCollectionCache(nil, "Collection event: " .. event)
 					-- ATT MODE: Mark category for re-evaluation
 					if DOKI.db.attMode then
 						DOKI.needsToyReevaluation = true
@@ -427,6 +462,53 @@ local function ProcessScanWorkQueue()
 end
 
 -- Process a single scan item (the actual heavy work)
+function ProcessSingleScanItem(workItem)
+	local itemID = workItem.itemID
+	local itemLink = workItem.itemLink
+	local button = workItem.button
+	local frameType = workItem.frameType
+	-- ATT MODE: Skip IsCollectibleItem check, but apply ATT-specific filtering
+	if DOKI.db and DOKI.db.attMode then
+		-- Apply ATT-specific filtering for reagents/consumables
+		if not DOKI:ShouldTrackItemInATTMode(itemID) then
+			return -- Skip items filtered by ATT settings
+		end
+
+		-- In ATT mode, send ALL items (except filtered ones) to collection check
+		-- ATT will determine if the item is relevant/collectible
+	else
+		-- NORMAL MODE: Use IsCollectibleItem check
+		if not DOKI:IsCollectibleItem(itemID, itemLink) then
+			return -- Skip non-collectible items
+		end
+	end
+
+	-- Check collection status (can be expensive)
+	local isCollected, hasOtherTransmogSources, isPartiallyCollected = DOKI:IsItemCollected(itemID, itemLink)
+	-- Only create indicator if NOT collected OR if it needs purple indicator
+	if not isCollected or isPartiallyCollected then
+		local itemData = {
+			itemID = itemID,
+			itemLink = itemLink,
+			isCollected = isCollected,
+			hasOtherTransmogSources = hasOtherTransmogSources,
+			isPartiallyCollected = isPartiallyCollected,
+			frameType = frameType,
+		}
+		-- Create the indicator
+		if DOKI.AddButtonIndicator then
+			DOKI:AddButtonIndicator(button, itemData)
+		end
+
+		-- Track the frame
+		table.insert(DOKI.foundFramesThisScan, {
+			frame = button,
+			frameName = button:GetName() or "unnamed",
+			itemData = itemData,
+		})
+	end
+end
+
 -- Process a single scan item (the actual heavy work)
 function ProcessSingleScanItem(workItem)
 	local itemID = workItem.itemID
@@ -480,151 +562,43 @@ end
 function DOKI:ScanBagFrames()
 	if not self.db or not self.db.enabled then return 0 end
 
+	-- Use unified item collection
+	local allBagItems = self:GetAllBagItems()
 	local queuedItems = 0
-	-- Collect all bag items first (this part is fast)
-	local allBagItems = {}
-	-- Scan ElvUI bags if visible
-	if ElvUI and self:IsElvUIBagVisible() then
-		local E = ElvUI[1]
-		if E then
-			local B = E:GetModule("Bags", true)
-			if B and (B.BagFrame and B.BagFrame:IsShown()) then
-				for bagID = 0, NUM_BAG_SLOTS do
-					local numSlots = C_Container.GetContainerNumSlots(bagID)
-					if numSlots and numSlots > 0 then
-						for slotID = 1, numSlots do
-							local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
-							if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
-								local possibleNames = {
-									string.format("ElvUI_ContainerFrameBag%dSlot%dHash", bagID, slotID),
-									string.format("ElvUI_ContainerFrameBag%dSlot%d", bagID, slotID),
-									string.format("ElvUI_ContainerFrameBag%dSlot%dCenter", bagID, slotID),
-								}
-								for _, elvUIButtonName in ipairs(possibleNames) do
-									local elvUIButton = _G[elvUIButtonName]
-									if elvUIButton and elvUIButton:IsVisible() then
-										allBagItems[elvUIButton] = {
-											itemID = itemInfo.itemID,
-											itemLink = itemInfo.hyperlink,
-											frameType = "bag",
-										}
-										break
-									end
-								end
-							end
-						end
-					end
-				end
-			end
+	if self.db and self.db.debugMode then
+		print(string.format("|cffff69b4DOKI|r ScanBagFrames: Using unified logic, found %d items", #allBagItems))
+	end
+
+	-- Process items found by unified logic
+	for _, itemData in ipairs(allBagItems) do
+		-- Find the corresponding button for this item
+		local button = self:FindBagButton(itemData.bagID, itemData.slotID)
+		if button then
+			-- Queue for processing instead of processing immediately
+			table.insert(scanWorkQueue, {
+				itemID = itemData.itemID,
+				itemLink = itemData.itemLink,
+				button = button,
+				frameType = "bag",
+			})
+			queuedItems = queuedItems + 1
 		end
 	end
 
-	-- Scan Blizzard bags
-	local scannedBlizzardBags = false
-	if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
-		-- Combined bags logic (fast collection)
-		for bagID = 0, NUM_BAG_SLOTS do
-			local numSlots = C_Container.GetContainerNumSlots(bagID)
-			if numSlots and numSlots > 0 then
-				for slotID = 1, numSlots do
-					local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
-					if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
-						-- Find button (this part can be expensive but less so than collection checks)
-						local button = nil
-						if ContainerFrameCombinedBags.EnumerateValidItems then
-							for _, itemButton in ContainerFrameCombinedBags:EnumerateValidItems() do
-								if itemButton and itemButton:IsVisible() then
-									local buttonBagID, buttonSlotID = nil, nil
-									if itemButton.GetBagID and itemButton.GetID then
-										local bagIDSuccess, retrievedBagID = pcall(itemButton.GetBagID, itemButton)
-										local slotIDSuccess, retrievedSlotID = pcall(itemButton.GetID, itemButton)
-										if bagIDSuccess and slotIDSuccess then
-											buttonBagID, buttonSlotID = retrievedBagID, retrievedSlotID
-										end
-									end
-
-									if buttonBagID == bagID and buttonSlotID == slotID then
-										button = itemButton
-										break
-									end
-								end
-							end
-						end
-
-						if button then
-							allBagItems[button] = {
-								itemID = itemInfo.itemID,
-								itemLink = itemInfo.hyperlink,
-								frameType = "bag",
-							}
-						end
-					end
-				end
-			end
+	-- Start processing if needed
+	if queuedItems > 0 and not isScanProcessing then
+		isScanProcessing = true
+		CreateScanProcessFrame()
+		if self.db and self.db.debugMode then
+			print(string.format("|cffff69b4DOKI|r Unified ScanBagFrames: Queued %d items for processing", queuedItems))
 		end
 
-		scannedBlizzardBags = true
-	end
-
-	-- Individual container frames
-	if not scannedBlizzardBags then
-		for bagID = 0, NUM_BAG_SLOTS do
-			local containerFrame = _G["ContainerFrame" .. (bagID + 1)]
-			if containerFrame and containerFrame:IsVisible() then
-				local numSlots = C_Container.GetContainerNumSlots(bagID)
-				if numSlots and numSlots > 0 then
-					for slotID = 1, numSlots do
-						local itemInfo = C_Container.GetContainerItemInfo(bagID, slotID)
-						if itemInfo and itemInfo.itemID and itemInfo.hyperlink then
-							local possibleNames = {
-								string.format("ContainerFrame%dItem%d", bagID + 1, slotID),
-								string.format("ContainerFrame%dItem%dButton", bagID + 1, slotID),
-							}
-							for _, buttonName in ipairs(possibleNames) do
-								local button = _G[buttonName]
-								if button and button:IsVisible() then
-									allBagItems[button] = {
-										itemID = itemInfo.itemID,
-										itemLink = itemInfo.hyperlink,
-										frameType = "bag",
-									}
-									break
-								end
-							end
-						end
-					end
-				end
-			end
+		if scanProcessFrame then
+			scanProcessFrame:SetScript("OnUpdate", ProcessScanWorkQueue)
 		end
 	end
 
-	-- Now queue all items for throttled processing (this part is fast)
-	for button, itemData in pairs(allBagItems) do
-		table.insert(scanWorkQueue, {
-			itemID = itemData.itemID,
-			itemLink = itemData.itemLink,
-			button = button,
-			frameType = itemData.frameType,
-		})
-		queuedItems = queuedItems + 1
-	end
-
-	-- Start throttled processing if we have items
-	if queuedItems > 0 then
-		if not isScanProcessing then
-			isScanProcessing = true
-			CreateScanProcessFrame()
-			if self.db and self.db.debugMode then
-				print(string.format("|cffff69b4DOKI|r Starting throttled processing of %d items", queuedItems))
-			end
-
-			if scanProcessFrame then
-				scanProcessFrame:SetScript("OnUpdate", ProcessScanWorkQueue)
-			end
-		end
-	end
-
-	return queuedItems -- Return number of items queued, not indicators created
+	return queuedItems
 end
 
 -- FIXED: Non-blocking merchant scan (similar approach)
@@ -838,7 +812,7 @@ function DOKI:SetupDebouncedEventSystem()
 					end
 
 					-- Clear cache
-					DOKI:ClearCollectionCache()
+					DOKI:ClearCollectionCache(nil, "DebouncedEvents: " .. event)
 					-- ATT MODE: Mark categories for re-evaluation
 					if DOKI.db.attMode then
 						DOKI.needsPetReevaluation = true
@@ -866,7 +840,7 @@ function DOKI:SetupDebouncedEventSystem()
 					end
 
 					-- Clear cache
-					DOKI:ClearCollectionCache()
+					DOKI:ClearCollectionCache(nil, "DebouncedEvents: " .. event)
 					-- ATT MODE: Mark category for re-evaluation
 					if DOKI.db.attMode then
 						DOKI.needsTransmogReevaluation = true
@@ -893,7 +867,7 @@ function DOKI:SetupDebouncedEventSystem()
 					end
 
 					-- Clear cache
-					DOKI:ClearCollectionCache()
+					DOKI:ClearCollectionCache(nil, "DebouncedEvents: " .. event)
 					-- ATT MODE: Mark category for re-evaluation
 					if DOKI.db.attMode then
 						DOKI.needsToyReevaluation = true
@@ -1098,24 +1072,36 @@ function DOKI:CleanupItemLoader()
 end
 
 -- ===== ENHANCED CACHE MANAGEMENT =====
-function DOKI:ClearCollectionCache(cacheType)
+function DOKI:ClearCollectionCache(cacheType, reason)
+	-- Count ATT entries before clearing (the expensive ones we care about)
+	local attCacheCount = 0
+	if self.db and self.db.attMode then
+		for key, cached in pairs(self.collectionCache) do
+			if cached.isATTResult and not cached.noATTData then
+				attCacheCount = attCacheCount + 1
+			end
+		end
+	end
+
 	if not cacheType then
 		-- Clear all caches
 		local oldCount = self:TableCount(self.collectionCache)
 		self.collectionCache = {}
 		self.cacheStats.invalidations = self.cacheStats.invalidations + 1
 		self.cacheStats.totalEntries = 0
-		if self.db and self.db.debugMode then
-			print(string.format("|cffff69b4DOKI|r Cleared entire cache (%d entries)", oldCount))
+		-- ALWAYS log ATT cache clears (even with debug OFF)
+		if attCacheCount > 0 then
+			print(string.format("|cffff6600DOKI:|r Lost %d ATT cache entries - %s",
+				attCacheCount, reason or "unknown"))
 		end
 
 		return
 	end
 
-	-- Clear specific cache type
+	-- Clear specific cache type + ATT cache
 	local clearedCount = 0
 	for key, cached in pairs(self.collectionCache) do
-		if cached.cacheType == cacheType then
+		if cached.cacheType == cacheType or (self.db and self.db.attMode and cached.isATTResult) then
 			self.collectionCache[key] = nil
 			clearedCount = clearedCount + 1
 		end
@@ -1123,8 +1109,10 @@ function DOKI:ClearCollectionCache(cacheType)
 
 	self.cacheStats.invalidations = self.cacheStats.invalidations + 1
 	self.cacheStats.totalEntries = self.cacheStats.totalEntries - clearedCount
-	if self.db and self.db.debugMode then
-		print(string.format("|cffff69b4DOKI|r Cleared %s cache (%d entries)", cacheType, clearedCount))
+	-- Only log if ATT cache was affected
+	if attCacheCount > 0 then
+		print(string.format("|cffff6600DOKI:|r Lost %d ATT cache entries - %s",
+			attCacheCount, reason or "unknown"))
 	end
 end
 
@@ -2040,7 +2028,7 @@ function DOKI:SetupMinimalEventSystem()
 		elseif event == "PET_JOURNAL_LIST_UPDATE" or
 				event == "COMPANION_LEARNED" or event == "COMPANION_UNLEARNED" then
 			-- Collection changed - clear cache and FORCE FULL SCAN WITH DELAY for battlepets
-			DOKI:ClearCollectionCache()
+			DOKI:ClearCollectionCache(nil, "MinimalEvents: " .. event)
 			C_Timer.After(0.05, function()
 				if DOKI.db and DOKI.db.enabled then
 					-- Use withDelay=true for potential battlepet timing issues
@@ -2049,7 +2037,7 @@ function DOKI:SetupMinimalEventSystem()
 			end)
 		elseif event == "TRANSMOG_COLLECTION_UPDATED" or event == "TOYS_UPDATED" then
 			-- Transmog/toy collection changed - clear cache and FORCE FULL SCAN
-			DOKI:ClearCollectionCache()
+			DOKI:ClearCollectionCache(nil, "MinimalEvents: " .. event)
 			C_Timer.After(0.05, function()
 				if DOKI.db and DOKI.db.enabled then
 					-- Force full scan to re-evaluate all visible items
@@ -2103,7 +2091,7 @@ function DOKI:CleanupCollectionSystem()
 	end
 
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Collection system cleaned up")
+		print("|cffff69b4DOKI|r Collection system cleaned up with Two-Phase integration")
 	end
 end
 
@@ -2129,7 +2117,7 @@ function DOKI:InitializeUniversalScanning()
 	self:InitializeEnsembleDetection()
 	-- NEW: Initialize cache and debouncing systems
 	self:SetupDebouncedEventSystem()
-	-- Enhanced surgical update timer
+	-- Enhanced surgical update timer with Two-Phase integration
 	self.surgicalTimer = C_Timer.NewTicker(0.2, function()
 		if self.db and self.db.enabled then
 			local anyUIVisible = false
@@ -2149,18 +2137,27 @@ function DOKI:InitializeUniversalScanning()
 
 			local cursorHasItem = C_Cursor and C_Cursor.GetCursorItem() and true or false
 			if anyUIVisible or (MerchantFrame and MerchantFrame:IsVisible()) or cursorHasItem then
-				DOKI:SurgicalUpdate(false)
+				-- TWO-PHASE INTEGRATION: Handle post-scan indicator refresh
+				if DOKI.needsFullIndicatorRefresh and DOKI.isInitialScanComplete then
+					if self.db and self.db.debugMode then
+						print("|cffff69b4DOKI|r Post-Two-Phase indicator refresh in surgical timer")
+					end
+
+					DOKI.needsFullIndicatorRefresh = false
+					self:FullItemScan()
+				else
+					DOKI:SurgicalUpdate(false)
+				end
 			end
 		end
 	end)
-	-- Use the debounced event system instead of minimal
-	-- self:SetupMinimalEventSystem()  -- Remove this line
 	self:FullItemScan()
 	if self.db and self.db.debugMode then
-		print("|cffff69b4DOKI|r Enhanced surgical system initialized")
+		print("|cffff69b4DOKI|r Enhanced surgical system initialized with Two-Phase integration")
 		print("  |cff00ff00•|r Session-long caching enabled")
 		print("  |cff00ff00•|r Event debouncing enabled")
 		print("  |cff00ff00•|r Cache invalidation events registered")
+		print("  |cffffff00•|r Two-Phase post-combat indicator refresh enabled")
 	end
 end
 
